@@ -8,6 +8,7 @@
   "properties": {
     "id": { "type": "string", "pattern": "^[a-z0-9]+(/[a-z0-9-]+)+$" },
     "schema_version": { "type": "integer", "const": 1 },
+    "description": { "type": "string" },
     "captured_at": { "type": "string", "format": "date-time" },
     "captured_from": {
       "type": "object",
@@ -18,14 +19,27 @@
         "notes": { "type": "string" }
       }
     },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "capture": { "type": "string", "enum": ["synthetic", "mitmproxy-har", "live", "regenerated"] },
+        "source": { "type": "string" },
+        "captured_at": { "type": "string", "format": "date-time" },
+        "server_version": { "type": "string" },
+        "client": { "type": "string" },
+        "notes": { "type": "string" }
+      }
+    },
     "synthetic": { "type": "boolean", "default": false },
     "replayable": { "type": "boolean", "default": false },
+    "mutating": { "type": "boolean", "default": false },
     "tags": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
     "prereq_cases": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
     "request": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["method", "path"],
+      "required": ["body_kind"],
       "properties": {
         "method": { "type": "string", "enum": [
           "GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS",
@@ -33,17 +47,17 @@
         ] },
         "path": { "type": "string", "pattern": "^/" },
         "headers_strict": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
-        "body_kind": { "type": "string", "enum": ["none", "bytes", "json", "xml", "form"] }
+        "body_kind": { "type": "string", "enum": ["none", "empty", "bytes", "json", "xml", "form"] }
       }
     },
     "response": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "body_kind"],
+      "required": ["body_kind"],
       "properties": {
         "status": { "type": "integer", "minimum": 100, "maximum": 599 },
         "headers_strict": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
-        "body_kind": { "type": "string", "enum": ["none", "bytes", "json", "xml", "html", "dav-multistatus"] },
+        "body_kind": { "type": "string", "enum": ["none", "empty", "bytes", "json", "xml", "html", "dav-multistatus"] },
         "normalize": {
           "type": "array",
           "items": {
@@ -63,18 +77,31 @@
                 "properties": { "dav_multistatus_sort_by_href": { "type": "boolean" } } }
             ]
           }
-        },
-        "assertions": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "required": ["kind"],
-            "properties": {
-              "kind": { "type": "string", "enum": [
-                "status_eq", "headers_subset", "body_equal_after_normalize"
-              ] }
-            }
-          }
+        }
+      }
+    },
+    "assertions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+          "kind": { "type": "string", "enum": [
+            "status_eq",
+            "headers_subset",
+            "header_present",
+            "header_eq",
+            "body_equal_after_normalize",
+            "json_field_eq",
+            "json_field_present",
+            "xml_xpath_eq",
+            "xml_xpath_present",
+            "ocs_status_eq",
+            "ocs_message_contains"
+          ] },
+          "value": {},
+          "field": { "type": "string" },
+          "xpath": { "type": "string" }
         }
       }
     }
