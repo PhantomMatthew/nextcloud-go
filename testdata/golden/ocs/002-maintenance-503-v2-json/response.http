@@ -1,0 +1,7 @@
+HTTP/1.1 503 Service Unavailable
+Server: nginx
+Content-Type: application/json; charset=utf-8
+X-Nextcloud-Maintenance-Mode: 1
+Content-Length: 98
+
+{"ocs":{"meta":{"status":"failure","statuscode":503,"message":"Service unavailable"},"data":null}}

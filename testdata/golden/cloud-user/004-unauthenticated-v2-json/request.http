@@ -1,0 +1,6 @@
+GET /ocs/v2.php/cloud/user?format=json HTTP/1.1
+Host: cloud.example.com
+User-Agent: ncgo-goldentest/0.0
+Accept: */*
+OCS-APIRequest: true
+

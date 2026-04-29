@@ -1,0 +1,23 @@
+HTTP/1.1 200 OK
+Server: nginx
+Content-Type: application/xml; charset=utf-8
+Content-Length: 483
+
+<?xml version="1.0"?>
+<ocs>
+ <meta>
+  <status>ok</status>
+  <statuscode>100</statuscode>
+  <message>OK</message>
+ </meta>
+ <data>
+  <capabilities>
+   <core>
+    <pollinterval>60</pollinterval>
+    <webdav-root>remote.php/webdav</webdav-root>
+    <reference-api>1</reference-api>
+    <reference-regex>\/(\s|\n|^)(https?:\/\/)((?:[-A-Z0-9+_]+\.)+[-A-Z]+(?:\/[-A-Z0-9+&amp;@#%?=~_|!:,.;()]*)*)(\s|\n|$)/i</reference-regex>
+   </core>
+  </capabilities>
+ </data>
+</ocs>

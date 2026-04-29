@@ -1,0 +1,45 @@
+schema_version: 1
+id: cloud-user/001-self-v2-json
+description: |
+  Authenticated self-lookup of OCS v2 provisioning_api /cloud/user endpoint
+  using HTTP Basic auth. Returns the caller's own user record (id, email,
+  display name, quota, language, locale, group memberships). This is the
+  bootstrap call clients make right after capabilities to populate the
+  user profile sheet.
+provenance:
+  capture: synthetic
+  source: hand-authored from upstream Nextcloud Server 29.x (apps/provisioning_api/lib/Controller/UsersController::getCurrentUser, V2Response.php)
+  captured_at: "2025-01-01T00:00:00Z"
+  notes: |
+    Authorization: Basic dGVzdHVzZXI6cGFzc3dvcmQ= decodes to testuser:password.
+    Fixture credentials only; never reuse against a real server. Replace with
+    mitmproxy HAR once a reference instance is available.
+request:
+  body_kind: empty
+response:
+  body_kind: json
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+    - json_pointer_redact:
+        pointer: /ocs/data/quota/used
+        with: 0
+assertions:
+  - kind: status_eq
+    value: 200
+  - kind: ocs_status_eq
+    value: 200
+  - kind: json_field_eq
+    pointer: /ocs/data/id
+    value: testuser
+  - kind: json_field_eq
+    pointer: /ocs/data/email
+    value: testuser@example.com
+  - kind: json_field_present
+    pointer: /ocs/data/quota/total
+replayable: true
+mutating: false
+synthetic: true
+tags: [cloud-user, provisioning, ocs, v2, json, basic-auth, phase1]

@@ -1,0 +1,6 @@
+HTTP/1.1 200 OK
+Server: nginx
+Content-Type: application/json; charset=utf-8
+Content-Length: 1125
+
+{"ocs":{"meta":{"status":"ok","statuscode":200,"message":"OK"},"data":{"enabled":true,"storageLocation":"\/var\/www\/html\/data\/testuser","id":"testuser","lastLogin":1714377600000,"backend":"Database","subadmin":[],"quota":{"free":10737418240,"used":0,"total":10737418240,"relative":0,"quota":10737418240},"manager":"","avatarScope":"v2-federated","email":"testuser@example.com","emailScope":"v2-federated","additional_mail":[],"additional_mailScope":[],"displayname":"Test User","display-name":"Test User","displaynameScope":"v2-federated","phone":"","phoneScope":"v2-local","address":"","addressScope":"v2-local","website":"","websiteScope":"v2-local","twitter":"","twitterScope":"v2-local","fediverse":"","fediverseScope":"v2-local","organisation":"","organisationScope":"v2-local","role":"","roleScope":"v2-local","headline":"","headlineScope":"v2-local","biography":"","biographyScope":"v2-local","profile_enabled":"1","profile_enabledScope":"v2-local","groups":["users"],"language":"en","locale":"en_US","notify_email":null,"backendCapabilities":{"setDisplayName":true,"setPassword":true},"display_name":"Test User"}}}

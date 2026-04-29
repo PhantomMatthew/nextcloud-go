@@ -1,0 +1,39 @@
+schema_version: 1
+id: ocs/002-maintenance-503-v2-json
+description: |
+  OCS v2 request served while the instance is in maintenance mode.
+  ocs/v1.php (require_once'd by v2.php) short-circuits all routing and
+  emits HTTP 503 with the X-Nextcloud-Maintenance-Mode: 1 header plus an
+  OCS Result envelope carrying statuscode 503 and message "Service
+  unavailable". Clients use the header to display a maintenance banner
+  rather than treating the failure as a server error.
+provenance:
+  capture: synthetic
+  source: hand-authored from upstream Nextcloud Server 29.x (ocs/v1.php maintenance branch, ocs/v2.php loader)
+  captured_at: "2025-01-01T00:00:00Z"
+  notes: |
+    Maintenance check fires before authentication, so this case is anonymous.
+    Replace with mitmproxy HAR once a reference instance is available.
+request:
+  body_kind: empty
+response:
+  body_kind: json
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 503
+  - kind: header_eq
+    name: X-Nextcloud-Maintenance-Mode
+    value: "1"
+  - kind: ocs_status_eq
+    value: 503
+  - kind: ocs_message_contains
+    value: Service unavailable
+replayable: true
+mutating: false
+synthetic: true
+tags: [ocs, v2, json, maintenance, anonymous, phase1]

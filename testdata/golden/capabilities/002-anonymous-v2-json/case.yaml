@@ -1,0 +1,41 @@
+schema_version: 1
+id: capabilities/002-anonymous-v2-json
+description: |
+  Anonymous GET of OCS v2 capabilities endpoint with format=json. Returns
+  JSON envelope (status=ok, statuscode=200) wrapping the core capabilities
+  block. Modern Nextcloud clients prefer this endpoint over the v1 XML
+  variant for token negotiation and feature discovery.
+provenance:
+  capture: synthetic
+  source: hand-authored from upstream Nextcloud Server 29.x (lib/private/OCS/CoreCapabilities.php, V2Response.php, BaseResponse.php)
+  captured_at: "2025-01-01T00:00:00Z"
+  notes: |
+    OCS v2 passes through 2xx status codes verbatim and emits statuscode 200
+    on success. ?format=json switches BaseResponse from XML to JSON. Replace
+    with mitmproxy HAR once a reference instance is available.
+request:
+  body_kind: empty
+response:
+  body_kind: json
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 200
+  - kind: header_eq
+    name: Content-Type
+    value: application/json; charset=utf-8
+  - kind: ocs_status_eq
+    value: 200
+  - kind: json_field_eq
+    pointer: /ocs/data/capabilities/core/webdav-root
+    value: remote.php/webdav
+  - kind: json_field_present
+    pointer: /ocs/data/capabilities/core/reference-api
+replayable: false
+mutating: false
+synthetic: true
+tags: [capabilities, ocs, v2, anonymous, json, phase1]

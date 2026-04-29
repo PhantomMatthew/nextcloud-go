@@ -1,0 +1,34 @@
+schema_version: 1
+id: cloud-user/004-unauthenticated-v2-json
+description: |
+  Unauthenticated GET of OCS v2 /cloud/user endpoint. The framework's
+  OCSMiddleware catches the auth failure and emits OCS statuscode 997
+  (UNAUTHORISED), which V2Response maps to HTTP 401. Authoritative
+  fixture for client retry/relogin logic.
+provenance:
+  capture: synthetic
+  source: hand-authored from upstream Nextcloud Server 29.x (V2Response::getStatus, OCSController::RESPOND_UNAUTHORISED, OCSMiddleware::afterException)
+  captured_at: "2025-01-01T00:00:00Z"
+  notes: |
+    OCSController::RESPOND_UNAUTHORISED = 997. V2Response maps it to HTTP 401.
+    Replace with mitmproxy HAR once a reference instance is available.
+request:
+  body_kind: empty
+response:
+  body_kind: json
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie, WWW-Authenticate]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 401
+  - kind: ocs_status_eq
+    value: 997
+  - kind: ocs_message_contains
+    value: Current user is not logged in
+replayable: true
+mutating: false
+synthetic: true
+tags: [cloud-user, provisioning, ocs, v2, json, unauthenticated, phase1]

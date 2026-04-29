@@ -1,0 +1,38 @@
+schema_version: 1
+id: capabilities/001-anonymous-v1
+description: |
+  Anonymous GET of OCS v1 capabilities endpoint. Returns the canonical
+  XML envelope (status=ok, statuscode=100) with the core capabilities
+  block: pollinterval, webdav-root, reference-api, reference-regex.
+  Used by every Nextcloud client at session start to negotiate features.
+provenance:
+  capture: synthetic
+  source: hand-authored from upstream Nextcloud Server 29.x (lib/private/OCS/CoreCapabilities.php, V1Response.php, BaseResponse.php)
+  captured_at: "2025-01-01T00:00:00Z"
+  notes: |
+    Format defaults to xml when no ?format= param is supplied. OCS v1 always
+    returns HTTP 200 (except 401 for UNAUTHORISED) and maps internal OK to
+    statuscode 100. Replace with mitmproxy HAR once a reference instance is
+    available.
+request:
+  body_kind: empty
+response:
+  body_kind: xml
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 200
+  - kind: header_present
+    value: Content-Type
+  - kind: ocs_status_eq
+    value: 100
+  - kind: xml_xpath_present
+    xpath: /ocs/data/capabilities/core/webdav-root
+replayable: false
+mutating: false
+synthetic: true
+tags: [capabilities, ocs, v1, anonymous, xml, phase1]
