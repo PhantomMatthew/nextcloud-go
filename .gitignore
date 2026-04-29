@@ -1,0 +1,42 @@
+# Binaries
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+*.prof
+
+# Coverage
+coverage.out
+coverage.html
+coverage.txt
+
+# IDE / editors
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Local env / config
+.env
+.env.local
+config.local.yaml
+data/
+storage/
+
+# Build artifacts
+/cmd/ncgo/ncgo
+/cmd/ncgo-cli/ncgo-cli
+/cmd/ncgo-captest/ncgo-captest
+
+# Captured fixtures (large)
+/testdata/captures/*.har
+/testdata/captures/*.pcap
+
+# Plugins
+*.wasm
+!testdata/**/*.wasm
+
+# Tooling caches
+.golangci-cache/

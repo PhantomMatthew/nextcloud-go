@@ -1,0 +1,126 @@
+# golangci-lint configuration for nextcloud-go
+# See ADR-0001 for tooling rationale.
+
+run:
+  timeout: 5m
+  tests: true
+  build-tags:
+    - integration
+
+output:
+  formats:
+    - format: colored-line-number
+  sort-results: true
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - copyloopvar
+    - dupword
+    - errorlint
+    - exhaustive
+    - forbidigo
+    - gocheckcompilerdirectives
+    - gocritic
+    - gofmt
+    - gofumpt
+    - goheader
+    - goimports
+    - gosec
+    - misspell
+    - nakedret
+    - nilerr
+    - noctx
+    - nolintlint
+    - prealloc
+    - predeclared
+    - revive
+    - sloglint
+    - stylecheck
+    - tenv
+    - testifylint
+    - thelper
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - wastedassign
+    - whitespace
+
+linters-settings:
+  goimports:
+    local-prefixes: github.com/PhantomMatthew/nextcloud-go
+  gofumpt:
+    extra-rules: true
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+  gosec:
+    excludes:
+      - G104 # handled by errcheck
+  forbidigo:
+    forbid:
+      - p: ^fmt\.Print.*$
+        msg: "use slog for structured logging"
+      - p: ^panic\(.*\)$
+        msg: "do not panic in library code; return an error"
+  revive:
+    rules:
+      - name: var-naming
+      - name: package-comments
+      - name: exported
+      - name: error-return
+      - name: error-strings
+      - name: error-naming
+      - name: if-return
+      - name: increment-decrement
+      - name: range
+      - name: receiver-naming
+      - name: time-naming
+      - name: unexported-return
+      - name: indent-error-flow
+      - name: errorf
+      - name: empty-block
+      - name: superfluous-else
+      - name: unused-parameter
+        disabled: true
+      - name: unreachable-code
+      - name: redefines-builtin-id
+  sloglint:
+    no-mixed-args: true
+    kv-only: false
+    attr-only: true
+    context: scope
+  exhaustive:
+    default-signifies-exhaustive: true
+  testifylint:
+    enable-all: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-dirs:
+    - testdata
+    - bin
+    - dist
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gosec
+        - errcheck
+        - forbidigo
+        - dupl
+        - revive
+    - path: cmd/
+      linters:
+        - forbidigo # main packages may use fmt.Print for CLI output
+    - path: tools/
+      linters:
+        - forbidigo
+        - gosec

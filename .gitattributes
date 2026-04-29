@@ -1,0 +1,16 @@
+# Normalize line endings
+* text=auto eol=lf
+
+# Go
+*.go text eol=lf diff=golang
+
+# Binary assets
+*.wasm binary
+*.png binary
+*.jpg binary
+*.gz binary
+*.zip binary
+
+# Generated files (excluded from diff stats)
+**/*.pb.go linguist-generated=true
+**/*_gen.go linguist-generated=true

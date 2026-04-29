@@ -1,0 +1,50 @@
+# Development stack for ncgo.
+# Brings up postgres + redis + ncgo with hot config reload.
+# Usage: make dev-up
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ncgo
+      POSTGRES_PASSWORD: ncgo
+      POSTGRES_DB: ncgo
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ncgo -d ncgo"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  ncgo:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    environment:
+      NCGO_DB_DRIVER: postgres
+      NCGO_DB_DSN: postgres://ncgo:ncgo@postgres:5432/ncgo?sslmode=disable
+      NCGO_CACHE_DRIVER: redis
+      NCGO_CACHE_DSN: redis://redis:6379/0
+      NCGO_HTTP_LISTEN: ":8080"
+      NCGO_LOG_LEVEL: debug
+    ports: ["8080:8080"]
+    volumes:
+      - ncgodata:/var/lib/ncgo
+
+volumes:
+  pgdata:
+  ncgodata:
