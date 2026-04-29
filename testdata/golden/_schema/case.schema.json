@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PhantomMatthew/nextcloud-go/testdata/golden/_schema/case.schema.json",
+  "title": "Golden Case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "schema_version", "request", "response"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(/[a-z0-9-]+)+$" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "captured_at": { "type": "string", "format": "date-time" },
+    "captured_from": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "server_version": { "type": "string" },
+        "client": { "type": "string" },
+        "notes": { "type": "string" }
+      }
+    },
+    "synthetic": { "type": "boolean", "default": false },
+    "replayable": { "type": "boolean", "default": false },
+    "tags": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "prereq_cases": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "path"],
+      "properties": {
+        "method": { "type": "string", "enum": [
+          "GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS",
+          "PROPFIND", "PROPPATCH", "MKCOL", "COPY", "MOVE", "LOCK", "UNLOCK", "REPORT"
+        ] },
+        "path": { "type": "string", "pattern": "^/" },
+        "headers_strict": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "body_kind": { "type": "string", "enum": ["none", "bytes", "json", "xml", "form"] }
+      }
+    },
+    "response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "body_kind"],
+      "properties": {
+        "status": { "type": "integer", "minimum": 100, "maximum": 599 },
+        "headers_strict": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "body_kind": { "type": "string", "enum": ["none", "bytes", "json", "xml", "html", "dav-multistatus"] },
+        "normalize": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              { "type": "object", "required": ["drop_headers"], "additionalProperties": false,
+                "properties": { "drop_headers": { "type": "array", "items": { "type": "string" } } } },
+              { "type": "object", "required": ["replace_header"], "additionalProperties": false,
+                "properties": { "replace_header": {
+                  "type": "object", "required": ["name", "with"], "additionalProperties": false,
+                  "properties": { "name": { "type": "string" }, "with": { "type": "string" } }
+                } } },
+              { "type": "object", "required": ["json_pointer_redact"], "additionalProperties": false,
+                "properties": { "json_pointer_redact": { "type": "array", "items": { "type": "string" } } } },
+              { "type": "object", "required": ["xml_xpath_redact"], "additionalProperties": false,
+                "properties": { "xml_xpath_redact": { "type": "array", "items": { "type": "string" } } } },
+              { "type": "object", "required": ["dav_multistatus_sort_by_href"], "additionalProperties": false,
+                "properties": { "dav_multistatus_sort_by_href": { "type": "boolean" } } }
+            ]
+          }
+        },
+        "assertions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind": { "type": "string", "enum": [
+                "status_eq", "headers_subset", "body_equal_after_normalize"
+              ] }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,35 @@
+schema_version: 1
+id: status/001-status-php-anonymous
+description: |
+  Anonymous GET /status.php returns server identification, version, and
+  installation state. Smoke-test endpoint used by the desktop client probe
+  and by monitoring tooling. Bytes captured against upstream Nextcloud Server
+  29.x for shape reference; this case is documentation-only until ncgo serves
+  /status.php in Phase 0 milestone M2.
+provenance:
+  capture: synthetic
+  source: hand-authored from upstream Nextcloud Server 29.x reference output
+  captured_at: "2025-01-01T00:00:00Z"
+  notes: |
+    Hand-authored skeleton. Replace with mitmproxy HAR capture once a reference
+    server instance is available. See docs/plans/02-golden-harness.md.
+request:
+  body_kind: empty
+response:
+  body_kind: json
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 200
+  - kind: header_present
+    value: Content-Type
+  - kind: json_field_eq
+    field: installed
+    value: true
+replayable: false
+mutating: false
+tags: [status, smoke, anonymous, phase0]

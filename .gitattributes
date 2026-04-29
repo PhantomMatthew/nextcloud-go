@@ -11,6 +11,10 @@
 *.gz binary
 *.zip binary
 
+# Golden test wire bytes — preserve exact bytes (CRLF line endings, no diff)
+testdata/golden/**/*.http binary
+testdata/golden/**/*.bin binary
+
 # Generated files (excluded from diff stats)
 **/*.pb.go linguist-generated=true
 **/*_gen.go linguist-generated=true
