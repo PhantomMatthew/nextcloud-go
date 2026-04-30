@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<ocs>
+ <meta>
+  <status>ok</status>
+  <statuscode>100</statuscode>
+  <message>OK</message>
+ </meta>
+ <data>
+  <version>
+   <major>26</major>
+   <minor>0</minor>
+   <micro>0</micro>
+   <string>26.0.0 beta 4</string>
+   <edition></edition>
+   <extendedSupport></extendedSupport>
+  </version>
+  <capabilities>
+   <core>
+    <pollinterval>60</pollinterval>
+    <webdav-root>remote.php/webdav</webdav-root>
+    <reference-api>1</reference-api>
+    <reference-regex>(\s|\n|^)(https?:\/\/)((?:[-A-Z0-9+_]+\.)+[-A-Z]+(?:\/[-A-Z0-9+&amp;@#%?=~_|!:,.;()]*)*)(\s|\n|$)</reference-regex>
+   </core>
+  </capabilities>
+ </data>
+</ocs>
