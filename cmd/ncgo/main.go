@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
 	"github.com/PhantomMatthew/nextcloud-go/internal/capabilities"
 	"github.com/PhantomMatthew/nextcloud-go/internal/httpx"
 	"github.com/PhantomMatthew/nextcloud-go/internal/observability"
@@ -52,6 +53,12 @@ func main() {
 	for _, m := range []string{"GET", "HEAD"} {
 		router.Handle(m, "/ocs/v1.php/cloud/capabilities", capHandler.ServeOCS(ocs.V1))
 		router.Handle(m, "/ocs/v2.php/cloud/capabilities", capHandler.ServeOCS(ocs.V2))
+	}
+
+	verifier := auth.NewStaticVerifier("admin", "admin", "admin")
+	for _, m := range []string{"GET", "HEAD"} {
+		router.Handle(m, "/ocs/v1.php/cloud/user", ocs.CloudUserHandler(ocs.V1), httpx.Middleware(ocs.BasicAuth(ocs.V1, verifier)))
+		router.Handle(m, "/ocs/v2.php/cloud/user", ocs.CloudUserHandler(ocs.V2), httpx.Middleware(ocs.BasicAuth(ocs.V2, verifier)))
 	}
 
 	srv := httpx.NewServer(httpx.ServerConfig{
