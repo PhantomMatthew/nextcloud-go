@@ -13,6 +13,12 @@ provenance:
     OCS v2 passes through 2xx status codes verbatim and emits statuscode 200
     on success. ?format=json switches BaseResponse from XML to JSON. Replace
     with mitmproxy HAR once a reference instance is available.
+
+    Body regenerated 2026-04 via internal/ocs/cmd/genfixture to match PHP
+    json_encode default flags (escape ALL forward slashes; HTML escaping
+    disabled so '&' stays literal). Original hand-authored body had mixed
+    slash escaping (\/ in some places, raw / in the regex tail) which did
+    not match any real PHP output. Content-Length updated 300 -> 305.
 request:
   body_kind: empty
 response:

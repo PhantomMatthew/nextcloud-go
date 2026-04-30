@@ -41,6 +41,29 @@ XML uses the same field names, root element `<ocs>`, with `<data>` as a
 container. `totalitems` and `itemsperpage` are emitted as strings in upstream
 output and we will mirror that exactly.
 
+#### Rendering rules (verified against regenerated golden fixtures)
+
+- **Empty meta fields**: `totalitems` and `itemsperpage` are omitted entirely
+  from both JSON and XML when the caller does not set them. Upstream PHP
+  serializes them only when populated; emitting empty strings would diverge.
+- **V1 success code**: `meta.statuscode` defaults to `100` when unset; V2
+  defaults to `200`. Default message is `"OK"`.
+- **JSON encoding**: produced via `encoding/json.Encoder` with
+  `SetEscapeHTML(false)` so `<`, `>`, `&` are not escaped to `\u003c` etc.
+  After encoding, every `/` is unconditionally rewritten to `\/` to match
+  PHP's `json_encode` default (no `JSON_UNESCAPED_SLASHES` flag). The
+  trailing newline appended by `Encoder.Encode` is stripped.
+- **JSON booleans**: rendered as native `true`/`false`.
+- **XML booleans**: rendered as `"1"` / `"0"` to match PHP's
+  `(string)(bool)$value` cast (e.g. `<reference-api>1</reference-api>`).
+- **XML preamble**: `<?xml version="1.0"?>\n` — no encoding attribute, single
+  newline, no standalone declaration.
+- **XML indentation**: one space per level, `\n` line terminators inside the
+  body. (HTTP header line endings remain CRLF per RFC 7230.)
+- **Ordered keys**: payload key order is caller-controlled via the
+  `OrderedMap`/`KV` types; Go's map iteration order is never observed in
+  rendered output. This is required for byte-stable golden comparisons.
+
 ### Status mapping (verified against upstream source)
 
 OCS-level constants (`lib/public/AppFramework/OCSController.php`):
@@ -112,6 +135,16 @@ session and Basic Auth checks.
   security middleware, not in the OCS layer.
 - Any future drift from upstream behaviour requires a new ADR; we do not
   "improve" the envelope.
+
+## Change Log
+
+- 2026-04-30: Amended Decision §Envelope shape with explicit rendering rules
+  (empty-meta omission, V1=100/V2=200 default success codes, JSON
+  `SetEscapeHTML(false)` + unconditional slash escape, XML bool→`"1"`,
+  XML preamble + one-space indent + LF body, OrderedMap-driven key order).
+  Documents behaviour pinned by `internal/ocs/ocs_test.go` golden fixtures
+  `001-anonymous-v1` (XML, body LF) and `002-anonymous-v2-json` (JSON,
+  regenerated to PHP-default output; original was hand-authored and bugged).
 
 ## References
 

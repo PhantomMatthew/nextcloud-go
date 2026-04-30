@@ -67,10 +67,10 @@ type Response struct {
 }
 
 type NormalizeRule struct {
-	DropHeaders             []string
-	ReplaceHeader           *ReplaceHeaderRule
-	JSONPointerRedact       []string
-	XMLXPathRedact          []string
+	DropHeaders              []string
+	ReplaceHeader            *ReplaceHeaderRule
+	JSONPointerRedact        []string
+	XMLXPathRedact           []string
 	DAVMultistatusSortByHref bool
 }
 
@@ -82,8 +82,8 @@ type ReplaceHeaderRule struct {
 type AssertionKind string
 
 const (
-	AssertStatusEq               AssertionKind = "status_eq"
-	AssertHeadersSubset          AssertionKind = "headers_subset"
+	AssertStatusEq                AssertionKind = "status_eq"
+	AssertHeadersSubset           AssertionKind = "headers_subset"
 	AssertBodyEqualAfterNormalize AssertionKind = "body_equal_after_normalize"
 )
 
