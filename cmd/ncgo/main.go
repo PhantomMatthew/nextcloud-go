@@ -9,8 +9,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/PhantomMatthew/nextcloud-go/internal/capabilities"
 	"github.com/PhantomMatthew/nextcloud-go/internal/httpx"
 	"github.com/PhantomMatthew/nextcloud-go/internal/observability"
+	"github.com/PhantomMatthew/nextcloud-go/internal/ocs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/status"
 )
 
@@ -26,17 +28,30 @@ func main() {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
+	maintenance := httpx.MaintenanceFunc(func() bool { return false })
+
 	baseChain := []httpx.Middleware{
 		httpx.Recover(logger),
 		httpx.RequestID(),
 		httpx.Logging(logger),
 		httpx.SecurityHeaders(httpx.DefaultSecurityHeaders()),
+		httpx.Maintenance(maintenance),
+		httpx.CSRF(httpx.CSRFConfig{}),
 	}
 
 	router := httpx.NewRouter(baseChain...)
+
 	statusHandler := status.Provider{}.Handler()
 	for _, m := range []string{"GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"} {
 		router.Handle(m, "/status.php", statusHandler)
+	}
+
+	capManager := capabilities.NewManager()
+	capManager.Register(capabilities.DefaultCoreProvider())
+	capHandler := capabilities.Handler{Manager: capManager}
+	for _, m := range []string{"GET", "HEAD"} {
+		router.Handle(m, "/ocs/v1.php/cloud/capabilities", capHandler.ServeOCS(ocs.V1))
+		router.Handle(m, "/ocs/v2.php/cloud/capabilities", capHandler.ServeOCS(ocs.V2))
 	}
 
 	srv := httpx.NewServer(httpx.ServerConfig{
