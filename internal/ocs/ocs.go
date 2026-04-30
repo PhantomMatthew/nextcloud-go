@@ -156,18 +156,18 @@ func NegotiateFormat(query, accept string) Format {
 }
 
 func Render(version Version, format Format, meta Meta, data any) ([]byte, string, error) {
-	if meta.Status == "" {
-		if meta.StatusCode == StatusOKv1 || meta.StatusCode == StatusOKv2 {
-			meta.Status = "ok"
-		} else {
-			meta.Status = "failure"
-		}
-	}
 	if meta.StatusCode == 0 {
 		if version == V1 {
 			meta.StatusCode = StatusOKv1
 		} else {
 			meta.StatusCode = StatusOKv2
+		}
+	}
+	if meta.Status == "" {
+		if meta.StatusCode == StatusOKv1 || meta.StatusCode == StatusOKv2 {
+			meta.Status = "ok"
+		} else {
+			meta.Status = "failure"
 		}
 	}
 	if meta.Message == "" && (meta.StatusCode == StatusOKv1 || meta.StatusCode == StatusOKv2) {
