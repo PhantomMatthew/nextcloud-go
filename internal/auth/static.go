@@ -24,5 +24,5 @@ func (v *StaticVerifier) Verify(_ context.Context, user, password string) (*Prin
 	if !uOK || !pOK {
 		return nil, ErrInvalidCredentials
 	}
-	return &Principal{UID: v.UID, DisplayName: v.DisplayName, Enabled: true}, nil
+	return &Principal{UID: v.UID, DisplayName: v.DisplayName, Enabled: true, AuthMethod: AuthMethodBasic}, nil
 }

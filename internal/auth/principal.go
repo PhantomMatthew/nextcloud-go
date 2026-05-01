@@ -2,10 +2,16 @@ package auth
 
 import "context"
 
+const (
+	AuthMethodBasic       = "basic"
+	AuthMethodAppPassword = "app_password"
+)
+
 type Principal struct {
 	UID         string
 	DisplayName string
 	Enabled     bool
+	AuthMethod  string
 }
 
 type ctxKey struct{}

@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -16,6 +19,45 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/ocs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/status"
 )
+
+type appPasswordIssuer struct {
+	store  auth.Store
+	secret string
+}
+
+func (a *appPasswordIssuer) Issue(r *http.Request, principal *auth.Principal) (string, error) {
+	name := r.Header.Get("User-Agent")
+	if name == "" {
+		name = "unknown client"
+	}
+	raw, _, err := auth.IssueAppPassword(
+		r.Context(),
+		a.store,
+		a.secret,
+		principal.UID,
+		principal.UID,
+		name,
+		auth.TokenTypePermanent,
+	)
+	return raw, err
+}
+
+func (a *appPasswordIssuer) Revoke(r *http.Request, _ *auth.Principal, raw string) error {
+	return auth.RevokeAppPassword(r.Context(), a.store, a.secret, raw)
+}
+
+func loadSecret(logger *slog.Logger) string {
+	if s := os.Getenv("NCGO_SECRET"); s != "" {
+		return s
+	}
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		logger.Error("failed to generate ephemeral secret", "error", err)
+		os.Exit(1)
+	}
+	logger.Warn("NCGO_SECRET not set; generated ephemeral secret (tokens will not survive restart)")
+	return hex.EncodeToString(buf)
+}
 
 func main() {
 	if len(os.Args) >= 2 && (os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-v") {
@@ -55,11 +97,25 @@ func main() {
 		router.Handle(m, "/ocs/v2.php/cloud/capabilities", capHandler.ServeOCS(ocs.V2))
 	}
 
-	verifier := auth.NewStaticVerifier("admin", "admin", "admin")
+	secret := loadSecret(logger)
+	tokenStore := auth.NewMemoryStore()
+	staticVerifier := auth.NewStaticVerifier("admin", "admin", "admin")
+	appPasswordVerifier := auth.NewAppPasswordVerifier(tokenStore, secret)
+	verifier := auth.NewChainVerifier(appPasswordVerifier, staticVerifier)
+	issuer := &appPasswordIssuer{store: tokenStore, secret: secret}
+
 	for _, m := range []string{"GET", "HEAD"} {
 		router.Handle(m, "/ocs/v1.php/cloud/user", ocs.CloudUserHandler(ocs.V1), httpx.Middleware(ocs.BasicAuth(ocs.V1, verifier)))
 		router.Handle(m, "/ocs/v2.php/cloud/user", ocs.CloudUserHandler(ocs.V2), httpx.Middleware(ocs.BasicAuth(ocs.V2, verifier)))
 	}
+
+	for _, m := range []string{"GET", "HEAD"} {
+		router.Handle(m, "/ocs/v1.php/core/getapppassword", ocs.GetAppPasswordHandler(ocs.V1, issuer), httpx.Middleware(ocs.BasicAuth(ocs.V1, verifier)))
+		router.Handle(m, "/ocs/v2.php/core/getapppassword", ocs.GetAppPasswordHandler(ocs.V2, issuer), httpx.Middleware(ocs.BasicAuth(ocs.V2, verifier)))
+	}
+
+	router.Handle("DELETE", "/ocs/v1.php/core/apppassword", ocs.DeleteAppPasswordHandler(ocs.V1, issuer), httpx.Middleware(ocs.BasicAuth(ocs.V1, verifier)))
+	router.Handle("DELETE", "/ocs/v2.php/core/apppassword", ocs.DeleteAppPasswordHandler(ocs.V2, issuer), httpx.Middleware(ocs.BasicAuth(ocs.V2, verifier)))
 
 	srv := httpx.NewServer(httpx.ServerConfig{
 		Addr:    *addr,
