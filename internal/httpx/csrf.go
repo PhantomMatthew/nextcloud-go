@@ -41,7 +41,8 @@ func IsSafeMethod(method string) bool {
 // bypass rules and rejects everything else with 412 Precondition Failed,
 // matching upstream Nextcloud's behaviour for missing requesttoken.
 type CSRFConfig struct {
-	Validate func(*http.Request) bool
+	Validate   func(*http.Request) bool
+	PathBypass []string
 }
 
 // CSRF returns middleware that enforces CSRF protection for unsafe
@@ -54,6 +55,12 @@ func CSRF(cfg CSRFConfig) Middleware {
 			if IsSafeMethod(r.Method) || IsOCSRequest(r) || IsBearerRequest(r) {
 				next.ServeHTTP(w, r)
 				return
+			}
+			for _, p := range cfg.PathBypass {
+				if r.URL.Path == p {
+					next.ServeHTTP(w, r)
+					return
+				}
 			}
 			if cfg.Validate != nil && cfg.Validate(r) {
 				next.ServeHTTP(w, r)
