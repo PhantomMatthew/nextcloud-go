@@ -60,6 +60,27 @@ func TestCSRF(t *testing.T) {
 			want:   http.StatusPreconditionFailed,
 		},
 		{
+			name:   "path bypass prefix match with trailing slash",
+			cfg:    CSRFConfig{PathBypass: []string{"/remote.php/dav/"}},
+			method: "PROPFIND",
+			path:   "/remote.php/dav/files/admin/",
+			want:   http.StatusNoContent,
+		},
+		{
+			name:   "path bypass prefix match exact base",
+			cfg:    CSRFConfig{PathBypass: []string{"/remote.php/dav/"}},
+			method: "PROPFIND",
+			path:   "/remote.php/dav/",
+			want:   http.StatusNoContent,
+		},
+		{
+			name:   "path bypass without trailing slash does not prefix match",
+			cfg:    CSRFConfig{PathBypass: []string{"/remote.php/dav"}},
+			method: "PROPFIND",
+			path:   "/remote.php/dav/files/admin/",
+			want:   http.StatusPreconditionFailed,
+		},
+		{
 			name:   "validator pass",
 			cfg:    CSRFConfig{Validate: func(*http.Request) bool { return true }},
 			method: http.MethodPost,

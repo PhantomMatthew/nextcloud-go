@@ -57,7 +57,7 @@ func CSRF(cfg CSRFConfig) Middleware {
 				return
 			}
 			for _, p := range cfg.PathBypass {
-				if r.URL.Path == p {
+				if r.URL.Path == p || (strings.HasSuffix(p, "/") && strings.HasPrefix(r.URL.Path, p)) {
 					next.ServeHTTP(w, r)
 					return
 				}

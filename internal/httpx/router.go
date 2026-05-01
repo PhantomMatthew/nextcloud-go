@@ -6,6 +6,11 @@ import (
 	"strings"
 )
 
+// MethodAny is a sentinel method matching any HTTP verb on a prefix
+// route. Use it for protocols (e.g. WebDAV) where a single handler
+// dispatches multiple methods internally.
+const MethodAny = "*"
+
 // Route describes a single registered endpoint: an HTTP method, an exact
 // or prefix path, the handler, and any per-route middleware that should
 // wrap the handler in addition to the router's default chain.
@@ -134,7 +139,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		if !strings.HasPrefix(path, pr.path) {
 			continue
 		}
-		if pr.method != req.Method {
+		if pr.method != MethodAny && pr.method != req.Method {
 			r.writeMethodNotAllowed(w, req, pr.path)
 			return
 		}

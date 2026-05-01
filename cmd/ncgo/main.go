@@ -20,6 +20,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/ocs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/status"
 	"github.com/PhantomMatthew/nextcloud-go/internal/web"
+	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
 )
 
 type appPasswordIssuer struct {
@@ -61,6 +62,19 @@ func loadSecret(logger *slog.Logger) string {
 	return hex.EncodeToString(buf)
 }
 
+func loadInstanceID(logger *slog.Logger) string {
+	if s := os.Getenv("NCGO_INSTANCE_ID"); s != "" {
+		return s
+	}
+	buf := make([]byte, 5)
+	if _, err := rand.Read(buf); err != nil {
+		logger.Error("failed to generate ephemeral instance id", "error", err)
+		os.Exit(1)
+	}
+	logger.Warn("NCGO_INSTANCE_ID not set; generated ephemeral instance id (file ids will not survive restart)")
+	return "oc" + hex.EncodeToString(buf)
+}
+
 func main() {
 	if len(os.Args) >= 2 && (os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-v") {
 		fmt.Printf("ncgo %s (commit %s, built %s)\n",
@@ -80,6 +94,7 @@ func main() {
 			"/index.php/login/v2",
 			"/index.php/login/v2/poll",
 			"/index.php/login/v2/grant",
+			"/remote.php/dav/",
 		},
 	}
 
@@ -138,6 +153,15 @@ func main() {
 	router.HandlePrefix(http.MethodGet, "/index.php/login/v2/flow/", http.HandlerFunc(lv2.HandleFlowToken))
 	router.Handle(http.MethodGet, "/index.php/login/v2/flow", http.HandlerFunc(lv2.HandlePicker))
 	router.Handle(http.MethodPost, "/index.php/login/v2/grant", http.HandlerFunc(lv2.HandleGrant))
+
+	instanceID := loadInstanceID(logger)
+	davFS := webdav.NewInMemoryFS()
+	davHandler := &webdav.Handler{
+		Prefix:     "/remote.php/dav/files/",
+		FS:         davFS,
+		InstanceID: instanceID,
+	}
+	router.HandlePrefix(httpx.MethodAny, "/remote.php/dav/files/", webdav.BasicAuth(verifier)(davHandler))
 
 	srv := httpx.NewServer(httpx.ServerConfig{
 		Addr:    *addr,
