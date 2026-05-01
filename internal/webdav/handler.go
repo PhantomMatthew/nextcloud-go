@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -27,8 +28,11 @@ const (
 	HeaderOCFileID  = "OC-FileId"
 
 	davCompliance  = "1, 3, extended-mkcol"
-	allowedMethods = "OPTIONS, GET, HEAD, PROPFIND, PUT"
+	allowedMethods = "OPTIONS, GET, HEAD, PROPFIND, PUT, MKCOL, DELETE, MOVE, COPY"
 	contentTypeXML = "application/xml; charset=utf-8"
+
+	HeaderDestination = "Destination"
+	HeaderOverwrite   = "Overwrite"
 )
 
 type Handler struct {
@@ -59,6 +63,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.get(w, r, false)
 	case "PUT":
 		h.put(w, r)
+	case "MKCOL":
+		h.mkcol(w, r)
+	case "DELETE":
+		h.delete(w, r)
+	case "MOVE":
+		h.moveOrCopy(w, r, false)
+	case "COPY":
+		h.moveOrCopy(w, r, true)
 	default:
 		h.methodNotAllowed(w, r)
 	}
@@ -294,9 +306,179 @@ func writeFSError(w http.ResponseWriter, err error) {
 		http.Error(w, "Not Found", http.StatusNotFound)
 	case errors.Is(err, ErrForbidden):
 		http.Error(w, "Forbidden", http.StatusForbidden)
+	case errors.Is(err, ErrLocked):
+		http.Error(w, "Locked", http.StatusLocked)
+	case errors.Is(err, ErrExists):
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 	case errors.Is(err, ErrNotDir), errors.Is(err, ErrIsDir), errors.Is(err, ErrParentMissing):
 		http.Error(w, "Conflict", http.StatusConflict)
 	default:
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	}
+}
+
+func (h *Handler) mkcol(w http.ResponseWriter, r *http.Request) {
+	user, sub, ok := h.parsePath(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	principal, ok := auth.UserFromContext(r.Context())
+	if !ok || principal.UID != user {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	if r.ContentLength > 0 {
+		http.Error(w, "Unsupported Media Type", http.StatusUnsupportedMediaType)
+		return
+	}
+	if sub == "/" {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	entry, err := h.FS.Mkdir(r.Context(), user, sub)
+	if err != nil {
+		writeFSError(w, err)
+		return
+	}
+	w.Header().Set(HeaderOCETag, `"`+entry.ETag+`"`)
+	w.Header().Set(HeaderOCFileID, FileID(entry.NumericID, h.InstanceID))
+	w.Header().Set("Content-Length", "0")
+	w.WriteHeader(http.StatusCreated)
+}
+
+func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
+	user, sub, ok := h.parsePath(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	principal, ok := auth.UserFromContext(r.Context())
+	if !ok || principal.UID != user {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	if sub == "/" {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	if err := h.FS.Remove(r.Context(), user, sub); err != nil {
+		writeFSError(w, err)
+		return
+	}
+	w.Header().Set("Content-Length", "0")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) moveOrCopy(w http.ResponseWriter, r *http.Request, isCopy bool) {
+	srcUser, srcSub, ok := h.parsePath(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	principal, ok := auth.UserFromContext(r.Context())
+	if !ok || principal.UID != srcUser {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	if srcSub == "/" {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	dstUser, dstSub, derr := h.parseDestination(r)
+	if derr != nil {
+		http.Error(w, derr.Error(), http.StatusBadRequest)
+		return
+	}
+	if dstSub == "/" {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	if dstUser != srcUser {
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+
+	overwrite := parseOverwrite(r)
+
+	if isCopy {
+		depth := r.Header.Get(HeaderDepth)
+		depthInfinity := depth == "" || depth == "infinity"
+		entry, created, err := h.FS.Copy(r.Context(), srcUser, srcSub, dstUser, dstSub, overwrite, depthInfinity)
+		if err != nil {
+			writeMoveCopyErr(w, err)
+			return
+		}
+		emitMoveCopyHeaders(w, h.InstanceID, entry)
+		if created {
+			w.WriteHeader(http.StatusCreated)
+		} else {
+			w.WriteHeader(http.StatusNoContent)
+		}
+		return
+	}
+
+	entry, created, err := h.FS.Move(r.Context(), srcUser, srcSub, dstUser, dstSub, overwrite)
+	if err != nil {
+		writeMoveCopyErr(w, err)
+		return
+	}
+	emitMoveCopyHeaders(w, h.InstanceID, entry)
+	if created {
+		w.WriteHeader(http.StatusCreated)
+	} else {
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func emitMoveCopyHeaders(w http.ResponseWriter, instanceID string, entry *Entry) {
+	if entry == nil {
+		w.Header().Set("Content-Length", "0")
+		return
+	}
+	w.Header().Set(HeaderOCETag, `"`+entry.ETag+`"`)
+	w.Header().Set(HeaderOCFileID, FileID(entry.NumericID, instanceID))
+	w.Header().Set("Last-Modified", entry.ModTime.UTC().Format(http.TimeFormat))
+	w.Header().Set("Content-Length", "0")
+}
+
+func writeMoveCopyErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrExists):
+		http.Error(w, "Precondition Failed", http.StatusPreconditionFailed)
+	default:
+		writeFSError(w, err)
+	}
+}
+
+func (h *Handler) parseDestination(r *http.Request) (user, sub string, err error) {
+	raw := r.Header.Get(HeaderDestination)
+	if raw == "" {
+		return "", "", errors.New("missing Destination")
+	}
+	u, perr := url.Parse(raw)
+	if perr != nil {
+		return "", "", errors.New("invalid Destination")
+	}
+	p := u.Path
+	if p == "" {
+		return "", "", errors.New("invalid Destination path")
+	}
+	if !strings.HasPrefix(p, h.Prefix) {
+		return "", "", errors.New("Destination outside DAV namespace")
+	}
+	user, sub, ok := h.parsePath(p)
+	if !ok {
+		return "", "", errors.New("invalid Destination path")
+	}
+	return user, sub, nil
+}
+
+func parseOverwrite(r *http.Request) bool {
+	v := strings.ToUpper(strings.TrimSpace(r.Header.Get(HeaderOverwrite)))
+	if v == "" {
+		return true
+	}
+	return v == "T"
 }

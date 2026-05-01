@@ -131,12 +131,171 @@ func TestHandler_PROPFIND_UnknownPath(t *testing.T) {
 func TestHandler_MethodNotAllowed(t *testing.T) {
 	h := newTestHandler()
 	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
-	rr := doRequest(h, "DELETE", "/remote.php/dav/files/admin/foo.txt", p, nil)
+	rr := doRequest(h, "LOCK", "/remote.php/dav/files/admin/foo.txt", p, nil)
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rr.Code)
 	}
 	if got := rr.Header().Get("Allow"); got != allowedMethods {
 		t.Errorf("Allow header = %q, want %q", got, allowedMethods)
+	}
+}
+
+func TestHandler_MKCOL_Create(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	rr := doRequest(h, "MKCOL", "/remote.php/dav/files/admin/d1/", p, nil)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rr.Code)
+	}
+	if rr.Header().Get(HeaderOCETag) == "" {
+		t.Error("OC-ETag missing")
+	}
+	if !strings.HasSuffix(rr.Header().Get(HeaderOCFileID), "oc123abc") {
+		t.Errorf("OC-FileId = %q, want oc123abc suffix", rr.Header().Get(HeaderOCFileID))
+	}
+}
+
+func TestHandler_MKCOL_Conflict_Existing(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	_ = doRequest(h, "MKCOL", "/remote.php/dav/files/admin/d1/", p, nil)
+	rr := doRequest(h, "MKCOL", "/remote.php/dav/files/admin/d1/", p, nil)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rr.Code)
+	}
+}
+
+func TestHandler_MKCOL_ParentMissing(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	rr := doRequest(h, "MKCOL", "/remote.php/dav/files/admin/missing/sub/", p, nil)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", rr.Code)
+	}
+}
+
+func TestHandler_MKCOL_WithBody_415(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	rr := doRequestBody(h, "MKCOL", "/remote.php/dav/files/admin/d1/", p, nil, "<xml/>")
+	if rr.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("status = %d, want 415", rr.Code)
+	}
+}
+
+func TestHandler_MKCOL_NoAuth(t *testing.T) {
+	h := newTestHandler()
+	rr := doRequest(h, "MKCOL", "/remote.php/dav/files/admin/d1/", nil, nil)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+}
+
+func TestHandler_DELETE_File(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	_ = doRequestBody(h, "PUT", "/remote.php/dav/files/admin/x.txt", p, nil, "x")
+	rr := doRequest(h, "DELETE", "/remote.php/dav/files/admin/x.txt", p, nil)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+}
+
+func TestHandler_DELETE_NotFound(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	rr := doRequest(h, "DELETE", "/remote.php/dav/files/admin/missing.txt", p, nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rr.Code)
+	}
+}
+
+func TestHandler_DELETE_Root_Forbidden(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	rr := doRequest(h, "DELETE", "/remote.php/dav/files/admin/", p, nil)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+}
+
+func TestHandler_MOVE_File(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	_ = doRequestBody(h, "PUT", "/remote.php/dav/files/admin/a.txt", p, nil, "v")
+	rr := doRequest(h, "MOVE", "/remote.php/dav/files/admin/a.txt", p, map[string]string{
+		"Destination": "http://example.test/remote.php/dav/files/admin/b.txt",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rr.Code)
+	}
+	if rr.Header().Get(HeaderOCETag) == "" {
+		t.Error("OC-ETag missing")
+	}
+}
+
+func TestHandler_MOVE_OverwriteFalse_412(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	_ = doRequestBody(h, "PUT", "/remote.php/dav/files/admin/a.txt", p, nil, "v1")
+	_ = doRequestBody(h, "PUT", "/remote.php/dav/files/admin/b.txt", p, nil, "v2")
+	rr := doRequest(h, "MOVE", "/remote.php/dav/files/admin/a.txt", p, map[string]string{
+		"Destination": "http://example.test/remote.php/dav/files/admin/b.txt",
+		"Overwrite":   "F",
+	})
+	if rr.Code != http.StatusPreconditionFailed {
+		t.Fatalf("status = %d, want 412", rr.Code)
+	}
+}
+
+func TestHandler_MOVE_CrossUser_502(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	_ = doRequestBody(h, "PUT", "/remote.php/dav/files/admin/a.txt", p, nil, "v")
+	rr := doRequest(h, "MOVE", "/remote.php/dav/files/admin/a.txt", p, map[string]string{
+		"Destination": "http://example.test/remote.php/dav/files/bob/a.txt",
+	})
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rr.Code)
+	}
+}
+
+func TestHandler_MOVE_MissingDestination_400(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	_ = doRequestBody(h, "PUT", "/remote.php/dav/files/admin/a.txt", p, nil, "v")
+	rr := doRequest(h, "MOVE", "/remote.php/dav/files/admin/a.txt", p, nil)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+}
+
+func TestHandler_COPY_File(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	_ = doRequestBody(h, "PUT", "/remote.php/dav/files/admin/a.txt", p, nil, "v")
+	rr := doRequest(h, "COPY", "/remote.php/dav/files/admin/a.txt", p, map[string]string{
+		"Destination": "http://example.test/remote.php/dav/files/admin/b.txt",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rr.Code)
+	}
+	getRR := doRequest(h, "GET", "/remote.php/dav/files/admin/a.txt", p, nil)
+	if getRR.Code != http.StatusOK {
+		t.Errorf("source disappeared after COPY: status = %d", getRR.Code)
+	}
+}
+
+func TestHandler_COPY_Overwrite(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	_ = doRequestBody(h, "PUT", "/remote.php/dav/files/admin/a.txt", p, nil, "v1")
+	_ = doRequestBody(h, "PUT", "/remote.php/dav/files/admin/b.txt", p, nil, "v2")
+	rr := doRequest(h, "COPY", "/remote.php/dav/files/admin/a.txt", p, map[string]string{
+		"Destination": "http://example.test/remote.php/dav/files/admin/b.txt",
+	})
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
 	}
 }
 

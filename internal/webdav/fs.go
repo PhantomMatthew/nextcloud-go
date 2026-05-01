@@ -12,11 +12,13 @@ import (
 )
 
 var (
-	ErrNotFound       = errors.New("webdav: not found")
-	ErrNotDir         = errors.New("webdav: not a directory")
-	ErrIsDir          = errors.New("webdav: is a directory")
-	ErrForbidden      = errors.New("webdav: forbidden")
-	ErrParentMissing  = errors.New("webdav: parent collection missing")
+	ErrNotFound      = errors.New("webdav: not found")
+	ErrNotDir        = errors.New("webdav: not a directory")
+	ErrIsDir         = errors.New("webdav: is a directory")
+	ErrForbidden     = errors.New("webdav: forbidden")
+	ErrParentMissing = errors.New("webdav: parent collection missing")
+	ErrExists        = errors.New("webdav: target already exists")
+	ErrLocked        = errors.New("webdav: locked")
 )
 
 type Entry struct {
@@ -38,6 +40,10 @@ type FS interface {
 	List(ctx context.Context, user, path string) ([]*Entry, error)
 	Read(ctx context.Context, user, path string) (io.ReadCloser, *Entry, error)
 	Write(ctx context.Context, user, path string, r io.Reader, mtime *time.Time) (*Entry, bool, error)
+	Mkdir(ctx context.Context, user, path string) (*Entry, error)
+	Remove(ctx context.Context, user, path string) error
+	Move(ctx context.Context, srcUser, srcPath, dstUser, dstPath string, overwrite bool) (*Entry, bool, error)
+	Copy(ctx context.Context, srcUser, srcPath, dstUser, dstPath string, overwrite bool, depthInfinity bool) (*Entry, bool, error)
 }
 
 type InMemoryFS struct {
@@ -131,21 +137,261 @@ func (fs *InMemoryFS) Stat(_ context.Context, user, p string) (*Entry, error) {
 func (fs *InMemoryFS) List(_ context.Context, user, p string) ([]*Entry, error) {
 	t := fs.ensureUser(user)
 	np := normalizePath(p)
-	if np != "/" {
-		return nil, ErrNotFound
-	}
-	if !t.root.IsDir {
-		return nil, ErrNotDir
-	}
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
+	if np != "/" {
+		f, ok := t.files[np]
+		if !ok {
+			return nil, ErrNotFound
+		}
+		if !f.entry.IsDir {
+			return nil, ErrNotDir
+		}
+	}
 	out := make([]*Entry, 0, len(t.files))
 	for fp, f := range t.files {
-		if path.Dir(fp) == "/" {
+		if path.Dir(fp) == np {
 			out = append(out, f.entry)
 		}
 	}
 	return out, nil
+}
+
+func (fs *InMemoryFS) Mkdir(_ context.Context, user, p string) (*Entry, error) {
+	t := fs.ensureUser(user)
+	np := normalizePath(p)
+	if np == "/" {
+		return nil, ErrExists
+	}
+	parent := path.Dir(np)
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if _, exists := t.files[np]; exists {
+		return nil, ErrExists
+	}
+	if parent != "/" {
+		pf, ok := t.files[parent]
+		if !ok {
+			return nil, ErrParentMissing
+		}
+		if !pf.entry.IsDir {
+			return nil, ErrNotDir
+		}
+	}
+	id := fs.allocID()
+	mt := fs.clock().UTC()
+	entry := &Entry{
+		Path:        np,
+		IsDir:       true,
+		ModTime:     mt,
+		NumericID:   id,
+		Permissions: PermAll,
+		Shareable:   true,
+		ContentType: "httpd/unix-directory",
+	}
+	entry.ETag = ComputeETag(0, entry.ModTime, entry.Path)
+	t.files[np] = &fileNode{entry: entry}
+	return entry, nil
+}
+
+func (fs *InMemoryFS) Remove(_ context.Context, user, p string) error {
+	t := fs.ensureUser(user)
+	np := normalizePath(p)
+	if np == "/" {
+		return ErrForbidden
+	}
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	target, ok := t.files[np]
+	if !ok {
+		return ErrNotFound
+	}
+	if target.entry.IsDir {
+		prefix := np + "/"
+		for fp := range t.files {
+			if strings.HasPrefix(fp, prefix) {
+				delete(t.files, fp)
+			}
+		}
+	}
+	delete(t.files, np)
+	return nil
+}
+
+func (fs *InMemoryFS) Move(_ context.Context, srcUser, srcPath, dstUser, dstPath string, overwrite bool) (*Entry, bool, error) {
+	if srcUser != dstUser {
+		return nil, false, ErrForbidden
+	}
+	t := fs.ensureUser(srcUser)
+	src := normalizePath(srcPath)
+	dst := normalizePath(dstPath)
+	if src == "/" || dst == "/" {
+		return nil, false, ErrForbidden
+	}
+	if src == dst {
+		return nil, false, ErrForbidden
+	}
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	srcNode, ok := t.files[src]
+	if !ok {
+		return nil, false, ErrNotFound
+	}
+	if srcNode.entry.IsDir && strings.HasPrefix(dst+"/", src+"/") {
+		return nil, false, ErrForbidden
+	}
+
+	dstParent := path.Dir(dst)
+	if dstParent != "/" {
+		pf, ok := t.files[dstParent]
+		if !ok {
+			return nil, false, ErrParentMissing
+		}
+		if !pf.entry.IsDir {
+			return nil, false, ErrNotDir
+		}
+	}
+
+	created := true
+	if existing, exists := t.files[dst]; exists {
+		if !overwrite {
+			return nil, false, ErrExists
+		}
+		if existing.entry.IsDir {
+			prefix := dst + "/"
+			for fp := range t.files {
+				if strings.HasPrefix(fp, prefix) {
+					delete(t.files, fp)
+				}
+			}
+		}
+		delete(t.files, dst)
+		created = false
+	}
+
+	mt := fs.clock().UTC()
+	moveOne := func(oldPath, newPath string) {
+		node := t.files[oldPath]
+		delete(t.files, oldPath)
+		node.entry.Path = newPath
+		node.entry.ModTime = mt
+		size := node.entry.Size
+		node.entry.ETag = ComputeETag(size, mt, newPath)
+		t.files[newPath] = node
+	}
+
+	if srcNode.entry.IsDir {
+		oldPrefix := src + "/"
+		newPrefix := dst + "/"
+		var children []string
+		for fp := range t.files {
+			if strings.HasPrefix(fp, oldPrefix) {
+				children = append(children, fp)
+			}
+		}
+		moveOne(src, dst)
+		for _, oldChild := range children {
+			newChild := newPrefix + strings.TrimPrefix(oldChild, oldPrefix)
+			moveOne(oldChild, newChild)
+		}
+	} else {
+		moveOne(src, dst)
+	}
+	return t.files[dst].entry, created, nil
+}
+
+func (fs *InMemoryFS) Copy(_ context.Context, srcUser, srcPath, dstUser, dstPath string, overwrite bool, depthInfinity bool) (*Entry, bool, error) {
+	if srcUser != dstUser {
+		return nil, false, ErrForbidden
+	}
+	t := fs.ensureUser(srcUser)
+	src := normalizePath(srcPath)
+	dst := normalizePath(dstPath)
+	if src == "/" || dst == "/" {
+		return nil, false, ErrForbidden
+	}
+	if src == dst {
+		return nil, false, ErrForbidden
+	}
+
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	srcNode, ok := t.files[src]
+	if !ok {
+		return nil, false, ErrNotFound
+	}
+	if srcNode.entry.IsDir && strings.HasPrefix(dst+"/", src+"/") {
+		return nil, false, ErrForbidden
+	}
+
+	dstParent := path.Dir(dst)
+	if dstParent != "/" {
+		pf, ok := t.files[dstParent]
+		if !ok {
+			return nil, false, ErrParentMissing
+		}
+		if !pf.entry.IsDir {
+			return nil, false, ErrNotDir
+		}
+	}
+
+	created := true
+	if existing, exists := t.files[dst]; exists {
+		if !overwrite {
+			return nil, false, ErrExists
+		}
+		if existing.entry.IsDir {
+			prefix := dst + "/"
+			for fp := range t.files {
+				if strings.HasPrefix(fp, prefix) {
+					delete(t.files, fp)
+				}
+			}
+		}
+		delete(t.files, dst)
+		created = false
+	}
+
+	mt := fs.clock().UTC()
+	cloneOne := func(srcFP, dstFP string) {
+		orig := t.files[srcFP]
+		newEntry := *orig.entry
+		newEntry.Path = dstFP
+		newEntry.NumericID = fs.allocID()
+		newEntry.ModTime = mt
+		newEntry.ETag = ComputeETag(newEntry.Size, mt, dstFP)
+		var data []byte
+		if orig.data != nil {
+			data = make([]byte, len(orig.data))
+			copy(data, orig.data)
+		}
+		t.files[dstFP] = &fileNode{entry: &newEntry, data: data}
+	}
+
+	if srcNode.entry.IsDir {
+		cloneOne(src, dst)
+		if depthInfinity {
+			oldPrefix := src + "/"
+			newPrefix := dst + "/"
+			var children []string
+			for fp := range t.files {
+				if strings.HasPrefix(fp, oldPrefix) {
+					children = append(children, fp)
+				}
+			}
+			for _, oldChild := range children {
+				newChild := newPrefix + strings.TrimPrefix(oldChild, oldPrefix)
+				cloneOne(oldChild, newChild)
+			}
+		}
+	} else {
+		cloneOne(src, dst)
+	}
+	return t.files[dst].entry, created, nil
 }
 
 func (fs *InMemoryFS) Read(_ context.Context, user, p string) (io.ReadCloser, *Entry, error) {
