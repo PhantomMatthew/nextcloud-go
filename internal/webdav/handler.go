@@ -2,10 +2,12 @@ package webdav
 
 import (
 	"bytes"
-	"context"
 	"errors"
+	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
 )
@@ -13,14 +15,20 @@ import (
 const (
 	StatusMultiStatus = 207
 
-	HeaderDepth   = "Depth"
-	HeaderDAV     = "DAV"
-	HeaderAllow   = "Allow"
-	HeaderMSAuthor = "MS-Author-Via"
+	HeaderDepth     = "Depth"
+	HeaderDAV       = "DAV"
+	HeaderAllow     = "Allow"
+	HeaderMSAuthor  = "MS-Author-Via"
+	HeaderIfMatch   = "If-Match"
+	HeaderIfNoneMatch = "If-None-Match"
+	HeaderOCMtime   = "X-OC-Mtime"
+	HeaderOCChunked = "OC-Chunked"
+	HeaderOCETag    = "OC-ETag"
+	HeaderOCFileID  = "OC-FileId"
 
-	davCompliance    = "1, 3, extended-mkcol"
-	allowedMethods   = "OPTIONS, GET, HEAD, PROPFIND"
-	contentTypeXML   = "application/xml; charset=utf-8"
+	davCompliance  = "1, 3, extended-mkcol"
+	allowedMethods = "OPTIONS, GET, HEAD, PROPFIND, PUT"
+	contentTypeXML = "application/xml; charset=utf-8"
 )
 
 type Handler struct {
@@ -45,8 +53,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.options(w, r)
 	case "PROPFIND":
 		h.propfind(w, r)
-	case "GET", "HEAD":
-		h.notFound(w, r)
+	case "GET":
+		h.get(w, r, true)
+	case "HEAD":
+		h.get(w, r, false)
+	case "PUT":
+		h.put(w, r)
 	default:
 		h.methodNotAllowed(w, r)
 	}
@@ -105,8 +117,123 @@ func (h *Handler) propfind(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(buf.Bytes())
 }
 
-func (h *Handler) notFound(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "Not Found", http.StatusNotFound)
+func (h *Handler) get(w http.ResponseWriter, r *http.Request, writeBody bool) {
+	user, sub, ok := h.parsePath(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	principal, ok := auth.UserFromContext(r.Context())
+	if !ok || principal.UID != user {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	rc, entry, err := h.FS.Read(r.Context(), user, sub)
+	if err != nil {
+		writeFSError(w, err)
+		return
+	}
+	defer rc.Close()
+
+	w.Header().Set("Content-Type", entry.ContentType)
+	w.Header().Set("Content-Length", strconv.FormatInt(entry.Size, 10))
+	w.Header().Set("Last-Modified", entry.ModTime.UTC().Format(http.TimeFormat))
+	w.Header().Set("ETag", `"`+entry.ETag+`"`)
+	w.Header().Set(HeaderOCETag, `"`+entry.ETag+`"`)
+	w.Header().Set(HeaderOCFileID, FileID(entry.NumericID, h.InstanceID))
+
+	if !writeBody {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, rc)
+}
+
+func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
+	user, sub, ok := h.parsePath(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	principal, ok := auth.UserFromContext(r.Context())
+	if !ok || principal.UID != user {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	if r.Header.Get(HeaderOCChunked) != "" {
+		http.Error(w, "Not Implemented", http.StatusNotImplemented)
+		return
+	}
+
+	existing, statErr := h.FS.Stat(r.Context(), user, sub)
+	if statErr != nil && !errors.Is(statErr, ErrNotFound) {
+		writeFSError(w, statErr)
+		return
+	}
+	exists := statErr == nil
+
+	if ifMatch := r.Header.Get(HeaderIfMatch); ifMatch != "" {
+		if !exists || !etagMatches(ifMatch, existing.ETag) {
+			http.Error(w, "Precondition Failed", http.StatusPreconditionFailed)
+			return
+		}
+	}
+	if inm := r.Header.Get(HeaderIfNoneMatch); inm != "" {
+		if inm == "*" && exists {
+			http.Error(w, "Precondition Failed", http.StatusPreconditionFailed)
+			return
+		}
+		if exists && etagMatches(inm, existing.ETag) {
+			http.Error(w, "Precondition Failed", http.StatusPreconditionFailed)
+			return
+		}
+	}
+
+	var mtimePtr *time.Time
+	mtimeAccepted := false
+	if v := r.Header.Get(HeaderOCMtime); v != "" {
+		secs, err := strconv.ParseInt(v, 10, 64)
+		if err == nil {
+			t := time.Unix(secs, 0).UTC()
+			mtimePtr = &t
+			mtimeAccepted = true
+		}
+	}
+
+	body := r.Body
+	defer body.Close()
+	data, err := io.ReadAll(body)
+	if err != nil {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+	if r.ContentLength >= 0 && int64(len(data)) != r.ContentLength {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+
+	entry, created, err := h.FS.Write(r.Context(), user, sub, bytes.NewReader(data), mtimePtr)
+	if err != nil {
+		writeFSError(w, err)
+		return
+	}
+
+	w.Header().Set("ETag", `"`+entry.ETag+`"`)
+	w.Header().Set(HeaderOCETag, `"`+entry.ETag+`"`)
+	w.Header().Set(HeaderOCFileID, FileID(entry.NumericID, h.InstanceID))
+	w.Header().Set("Last-Modified", entry.ModTime.UTC().Format(http.TimeFormat))
+	w.Header().Set("Content-Length", "0")
+	if mtimeAccepted {
+		w.Header().Set(HeaderOCMtime, "accepted")
+	}
+	if created {
+		w.WriteHeader(http.StatusCreated)
+	} else {
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 func (h *Handler) methodNotAllowed(w http.ResponseWriter, _ *http.Request) {
@@ -149,16 +276,27 @@ func normalizeDepth(d string) string {
 	return "1"
 }
 
+func etagMatches(header, etag string) bool {
+	for _, raw := range strings.Split(header, ",") {
+		v := strings.TrimSpace(raw)
+		v = strings.TrimPrefix(v, "W/")
+		v = strings.Trim(v, `"`)
+		if v == etag || v == "*" {
+			return true
+		}
+	}
+	return false
+}
+
 func writeFSError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrNotFound):
 		http.Error(w, "Not Found", http.StatusNotFound)
 	case errors.Is(err, ErrForbidden):
 		http.Error(w, "Forbidden", http.StatusForbidden)
-	case errors.Is(err, ErrNotDir):
+	case errors.Is(err, ErrNotDir), errors.Is(err, ErrIsDir), errors.Is(err, ErrParentMissing):
 		http.Error(w, "Conflict", http.StatusConflict)
 	default:
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	}
-	_ = context.Canceled
 }

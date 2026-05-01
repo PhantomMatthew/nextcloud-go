@@ -5,11 +5,26 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
 )
+
+func doRequestBody(h *Handler, method, target string, principal *auth.Principal, headers map[string]string, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, target, strings.NewReader(body))
+	req.ContentLength = int64(len(body))
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	if principal != nil {
+		req = req.WithContext(auth.WithUser(context.Background(), principal))
+	}
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	return rr
+}
 
 func newTestHandler() *Handler {
 	return NewHandler("/remote.php/dav/files/", NewInMemoryFS(), "oc123abc")
@@ -116,7 +131,7 @@ func TestHandler_PROPFIND_UnknownPath(t *testing.T) {
 func TestHandler_MethodNotAllowed(t *testing.T) {
 	h := newTestHandler()
 	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
-	rr := doRequest(h, "PUT", "/remote.php/dav/files/admin/foo.txt", p, nil)
+	rr := doRequest(h, "DELETE", "/remote.php/dav/files/admin/foo.txt", p, nil)
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rr.Code)
 	}
@@ -125,12 +140,130 @@ func TestHandler_MethodNotAllowed(t *testing.T) {
 	}
 }
 
-func TestHandler_GET_NotImplemented(t *testing.T) {
+func TestHandler_GET_NotFound(t *testing.T) {
 	h := newTestHandler()
 	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
-	rr := doRequest(h, "GET", "/remote.php/dav/files/admin/foo.txt", p, nil)
+	rr := doRequest(h, "GET", "/remote.php/dav/files/admin/missing.txt", p, nil)
 	if rr.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404 (no file content yet)", rr.Code)
+		t.Fatalf("status = %d, want 404", rr.Code)
+	}
+}
+
+func TestHandler_PUT_Create(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	rr := doRequestBody(h, "PUT", "/remote.php/dav/files/admin/foo.txt", p, nil, "hello")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rr.Code)
+	}
+	if rr.Header().Get("ETag") == "" {
+		t.Error("ETag header missing")
+	}
+	if rr.Header().Get(HeaderOCETag) == "" {
+		t.Error("OC-ETag header missing")
+	}
+	if !strings.HasSuffix(rr.Header().Get(HeaderOCFileID), "oc123abc") {
+		t.Errorf("OC-FileId = %q, want suffix oc123abc", rr.Header().Get(HeaderOCFileID))
+	}
+}
+
+func TestHandler_PUT_Update(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	_ = doRequestBody(h, "PUT", "/remote.php/dav/files/admin/foo.txt", p, nil, "v1")
+	rr := doRequestBody(h, "PUT", "/remote.php/dav/files/admin/foo.txt", p, nil, "v2-updated")
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+}
+
+func TestHandler_PUT_ParentMissing(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	rr := doRequestBody(h, "PUT", "/remote.php/dav/files/admin/nodir/foo.txt", p, nil, "x")
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", rr.Code)
+	}
+}
+
+func TestHandler_PUT_IfNoneMatchStarOnExisting(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	_ = doRequestBody(h, "PUT", "/remote.php/dav/files/admin/foo.txt", p, nil, "v1")
+	rr := doRequestBody(h, "PUT", "/remote.php/dav/files/admin/foo.txt", p, map[string]string{HeaderIfNoneMatch: "*"}, "v2")
+	if rr.Code != http.StatusPreconditionFailed {
+		t.Fatalf("status = %d, want 412", rr.Code)
+	}
+}
+
+func TestHandler_PUT_IfMatchMismatch(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	_ = doRequestBody(h, "PUT", "/remote.php/dav/files/admin/foo.txt", p, nil, "v1")
+	rr := doRequestBody(h, "PUT", "/remote.php/dav/files/admin/foo.txt", p, map[string]string{HeaderIfMatch: `"deadbeef"`}, "v2")
+	if rr.Code != http.StatusPreconditionFailed {
+		t.Fatalf("status = %d, want 412", rr.Code)
+	}
+}
+
+func TestHandler_PUT_OCChunkedNotImplemented(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	rr := doRequestBody(h, "PUT", "/remote.php/dav/files/admin/foo.txt", p, map[string]string{HeaderOCChunked: "1"}, "x")
+	if rr.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501", rr.Code)
+	}
+}
+
+func TestHandler_PUT_XOCMtimeAccepted(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	rr := doRequestBody(h, "PUT", "/remote.php/dav/files/admin/foo.txt", p, map[string]string{HeaderOCMtime: "1700000000"}, "x")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rr.Code)
+	}
+	if got := rr.Header().Get(HeaderOCMtime); got != "accepted" {
+		t.Errorf("X-OC-Mtime = %q, want accepted", got)
+	}
+}
+
+func TestHandler_GET_AfterPUT(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	body := "round-trip-content"
+	putRR := doRequestBody(h, "PUT", "/remote.php/dav/files/admin/r.txt", p, nil, body)
+	if putRR.Code != http.StatusCreated {
+		t.Fatalf("PUT status = %d, want 201", putRR.Code)
+	}
+
+	rr := doRequest(h, "GET", "/remote.php/dav/files/admin/r.txt", p, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200", rr.Code)
+	}
+	if rr.Body.String() != body {
+		t.Errorf("body = %q, want %q", rr.Body.String(), body)
+	}
+	if got := rr.Header().Get("Content-Length"); got != strconv.Itoa(len(body)) {
+		t.Errorf("Content-Length = %q, want %d", got, len(body))
+	}
+	if rr.Header().Get("ETag") != putRR.Header().Get("ETag") {
+		t.Errorf("ETag mismatch GET=%q PUT=%q", rr.Header().Get("ETag"), putRR.Header().Get("ETag"))
+	}
+}
+
+func TestHandler_HEAD_AfterPUT(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	_ = doRequestBody(h, "PUT", "/remote.php/dav/files/admin/r.txt", p, nil, "abc")
+	rr := doRequest(h, "HEAD", "/remote.php/dav/files/admin/r.txt", p, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if rr.Body.Len() != 0 {
+		t.Errorf("HEAD body length = %d, want 0", rr.Body.Len())
+	}
+	if rr.Header().Get("ETag") == "" {
+		t.Error("ETag header missing on HEAD")
 	}
 }
 
