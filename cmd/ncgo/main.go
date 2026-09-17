@@ -2,182 +2,104 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"flag"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
-	"github.com/PhantomMatthew/nextcloud-go/internal/capabilities"
-	"github.com/PhantomMatthew/nextcloud-go/internal/httpx"
-	"github.com/PhantomMatthew/nextcloud-go/internal/login"
+	"github.com/spf13/cobra"
+
+	"github.com/PhantomMatthew/nextcloud-go/internal/app"
+	"github.com/PhantomMatthew/nextcloud-go/internal/config"
 	"github.com/PhantomMatthew/nextcloud-go/internal/observability"
-	"github.com/PhantomMatthew/nextcloud-go/internal/ocs"
-	"github.com/PhantomMatthew/nextcloud-go/internal/status"
-	"github.com/PhantomMatthew/nextcloud-go/internal/web"
-	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
 )
 
-type appPasswordIssuer struct {
-	store  auth.Store
-	secret string
-}
-
-func (a *appPasswordIssuer) Issue(r *http.Request, principal *auth.Principal) (string, error) {
-	name := r.Header.Get("User-Agent")
-	if name == "" {
-		name = "unknown client"
-	}
-	raw, _, err := auth.IssueAppPassword(
-		r.Context(),
-		a.store,
-		a.secret,
-		principal.UID,
-		principal.UID,
-		name,
-		auth.TokenTypePermanent,
-	)
-	return raw, err
-}
-
-func (a *appPasswordIssuer) Revoke(r *http.Request, _ *auth.Principal, raw string) error {
-	return auth.RevokeAppPassword(r.Context(), a.store, a.secret, raw)
-}
-
-func loadSecret(logger *slog.Logger) string {
-	if s := os.Getenv("NCGO_SECRET"); s != "" {
-		return s
-	}
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		logger.Error("failed to generate ephemeral secret", slog.Any("error", err))
-		os.Exit(1)
-	}
-	logger.Warn("NCGO_SECRET not set; generated ephemeral secret (tokens will not survive restart)")
-	return hex.EncodeToString(buf)
-}
-
-func loadInstanceID(logger *slog.Logger) string {
-	if s := os.Getenv("NCGO_INSTANCE_ID"); s != "" {
-		return s
-	}
-	buf := make([]byte, 5)
-	if _, err := rand.Read(buf); err != nil {
-		logger.Error("failed to generate ephemeral instance id", slog.Any("error", err))
-		os.Exit(1)
-	}
-	logger.Warn("NCGO_INSTANCE_ID not set; generated ephemeral instance id (file ids will not survive restart)")
-	return "oc" + hex.EncodeToString(buf)
-}
-
 func main() {
-	if len(os.Args) >= 2 && (os.Args[1] == "version" || os.Args[1] == "--version" || os.Args[1] == "-v") {
-		fmt.Printf("ncgo %s (commit %s, built %s)\n",
-			observability.Version, observability.Commit, observability.BuildDate)
-		return
-	}
-
-	addr := flag.String("addr", "127.0.0.1:8080", "listen address")
-	flag.Parse()
-
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-
-	if err := run(*addr, logger); err != nil {
-		logger.Error("server exited with error", slog.Any("error", err))
+	if err := newRoot().Execute(); err != nil {
 		os.Exit(1)
 	}
 }
 
-func run(addr string, logger *slog.Logger) error {
-	maintenance := httpx.MaintenanceFunc(func() bool { return false })
+func newRoot() *cobra.Command {
+	root := &cobra.Command{
+		Use:           "ncgo",
+		Short:         "nextcloud-go server",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+	root.AddCommand(newServe(), newVersion())
+	return root
+}
 
-	csrfCfg := httpx.CSRFConfig{
-		PathBypass: []string{
-			"/index.php/login/v2",
-			"/index.php/login/v2/poll",
-			"/index.php/login/v2/grant",
-			"/remote.php/dav/",
+func newVersion() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print version",
+		Run: func(cmd *cobra.Command, _ []string) {
+			fmt.Fprintf(cmd.OutOrStdout(), "ncgo %s (commit %s, built %s)\n",
+				observability.Version, observability.Commit, observability.BuildDate)
 		},
 	}
+}
 
-	baseChain := []httpx.Middleware{
-		httpx.Recover(logger),
-		httpx.RequestID(),
-		httpx.Logging(logger),
-		httpx.SecurityHeaders(httpx.DefaultSecurityHeaders()),
-		httpx.Maintenance(maintenance),
-		httpx.CSRF(csrfCfg),
+func newServe() *cobra.Command {
+	var (
+		cfgPath string
+		addr    string
+		dev     bool
+	)
+	cmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Run the HTTP server",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			var (
+				cfg *config.Config
+				err error
+			)
+			if dev {
+				cfg = app.DevConfig()
+			} else {
+				cfg, err = config.Load(config.LoadOptions{Path: cfgPath})
+				if err != nil {
+					return err
+				}
+			}
+			if addr != "" {
+				cfg.Server.Listen = addr
+			}
+			logger := newLogger(cfg)
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			a, err := app.New(ctx, cfg, logger)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = a.Close(ctx) }()
+			return a.Run(ctx)
+		},
 	}
+	cmd.Flags().StringVar(&cfgPath, "config", "", "path to YAML config")
+	cmd.Flags().StringVar(&addr, "addr", "", "listen address override")
+	cmd.Flags().BoolVar(&dev, "dev", false, "in-memory SQLite with bootstrap admin")
+	return cmd
+}
 
-	router := httpx.NewRouter(baseChain...)
-
-	statusHandler := status.Provider{}.Handler()
-	for _, m := range []string{"GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"} {
-		router.Handle(m, "/status.php", statusHandler)
+func newLogger(cfg *config.Config) *slog.Logger {
+	var level slog.Level
+	switch cfg.Observability.LogLevel {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
 	}
-
-	capManager := capabilities.NewManager()
-	capManager.Register(capabilities.DefaultCoreProvider())
-	capHandler := capabilities.Handler{Manager: capManager}
-	for _, m := range []string{"GET", "HEAD"} {
-		router.Handle(m, "/ocs/v1.php/cloud/capabilities", capHandler.ServeOCS(ocs.V1))
-		router.Handle(m, "/ocs/v2.php/cloud/capabilities", capHandler.ServeOCS(ocs.V2))
+	opts := &slog.HandlerOptions{Level: level}
+	if cfg.Observability.LogFormat == "text" {
+		return slog.New(slog.NewTextHandler(os.Stderr, opts))
 	}
-
-	secret := loadSecret(logger)
-	tokenStore := auth.NewMemoryStore()
-	staticVerifier := auth.NewStaticVerifier("admin", "admin", "admin")
-	appPasswordVerifier := auth.NewAppPasswordVerifier(tokenStore, secret)
-	verifier := auth.NewChainVerifier(appPasswordVerifier, staticVerifier)
-	issuer := &appPasswordIssuer{store: tokenStore, secret: secret}
-
-	for _, m := range []string{"GET", "HEAD"} {
-		router.Handle(m, "/ocs/v1.php/cloud/user", ocs.CloudUserHandler(ocs.V1), httpx.Middleware(ocs.BasicAuth(ocs.V1, verifier)))
-		router.Handle(m, "/ocs/v2.php/cloud/user", ocs.CloudUserHandler(ocs.V2), httpx.Middleware(ocs.BasicAuth(ocs.V2, verifier)))
-	}
-
-	for _, m := range []string{"GET", "HEAD"} {
-		router.Handle(m, "/ocs/v1.php/core/getapppassword", ocs.GetAppPasswordHandler(ocs.V1, issuer), httpx.Middleware(ocs.BasicAuth(ocs.V1, verifier)))
-		router.Handle(m, "/ocs/v2.php/core/getapppassword", ocs.GetAppPasswordHandler(ocs.V2, issuer), httpx.Middleware(ocs.BasicAuth(ocs.V2, verifier)))
-	}
-
-	router.Handle("DELETE", "/ocs/v1.php/core/apppassword", ocs.DeleteAppPasswordHandler(ocs.V1, issuer), httpx.Middleware(ocs.BasicAuth(ocs.V1, verifier)))
-	router.Handle("DELETE", "/ocs/v2.php/core/apppassword", ocs.DeleteAppPasswordHandler(ocs.V2, issuer), httpx.Middleware(ocs.BasicAuth(ocs.V2, verifier)))
-
-	loginStore := login.NewMemoryStore()
-	loginStore.StartGC(0)
-	defer loginStore.Close()
-	loginSvc := login.NewService(loginStore)
-	lv2 := web.NewLoginV2(loginSvc, verifier, issuer)
-
-	router.Handle(http.MethodPost, "/index.php/login/v2", http.HandlerFunc(lv2.HandleInit))
-	router.Handle(http.MethodPost, "/index.php/login/v2/poll", http.HandlerFunc(lv2.HandlePoll))
-	router.HandlePrefix(http.MethodGet, "/index.php/login/v2/flow/", http.HandlerFunc(lv2.HandleFlowToken))
-	router.Handle(http.MethodGet, "/index.php/login/v2/flow", http.HandlerFunc(lv2.HandlePicker))
-	router.Handle(http.MethodPost, "/index.php/login/v2/grant", http.HandlerFunc(lv2.HandleGrant))
-
-	instanceID := loadInstanceID(logger)
-	davFS := webdav.NewInMemoryFS()
-	davHandler := &webdav.Handler{
-		Prefix:     "/remote.php/dav/files/",
-		FS:         davFS,
-		InstanceID: instanceID,
-	}
-	router.HandlePrefix(httpx.MethodAny, "/remote.php/dav/files/", webdav.BasicAuth(verifier)(davHandler))
-
-	srv := httpx.NewServer(httpx.ServerConfig{
-		Addr:    addr,
-		Handler: router,
-		Logger:  logger,
-	})
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	return srv.Run(ctx)
+	return slog.New(slog.NewJSONHandler(os.Stderr, opts))
 }

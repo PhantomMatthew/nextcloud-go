@@ -3,5 +3,5 @@ Host: cloud.example.com
 User-Agent: ncgo-goldentest/0.0
 Accept: */*
 OCS-APIRequest: true
-Authorization: Basic dGVzdHVzZXI6cGFzc3dvcmQ=
+Authorization: Basic YWRtaW46YWRtaW4=
 

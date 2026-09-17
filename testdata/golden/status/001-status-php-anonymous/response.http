@@ -1,6 +1,5 @@
 HTTP/1.1 200 OK
 Server: nginx
-Content-Type: application/json; charset=utf-8
-Content-Length: 170
+Content-Type: application/json
 
-{"installed":true,"maintenance":false,"needsDbUpgrade":false,"version":"29.0.0.0","versionstring":"29.0.0","edition":"","productname":"Nextcloud","extendedSupport":false}
+{"installed":true,"maintenance":false,"needsDbUpgrade":false,"version":"26.0.0.6","versionstring":"26.0.0 beta 4","edition":"","productname":"Nextcloud","extendedSupport":false}

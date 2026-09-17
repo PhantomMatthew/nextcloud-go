@@ -43,3 +43,21 @@ func TestReferenceCaseParses(t *testing.T) {
 		t.Fatal("Content-Type header missing")
 	}
 }
+
+func TestDiscover(t *testing.T) {
+	root := filepath.Join(repoRoot(t), "testdata", "golden")
+	dirs, err := goldentest.Discover(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dirs) < 6 {
+		t.Fatalf("dirs = %d", len(dirs))
+	}
+	c, err := goldentest.Load(dirs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ID == "" {
+		t.Fatal("empty id")
+	}
+}

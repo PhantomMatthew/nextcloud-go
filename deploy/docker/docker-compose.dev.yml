@@ -1,6 +1,6 @@
 # Development stack for ncgo.
-# Brings up postgres + redis + ncgo with hot config reload.
 # Usage: make dev-up
+# Capture profile: make capture-up
 
 services:
   postgres:
@@ -35,16 +35,55 @@ services:
       postgres: { condition: service_healthy }
       redis:    { condition: service_healthy }
     environment:
-      NCGO_DB_DRIVER: postgres
-      NCGO_DB_DSN: postgres://ncgo:ncgo@postgres:5432/ncgo?sslmode=disable
-      NCGO_CACHE_DRIVER: redis
-      NCGO_CACHE_DSN: redis://redis:6379/0
-      NCGO_HTTP_LISTEN: ":8080"
-      NCGO_LOG_LEVEL: debug
+      NCGO_DATABASE__DRIVER: postgres
+      NCGO_DATABASE__DSN: postgres://ncgo:ncgo@postgres:5432/ncgo?sslmode=disable
+      NCGO_CACHE__REDIS_ADDR: redis:6379
+      NCGO_SERVER__LISTEN: ":8080"
+      NCGO_OBSERVABILITY__LOG_LEVEL: debug
     ports: ["8080:8080"]
     volumes:
       - ncgodata:/var/lib/ncgo
 
+  mysql:
+    profiles: [capture]
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: ncgo
+      MYSQL_DATABASE: ncgo
+      MYSQL_USER: ncgo
+      MYSQL_PASSWORD: ncgo
+    ports: ["3306:3306"]
+
+  minio:
+    profiles: [capture]
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ncgo
+      MINIO_ROOT_PASSWORD: ncgo-minio
+    ports: ["9000:9000", "9001:9001"]
+
+  reference-nextcloud:
+    profiles: [capture]
+    image: nextcloud:29-apache
+    environment:
+      SQLITE_DATABASE: nextcloud
+      NEXTCLOUD_ADMIN_USER: admin
+      NEXTCLOUD_ADMIN_PASSWORD: admin
+    ports: ["8081:80"]
+
+  mitmproxy:
+    profiles: [capture]
+    image: mitmproxy/mitmproxy:latest
+    command: mitmdump -s /addons/mitmproxy_har.py --set capture_dir=/captures
+    environment:
+      CAPTURE_SCENARIO: untitled
+    ports: ["8082:8080"]
+    volumes:
+      - ../../tools/capture:/addons:ro
+      - captures:/captures
+
 volumes:
   pgdata:
   ncgodata:
+  captures:

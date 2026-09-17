@@ -81,6 +81,14 @@ verify: ## go mod verify + tidy diff check
 example-plugin: ## Build examples/hello-plugin with TinyGo (optional)
 	tinygo build -o examples/hello-plugin/hello.wasm -target=wasm-unknown -no-debug ./examples/hello-plugin
 
+.PHONY: capture-up
+capture-up: ## Start capture profile (mysql, minio, reference-nextcloud, mitmproxy)
+	docker compose -f deploy/docker/docker-compose.dev.yml --profile capture up -d
+
+.PHONY: capture-down
+capture-down:
+	docker compose -f deploy/docker/docker-compose.dev.yml --profile capture down -v
+
 .PHONY: docker
 docker: ## Build production OCI image
 	docker build -t ncgo:dev .

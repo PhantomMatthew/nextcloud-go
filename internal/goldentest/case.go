@@ -33,13 +33,17 @@ func Load(dir string) (*Case, error) {
 	if _, err := os.Stat(filepath.Join(abs, "case.yaml")); err != nil {
 		return nil, fmt.Errorf("goldentest: stat case.yaml: %w", err)
 	}
-	return &Case{
+	c := &Case{
 		ID:            filepath.Base(abs),
 		SchemaVersion: SchemaVersion,
 		Dir:           abs,
 		RequestRaw:    reqRaw,
 		ResponseRaw:   respRaw,
-	}, nil
+	}
+	if err := applyYAML(c, abs); err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 func ParseRequest(raw []byte) (*ParsedRequest, error) {

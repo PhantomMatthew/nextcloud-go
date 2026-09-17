@@ -1,6 +1,7 @@
 package goldentest
 
 import (
+	"bytes"
 	"net/http"
 	"sort"
 	"strings"
@@ -18,6 +19,12 @@ func Normalize(c *Case, parsed *ParsedResponse) (*ParsedResponse, error) {
 	for _, rule := range c.Response.Normalize {
 		applyHeaderRules(out.Headers, rule)
 	}
+	if ct := out.Headers.Get("Content-Type"); ct != "" {
+		if i := strings.Index(ct, ";"); i >= 0 {
+			out.Headers.Set("Content-Type", strings.TrimSpace(ct[:i]))
+		}
+	}
+	out.Body = bytes.TrimRight(out.Body, "\r\n")
 	return out, nil
 }
 

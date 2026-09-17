@@ -1,0 +1,205 @@
+// Package app wires configuration, storage, and HTTP routes into a process.
+package app
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
+	"github.com/PhantomMatthew/nextcloud-go/internal/cache"
+	"github.com/PhantomMatthew/nextcloud-go/internal/config"
+	"github.com/PhantomMatthew/nextcloud-go/internal/database"
+	"github.com/PhantomMatthew/nextcloud-go/internal/httpx"
+	"github.com/PhantomMatthew/nextcloud-go/internal/login"
+	"github.com/PhantomMatthew/nextcloud-go/internal/migrations"
+	"github.com/PhantomMatthew/nextcloud-go/internal/plugins"
+	"github.com/PhantomMatthew/nextcloud-go/internal/users"
+)
+
+// App is the wired server process.
+type App struct {
+	Cfg        *config.Config
+	Logger     *slog.Logger
+	DB         database.DB
+	Cache      cache.Cache
+	Users      users.Store
+	Router     *httpx.Router
+	PluginHost *plugins.Host
+
+	hasher     auth.PasswordHasher
+	authStore  auth.Store
+	loginStore login.Store
+	secret     string
+	instanceID string
+	memCache   *cache.Memory
+	redisCache *cache.Redis
+}
+
+// New opens dependencies and mounts routes.
+func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("app: nil config")
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	a := &App{Cfg: cfg, Logger: logger}
+	db, err := database.Open(ctx, database.Config{
+		Driver:          database.Dialect(cfg.Database.Driver),
+		DSN:             cfg.Database.DSN,
+		MaxOpenConns:    cfg.Database.MaxOpenConns,
+		MaxIdleConns:    cfg.Database.MaxIdleConns,
+		ConnMaxLifetime: cfg.Database.ConnMaxLifetime,
+	})
+	if err != nil {
+		return nil, err
+	}
+	a.DB = db
+	std, ok := database.Unwrap(db)
+	if !ok {
+		_ = db.Close()
+		return nil, fmt.Errorf("app: unwrap db")
+	}
+	if cfg.Database.AutoMigrate {
+		if _, err := migrations.Up(ctx, std, db.Dialect(), logger); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
+	a.hasher = auth.NewArgon2id(auth.Argon2idParams{
+		MemoryKB:    cfg.Auth.Argon2id.MemoryKB,
+		Iterations:  cfg.Auth.Argon2id.Iterations,
+		Parallelism: cfg.Auth.Argon2id.Parallelism,
+	})
+	a.Users = users.NewSQLStore(db)
+	a.authStore = auth.NewSQLStore(db)
+	a.loginStore = login.NewSQLStore(db)
+	if err := users.EnsureBootstrapAdmin(ctx, a.Users, a.hasher, users.BootstrapAdmin{
+		UID:         cfg.Auth.BootstrapAdmin.UID,
+		Password:    cfg.Auth.BootstrapAdmin.Password,
+		DisplayName: cfg.Auth.BootstrapAdmin.DisplayName,
+	}, logger); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	mem, err := cache.NewMemory(cache.MemoryConfig{
+		MaxItems:     cfg.Cache.L1MaxItems,
+		MaxCostBytes: int64(cfg.Cache.L1MaxCostMB) * 1024 * 1024,
+	})
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	a.memCache = mem
+	if cfg.Cache.RedisAddr != "" {
+		r, err := cache.NewRedis(cache.RedisConfig{
+			Addr:     cfg.Cache.RedisAddr,
+			Password: cfg.Cache.RedisPassword,
+			DB:       cfg.Cache.RedisDB,
+		})
+		if err != nil {
+			mem.Close()
+			_ = db.Close()
+			return nil, err
+		}
+		a.redisCache = r
+		a.Cache = cache.NewTiered(mem, r)
+	} else {
+		a.Cache = mem
+	}
+	if cfg.Plugin.Enabled {
+		ph, err := plugins.NewHost(ctx, plugins.HostConfig{
+			DefaultMemoryLimitMB: cfg.Plugin.DefaultMemoryLimitMB,
+			DefaultCallTimeout:   time.Duration(cfg.Plugin.DefaultCPUTimeoutMS) * time.Millisecond,
+		}, logger)
+		if err != nil {
+			if cerr := a.closeResources(ctx); cerr != nil {
+				return nil, errors.Join(err, cerr)
+			}
+			return nil, err
+		}
+		a.PluginHost = ph
+	}
+	a.secret = cfg.Instance.Secret
+	if a.secret == "" {
+		a.secret = randomHex(logger, 32, "NCGO_SECRET / instance.secret")
+	}
+	a.instanceID = cfg.Instance.ID
+	if a.instanceID == "" {
+		a.instanceID = "oc" + randomHex(logger, 5, "NCGO_INSTANCE_ID / instance.id")
+	}
+	if err := a.mountRoutes(); err != nil {
+		if cerr := a.closeResources(ctx); cerr != nil {
+			return nil, errors.Join(err, cerr)
+		}
+		return nil, err
+	}
+	return a, nil
+}
+
+func randomHex(logger *slog.Logger, n int, what string) string {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		logger.Error("failed to generate secret material", slog.String("what", what), slog.Any("error", err))
+		return hex.EncodeToString(make([]byte, n))
+	}
+	logger.Warn("generated ephemeral secret material", slog.String("what", what))
+	return hex.EncodeToString(buf)
+}
+
+// Handler returns the HTTP handler.
+func (a *App) Handler() http.Handler {
+	return a.Router
+}
+
+// Run serves HTTP until ctx is done.
+func (a *App) Run(ctx context.Context) error {
+	srv := httpx.NewServer(httpx.ServerConfig{
+		Addr:    a.Cfg.Server.Listen,
+		Handler: a.Router,
+		Logger:  a.Logger,
+	})
+	return srv.Run(ctx)
+}
+
+// Close releases dependencies in reverse order.
+func (a *App) Close(ctx context.Context) error {
+	return a.closeResources(ctx)
+}
+
+func (a *App) closeResources(ctx context.Context) error {
+	var err error
+	if a.PluginHost != nil {
+		err = a.PluginHost.Close(ctx)
+		a.PluginHost = nil
+	}
+	if a.redisCache != nil {
+		err = joinErr(err, a.redisCache.Close())
+		a.redisCache = nil
+	}
+	if a.memCache != nil {
+		a.memCache.Close()
+		a.memCache = nil
+	}
+	if a.DB != nil {
+		err = joinErr(err, a.DB.Close())
+		a.DB = nil
+	}
+	return err
+}
+
+func joinErr(a, b error) error {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	return errors.Join(a, b)
+}
