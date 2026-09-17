@@ -23,7 +23,8 @@ coverage.txt
 .env.local
 config.local.yaml
 data/
-storage/
+# Local runtime data directory (not the Go package)
+/storage/
 
 # Build artifacts
 /cmd/ncgo/ncgo
