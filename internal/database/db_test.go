@@ -115,7 +115,7 @@ func exerciseDB(t *testing.T, db DB) {
 		t.Fatalf("ping: %v", err)
 	}
 
-	if _, err := db.Exec(ctx, `CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)`); err != nil {
+	if _, err := db.Exec(ctx, `CREATE TABLE items (id INTEGER PRIMARY KEY, name VARCHAR(255) NOT NULL UNIQUE)`); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if _, err := db.Exec(ctx, `INSERT INTO items (id, name) VALUES (?, ?)`, 1, "alpha"); err != nil {

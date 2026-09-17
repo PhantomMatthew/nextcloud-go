@@ -22,7 +22,13 @@ func TestIntegrationRedis(t *testing.T) {
 	t.Cleanup(func() { _ = r.Close() })
 	ctx := context.Background()
 	key := "ncgo-test-" + t.Name()
+	incrKey := key + ":n"
 	_ = r.Delete(ctx, key)
+	_ = r.Delete(ctx, incrKey)
+	t.Cleanup(func() {
+		_ = r.Delete(ctx, key)
+		_ = r.Delete(ctx, incrKey)
+	})
 	if _, err := r.Get(ctx, key); !errors.Is(err, ErrMiss) {
 		t.Fatalf("miss = %v", err)
 	}
@@ -33,7 +39,7 @@ func TestIntegrationRedis(t *testing.T) {
 	if err != nil || string(got) != "v" {
 		t.Fatalf("get = %q %v", got, err)
 	}
-	n, err := r.Increment(ctx, key+":n", 5)
+	n, err := r.Increment(ctx, incrKey, 5)
 	if err != nil || n != 5 {
 		t.Fatalf("incr = %d %v", n, err)
 	}

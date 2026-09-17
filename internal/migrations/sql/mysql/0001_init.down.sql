@@ -4,5 +4,5 @@ DROP TABLE IF EXISTS login_flows;
 DROP TABLE IF EXISTS app_passwords;
 DROP TABLE IF EXISTS sessions;
 DROP TABLE IF EXISTS group_members;
-DROP TABLE IF EXISTS groups;
+DROP TABLE IF EXISTS `groups`;
 DROP TABLE IF EXISTS users;

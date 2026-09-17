@@ -10,7 +10,7 @@ CREATE TABLE users (
     updated_at      BIGINT NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE groups (
+CREATE TABLE `groups` (
     id              BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
     gid             VARCHAR(255) NOT NULL UNIQUE,
     display_name    TEXT NOT NULL,
@@ -21,7 +21,7 @@ CREATE TABLE group_members (
     group_id        BIGINT NOT NULL,
     user_id         BIGINT NOT NULL,
     PRIMARY KEY (group_id, user_id),
-    CONSTRAINT fk_group_members_group FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+    CONSTRAINT fk_group_members_group FOREIGN KEY (group_id) REFERENCES `groups`(id) ON DELETE CASCADE,
     CONSTRAINT fk_group_members_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
