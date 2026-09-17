@@ -13,7 +13,9 @@ require (
 	github.com/knadh/koanf/providers/env/v2 v2.0.1
 	github.com/knadh/koanf/providers/file v1.2.1
 	github.com/knadh/koanf/v2 v2.3.6
+	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/redis/go-redis/v9 v9.22.0
+	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/crypto v0.57.0
 	modernc.org/sqlite v1.59.0
 )

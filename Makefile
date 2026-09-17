@@ -77,6 +77,10 @@ verify: ## go mod verify + tidy diff check
 	$(GO) mod tidy
 	@git diff --exit-code -- go.mod go.sum || { echo "go.mod / go.sum out of sync; run 'make tidy'"; exit 1; }
 
+.PHONY: example-plugin
+example-plugin: ## Build examples/hello-plugin with TinyGo (optional)
+	tinygo build -o examples/hello-plugin/hello.wasm -target=wasm-unknown -no-debug ./examples/hello-plugin
+
 .PHONY: docker
 docker: ## Build production OCI image
 	docker build -t ncgo:dev .

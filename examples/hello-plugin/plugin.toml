@@ -1,0 +1,16 @@
+[plugin]
+id = "com.example.hello"
+name = "Hello"
+version = "0.1.0"
+abi = "ncgo-abi/1"
+description = "Phase 0 hello-world plugin"
+license = "AGPL-3.0-or-later"
+
+[runtime]
+instance_model = "per_request"
+memory_limit_mb = 16
+cpu_timeout_ms = 1000
+
+[entry_points]
+module = "hello.wasm"
+on_install = "ncgo_on_install"
