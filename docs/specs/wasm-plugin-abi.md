@@ -587,9 +587,9 @@ Per-plugin admin dashboard (Phase 4 UI):
 
 In Phase 0, ship only the **stub host**:
 
-- `internal/plugin/host.go` — wazero runtime initialization, no-op modules
-- `internal/plugin/abi.go` — `ncgo.log` only (proves the host call mechanism works)
-- `internal/plugin/manifest.go` — TOML parser for `plugin.toml`
+- `internal/plugins/host.go` — wazero runtime initialization
+- `internal/plugins/abi.go` — `ncgo.log` only (proves the host call mechanism works)
+- `internal/plugins/manifest.go` — TOML parser for `plugin.toml`
 - `pkg/pluginsdk/` — Go bindings for `Info`/`Warn`/`Error` only
 - `examples/hello-plugin/` — TinyGo plugin that logs "hello from wasm" on `ncgo_on_install`
 - Integration test: load → install → verify log line → unload
@@ -598,4 +598,7 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-17** — Phase 0 stub lives in `internal/plugins`. wazero v1 has no
+  fuel metering API; CPU budget is wall-clock timeout + memory pages until
+  Phase 4 (ADR-0006).
 - **2026-04-29** — Initial spec committed.

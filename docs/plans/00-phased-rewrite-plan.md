@@ -62,7 +62,7 @@ See ADR-0001 for the rationale tying these together.
 - OCS `cloud/capabilities` returns valid envelope
 - ≥50 captured golden cases archived under `test/golden/`
 - WASM hello-world plugin loads and logs
-- CI matrix green on Linux/macOS × Go 1.22/1.23
+- CI matrix green on Linux/macOS × Go 1.27
 
 See [`01-phase-0-blueprint.md`](01-phase-0-blueprint.md) for full detail.
 
@@ -189,4 +189,5 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-17** — CI matrix updated to Linux/macOS × Go 1.27 (see ADR-0006).
 - **2026-04-29** — Initial plan committed.

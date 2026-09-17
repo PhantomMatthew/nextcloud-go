@@ -4,8 +4,22 @@ A ground-up Go rewrite of [Nextcloud Server](https://github.com/nextcloud/server
 wire-compatible with existing Nextcloud desktop, iOS, Android, CalDAV, and CardDAV
 clients.
 
-> **Status**: Phase 0 — Planning & Foundations.
-> No runnable code yet. See [`docs/`](./docs) for architecture, ADRs, and the phased plan.
+> **Status**: Phase 0 — foundations. `ncgo serve --dev` boots an in-memory
+> SQLite server that serves `/status.php`, OCS capabilities, login v2, and a
+> WebDAV stub.
+
+## Quick start
+
+```bash
+go run ./cmd/ncgo serve --dev
+# in another terminal
+curl -sS http://127.0.0.1:8080/status.php
+go run ./cmd/ncgo-captest run --cases testdata/golden
+```
+
+`serve --dev` uses shared-memory SQLite, bootstrap user `admin` / `admin`, and
+text debug logs. For a file-backed config, copy the YAML schema in
+`docs/plans/01-phase-0-blueprint.md` and pass `--config`.
 
 ## Project Goals
 
@@ -23,16 +37,14 @@ clients.
 - Loading existing PHP Nextcloud apps unmodified
 - Web frontend rewrite (the existing JS/Vue frontend is reused; only the server changes)
 
-## Repository Layout (Planned — Phase 0)
+## Repository Layout
 
 ```
 cmd/                  Binaries (ncgo, ncgo-cli, ncgo-captest)
-internal/             Private packages (app, config, db, cache, storage, auth,
-                      httpx, ocs, webdav, jobs, eventbus, plugin, obs)
+internal/             Private packages (app, config, database, cache, storage, auth,
+                      httpx, ocs, webdav, jobs, plugins, observability)
 pkg/                  Public stable contracts (api, pluginsdk)
-modules/              First-party in-binary feature modules
-test/                 compat, golden, fixtures, integration, e2e
-deploy/               docker, helm, systemd
+deploy/               docker
 docs/                 architecture, adr, plans, specs
 tools/                capture, golden-gen
 ```
@@ -47,4 +59,4 @@ tools/                capture, golden-gen
 
 ## License
 
-Will be **AGPL-3.0-or-later**, matching upstream Nextcloud, when code is committed.
+**AGPL-3.0-or-later**, matching upstream Nextcloud.

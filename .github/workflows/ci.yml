@@ -43,6 +43,14 @@ jobs:
       - name: test (race + coverage)
         run: go test -race -count=1 -covermode=atomic -coverprofile=coverage.out ./...
 
+      - name: coverage gate
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          line=$(go tool cover -func=coverage.out | tail -1)
+          echo "$line"
+          pct=$(echo "$line" | awk '{print $NF}' | tr -d '%')
+          awk -v p="$pct" 'BEGIN { if ((p+0) < 60) { print "coverage " p "% is below 60%"; exit 1 } }'
+
       - name: upload coverage
         if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
@@ -50,6 +58,59 @@ jobs:
           name: coverage
           path: coverage.out
           retention-days: 7
+
+  integration:
+    name: integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ncgo
+          POSTGRES_PASSWORD: ncgo
+          POSTGRES_DB: ncgo
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U ncgo -d ncgo"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: ncgo
+          MYSQL_DATABASE: ncgo
+          MYSQL_USER: ncgo
+          MYSQL_PASSWORD: ncgo
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uncgo -pncgo"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=15
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=10
+    env:
+      NCGO_TEST_POSTGRES_DSN: postgres://ncgo:ncgo@127.0.0.1:5432/ncgo?sslmode=disable
+      NCGO_TEST_MYSQL_DSN: ncgo:ncgo@tcp(127.0.0.1:3306)/ncgo?parseTime=true&multiStatements=true
+      NCGO_TEST_REDIS_ADDR: 127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: integration tests
+        run: go test -race -count=1 -tags integration ./internal/database/... ./internal/migrations/... ./internal/cache/...
 
   lint:
     name: lint
@@ -91,3 +152,19 @@ jobs:
           go-version-file: go.mod
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - run: govulncheck ./...
+
+  example-plugin:
+    name: example-plugin
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: acifani/setup-tinygo@v2
+        with:
+          tinygo-version: latest
+      - run: make example-plugin
+      - run: go run ./cmd/ncgo-cli plugin check examples/hello-plugin

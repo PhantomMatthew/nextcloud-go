@@ -341,7 +341,7 @@ A Phase 1 build is "done" when **all** of these hold:
 5. `go test -race ./...` clean.
 6. `golangci-lint run` clean (config from Phase 0).
 7. `govulncheck ./...` clean.
-8. CI matrix (ubuntu/macos × go 1.22/1.23) green.
+8. CI matrix (ubuntu/macos × Go 1.27) green.
 9. Coverage ≥ 65% for `internal/ocs`, `internal/auth`, `internal/httpx`.
 
 ## 10. Sequencing
@@ -415,3 +415,7 @@ These are tracked in `docs/plans/00-phased-rewrite-plan.md`.
 
 These are tracked separately in the capture sprint backlog; none block
 Phase 1 *planning*.
+
+## Change Log
+
+- **2026-09-17** — CI matrix updated to Linux/macOS × Go 1.27 (ADR-0006).
