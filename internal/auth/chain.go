@@ -17,7 +17,7 @@ func (c *ChainVerifier) Verify(ctx context.Context, user, password string) (*Pri
 	if len(c.verifiers) == 0 {
 		return nil, ErrInvalidCredentials
 	}
-	var lastErr error = ErrInvalidCredentials
+	lastErr := ErrInvalidCredentials
 	for _, v := range c.verifiers {
 		p, err := v.Verify(ctx, user, password)
 		if err == nil {

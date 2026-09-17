@@ -36,7 +36,7 @@ func TestBasicAuth_MissingHeader_401(t *testing.T) {
 		ver := tc.ver
 		t.Run(tc.name, func(t *testing.T) {
 			rr := httptest.NewRecorder()
-			req := httptest.NewRequest("GET", "/x?format=json", nil)
+			req := httptest.NewRequestWithContext(context.Background(), "GET", "/x?format=json", nil)
 			h := BasicAuth(ver, stubVerifier{user: "admin", pass: "admin"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				t.Fatal("next handler must not be invoked")
 			}))
@@ -61,7 +61,7 @@ func TestBasicAuth_MissingHeader_401(t *testing.T) {
 
 func TestBasicAuth_BadCreds_401(t *testing.T) {
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/x", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/x", nil)
 	req.Header.Set("Authorization", basicHeader("admin", "wrong"))
 	h := BasicAuth(V1, stubVerifier{user: "admin", pass: "admin"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next handler must not be invoked")
@@ -74,7 +74,7 @@ func TestBasicAuth_BadCreds_401(t *testing.T) {
 
 func TestBasicAuth_Valid_PassesPrincipal(t *testing.T) {
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/x", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/x", nil)
 	req.Header.Set("Authorization", basicHeader("admin", "admin"))
 	var seen *auth.Principal
 	h := BasicAuth(V1, stubVerifier{user: "admin", pass: "admin"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

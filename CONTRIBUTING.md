@@ -24,8 +24,8 @@ exist yet. See [`docs/`](./docs/) for the planning corpus before contributing.
 
 ```bash
 # Toolchain
-go version             # 1.22 or 1.23
-golangci-lint --version
+go version             # 1.27+ (see go.mod)
+golangci-lint --version  # v2.13+
 docker --version
 
 # Build & test

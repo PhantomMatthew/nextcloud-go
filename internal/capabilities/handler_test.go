@@ -1,6 +1,7 @@
 package capabilities
 
 import (
+	"context"
 	"flag"
 	"net/http"
 	"net/http/httptest"
@@ -41,7 +42,7 @@ func TestHandlerGolden(t *testing.T) {
 			if tc.format != "" {
 				url += "?format=" + tc.format
 			}
-			req := httptest.NewRequest(http.MethodGet, url, nil)
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
 			if tc.accept != "" {
 				req.Header.Set("Accept", tc.accept)
 			}
@@ -86,7 +87,7 @@ func TestETagDeterministic(t *testing.T) {
 	h := newHandler()
 	etag := func(ver ocs.Version, format string) string {
 		rr := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/?format="+format, nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/?format="+format, nil)
 		h.ServeOCS(ver).ServeHTTP(rr, req)
 		return rr.Header().Get("ETag")
 	}

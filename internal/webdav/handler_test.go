@@ -2,6 +2,7 @@ package webdav
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,7 @@ import (
 )
 
 func doRequestBody(h *Handler, method, target string, principal *auth.Principal, headers map[string]string, body string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(method, target, strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), method, target, strings.NewReader(body))
 	req.ContentLength = int64(len(body))
 	for k, v := range headers {
 		req.Header.Set(k, v)
@@ -27,11 +28,15 @@ func doRequestBody(h *Handler, method, target string, principal *auth.Principal,
 }
 
 func newTestHandler() *Handler {
-	return NewHandler("/remote.php/dav/files/", NewInMemoryFS(), "oc123abc")
+	h, err := NewHandler("/remote.php/dav/files/", NewInMemoryFS(), "oc123abc")
+	if err != nil {
+		panic(err)
+	}
+	return h
 }
 
 func doRequest(h *Handler, method, target string, principal *auth.Principal, headers map[string]string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(method, target, nil)
+	req := httptest.NewRequestWithContext(context.Background(), method, target, nil)
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -465,19 +470,25 @@ func TestHandler_NormalizeDepth(t *testing.T) {
 }
 
 func TestHandler_NewHandler_PrefixNormalization(t *testing.T) {
-	h := NewHandler("/foo", NewInMemoryFS(), "x")
+	h, err := NewHandler("/foo", NewInMemoryFS(), "x")
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
 	if h.Prefix != "/foo/" {
 		t.Errorf("Prefix = %q, want %q", h.Prefix, "/foo/")
 	}
 }
 
-func TestHandler_NewHandler_PanicOnBadPrefix(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Error("expected panic on prefix without leading /")
+func TestHandler_NewHandler_ErrorOnBadPrefix(t *testing.T) {
+	for _, prefix := range []string{"", "foo"} {
+		h, err := NewHandler(prefix, NewInMemoryFS(), "x")
+		if !errors.Is(err, ErrInvalidPrefix) {
+			t.Errorf("NewHandler(%q) error = %v, want ErrInvalidPrefix", prefix, err)
 		}
-	}()
-	_ = NewHandler("foo", NewInMemoryFS(), "x")
+		if h != nil {
+			t.Errorf("NewHandler(%q) returned non-nil handler on error", prefix)
+		}
+	}
 }
 
 var _ io.Reader = (*strings.Reader)(nil)

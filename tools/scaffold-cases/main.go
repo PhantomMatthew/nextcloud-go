@@ -33,7 +33,7 @@ func httpReq(line string, headers []string) string {
 }
 
 func main() {
-	files := []file{}
+	files := make([]file, 0, 16)
 
 	// Common headers used across responses.
 	jsonHdrs := []string{

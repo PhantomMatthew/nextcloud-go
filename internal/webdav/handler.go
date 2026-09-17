@@ -16,16 +16,16 @@ import (
 const (
 	StatusMultiStatus = 207
 
-	HeaderDepth     = "Depth"
-	HeaderDAV       = "DAV"
-	HeaderAllow     = "Allow"
-	HeaderMSAuthor  = "MS-Author-Via"
-	HeaderIfMatch   = "If-Match"
+	HeaderDepth       = "Depth"
+	HeaderDAV         = "DAV"
+	HeaderAllow       = "Allow"
+	HeaderMSAuthor    = "MS-Author-Via"
+	HeaderIfMatch     = "If-Match"
 	HeaderIfNoneMatch = "If-None-Match"
-	HeaderOCMtime   = "X-OC-Mtime"
-	HeaderOCChunked = "OC-Chunked"
-	HeaderOCETag    = "OC-ETag"
-	HeaderOCFileID  = "OC-FileId"
+	HeaderOCMtime     = "X-OC-Mtime"
+	HeaderOCChunked   = "OC-Chunked"
+	HeaderOCETag      = "OC-ETag"
+	HeaderOCFileID    = "OC-FileId"
 
 	davCompliance  = "1, 3, extended-mkcol"
 	allowedMethods = "OPTIONS, GET, HEAD, PROPFIND, PUT, MKCOL, DELETE, MOVE, COPY"
@@ -41,31 +41,37 @@ type Handler struct {
 	InstanceID string
 }
 
-func NewHandler(prefix string, fs FS, instanceID string) *Handler {
+// ErrInvalidPrefix is returned by NewHandler when the mount prefix does not
+// start with a leading slash.
+var ErrInvalidPrefix = errors.New("webdav: prefix must start with /")
+
+// NewHandler constructs a Handler mounted at prefix. The prefix is normalized
+// to end with a trailing slash.
+func NewHandler(prefix string, fs FS, instanceID string) (*Handler, error) {
 	if prefix == "" || prefix[0] != '/' {
-		panic("webdav: prefix must start with /")
+		return nil, ErrInvalidPrefix
 	}
 	if !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
 	}
-	return &Handler{Prefix: prefix, FS: fs, InstanceID: instanceID}
+	return &Handler{Prefix: prefix, FS: fs, InstanceID: instanceID}, nil
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
-	case "OPTIONS":
+	case http.MethodOptions:
 		h.options(w, r)
 	case "PROPFIND":
 		h.propfind(w, r)
-	case "GET":
+	case http.MethodGet:
 		h.get(w, r, true)
-	case "HEAD":
+	case http.MethodHead:
 		h.get(w, r, false)
-	case "PUT":
+	case http.MethodPut:
 		h.put(w, r)
 	case "MKCOL":
 		h.mkcol(w, r)
-	case "DELETE":
+	case http.MethodDelete:
 		h.delete(w, r)
 	case "MOVE":
 		h.moveOrCopy(w, r, false)
@@ -466,7 +472,7 @@ func (h *Handler) parseDestination(r *http.Request) (user, sub string, err error
 		return "", "", errors.New("invalid Destination path")
 	}
 	if !strings.HasPrefix(p, h.Prefix) {
-		return "", "", errors.New("Destination outside DAV namespace")
+		return "", "", errors.New("destination outside DAV namespace")
 	}
 	user, sub, ok := h.parsePath(p)
 	if !ok {

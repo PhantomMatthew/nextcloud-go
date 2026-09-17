@@ -1,39 +1,31 @@
-# golangci-lint configuration for nextcloud-go
-# See ADR-0001 for tooling rationale.
+# golangci-lint v2 configuration for nextcloud-go
+# See ADR-0001 for tooling rationale and ADR-0006 for the v2 migration.
 
+version: "2"
 run:
-  timeout: 5m
-  tests: true
   build-tags:
     - integration
-
+  tests: true
 output:
   formats:
-    - format: colored-line-number
-  sort-results: true
-
+    text:
+      path: stdout
 linters:
-  disable-all: true
+  default: none
   enable:
-    - errcheck
-    - gosimple
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
     - bodyclose
     - copyloopvar
     - dupword
+    - errcheck
     - errorlint
     - exhaustive
     - forbidigo
     - gocheckcompilerdirectives
     - gocritic
-    - gofmt
-    - gofumpt
     - goheader
-    - goimports
     - gosec
+    - govet
+    - ineffassign
     - misspell
     - nakedret
     - nilerr
@@ -43,84 +35,118 @@ linters:
     - predeclared
     - revive
     - sloglint
-    - stylecheck
-    - tenv
+    - staticcheck
     - testifylint
     - thelper
     - unconvert
     - unparam
+    - unused
     - usestdlibvars
+    - usetesting
     - wastedassign
     - whitespace
-
-linters-settings:
-  goimports:
-    local-prefixes: github.com/PhantomMatthew/nextcloud-go
-  gofumpt:
-    extra-rules: true
-  errcheck:
-    check-type-assertions: true
-    check-blank: true
-  gosec:
-    excludes:
-      - G104 # handled by errcheck
-  forbidigo:
-    forbid:
-      - p: ^fmt\.Print.*$
-        msg: "use slog for structured logging"
-      - p: ^panic\(.*\)$
-        msg: "do not panic in library code; return an error"
-  revive:
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+      # Errors from these calls are unreportable once the HTTP response has
+      # started (or cannot occur for in-memory writers); callers intentionally
+      # discard them with `_ =`.
+      exclude-functions:
+        - (net/http.ResponseWriter).Write
+        - io.Copy
+        - encoding/xml.EscapeText
+    exhaustive:
+      default-signifies-exhaustive: true
+    forbidigo:
+      forbid:
+        - pattern: ^fmt\.Print.*$
+          msg: use slog for structured logging
+        - pattern: ^panic\(.*\)$
+          msg: do not panic in library code; return an error
+    gosec:
+      excludes:
+        - G104 # handled by errcheck
+        - G705 # taint-based XSS: false positives on OCS bodies that are XML/JSON-encoded with explicit non-HTML Content-Type
+    revive:
+      rules:
+        - name: var-naming
+        - name: package-comments
+        - name: exported
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: if-return
+        - name: increment-decrement
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: errorf
+        - name: empty-block
+        - name: superfluous-else
+        - name: unused-parameter
+          disabled: true
+        - name: unreachable-code
+        - name: redefines-builtin-id
+    sloglint:
+      no-mixed-args: true
+      kv-only: false
+      attr-only: true
+      context: scope
+    testifylint:
+      enable-all: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
     rules:
-      - name: var-naming
-      - name: package-comments
-      - name: exported
-      - name: error-return
-      - name: error-strings
-      - name: error-naming
-      - name: if-return
-      - name: increment-decrement
-      - name: range
-      - name: receiver-naming
-      - name: time-naming
-      - name: unexported-return
-      - name: indent-error-flow
-      - name: errorf
-      - name: empty-block
-      - name: superfluous-else
-      - name: unused-parameter
-        disabled: true
-      - name: unreachable-code
-      - name: redefines-builtin-id
-  sloglint:
-    no-mixed-args: true
-    kv-only: false
-    attr-only: true
-    context: scope
-  exhaustive:
-    default-signifies-exhaustive: true
-  testifylint:
-    enable-all: true
-
+      - linters:
+          - dupl
+          - errcheck
+          - forbidigo
+          - gosec
+          - revive
+        path: _test\.go
+      - linters:
+          - forbidigo
+        path: cmd/
+      - linters:
+          - forbidigo
+          - gosec
+        path: tools/
+    paths:
+      - testdata
+      - bin
+      - dist
+      - third_party$
+      - builtin$
+      - ^examples/
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-dirs:
-    - testdata
-    - bin
-    - dist
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gosec
-        - errcheck
-        - forbidigo
-        - dupl
-        - revive
-    - path: cmd/
-      linters:
-        - forbidigo # main packages may use fmt.Print for CLI output
-    - path: tools/
-      linters:
-        - forbidigo
-        - gosec
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
+    - goimports
+  settings:
+    gofumpt:
+      extra:
+        group-params: true
+    goimports:
+      local-prefixes:
+        - github.com/PhantomMatthew/nextcloud-go
+  exclusions:
+    generated: lax
+    paths:
+      - testdata
+      - bin
+      - dist
+      - third_party$
+      - builtin$
+      - ^examples/

@@ -55,7 +55,7 @@ func loadSecret(logger *slog.Logger) string {
 	}
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
-		logger.Error("failed to generate ephemeral secret", "error", err)
+		logger.Error("failed to generate ephemeral secret", slog.Any("error", err))
 		os.Exit(1)
 	}
 	logger.Warn("NCGO_SECRET not set; generated ephemeral secret (tokens will not survive restart)")
@@ -68,7 +68,7 @@ func loadInstanceID(logger *slog.Logger) string {
 	}
 	buf := make([]byte, 5)
 	if _, err := rand.Read(buf); err != nil {
-		logger.Error("failed to generate ephemeral instance id", "error", err)
+		logger.Error("failed to generate ephemeral instance id", slog.Any("error", err))
 		os.Exit(1)
 	}
 	logger.Warn("NCGO_INSTANCE_ID not set; generated ephemeral instance id (file ids will not survive restart)")
@@ -87,6 +87,13 @@ func main() {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
+	if err := run(*addr, logger); err != nil {
+		logger.Error("server exited with error", slog.Any("error", err))
+		os.Exit(1)
+	}
+}
+
+func run(addr string, logger *slog.Logger) error {
 	maintenance := httpx.MaintenanceFunc(func() bool { return false })
 
 	csrfCfg := httpx.CSRFConfig{
@@ -164,7 +171,7 @@ func main() {
 	router.HandlePrefix(httpx.MethodAny, "/remote.php/dav/files/", webdav.BasicAuth(verifier)(davHandler))
 
 	srv := httpx.NewServer(httpx.ServerConfig{
-		Addr:    *addr,
+		Addr:    addr,
 		Handler: router,
 		Logger:  logger,
 	})
@@ -172,8 +179,5 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := srv.Run(ctx); err != nil {
-		logger.Error("server exited with error", "error", err)
-		os.Exit(1)
-	}
+	return srv.Run(ctx)
 }

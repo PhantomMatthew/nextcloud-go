@@ -1,6 +1,7 @@
 package ocs
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,7 +19,7 @@ func TestCloudUserHandler_NoPrincipal_401(t *testing.T) {
 		ver := tc.ver
 		t.Run(tc.name, func(t *testing.T) {
 			rr := httptest.NewRecorder()
-			req := httptest.NewRequest("GET", "/cloud/user?format=json", nil)
+			req := httptest.NewRequestWithContext(context.Background(), "GET", "/cloud/user?format=json", nil)
 			CloudUserHandler(ver).ServeHTTP(rr, req)
 			if rr.Code != http.StatusUnauthorized {
 				t.Fatalf("status=%d want 401", rr.Code)
@@ -32,7 +33,7 @@ func TestCloudUserHandler_NoPrincipal_401(t *testing.T) {
 
 func TestCloudUserHandler_JSON_v1(t *testing.T) {
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/cloud/user?format=json", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/cloud/user?format=json", nil)
 	req = req.WithContext(auth.WithUser(req.Context(), &auth.Principal{
 		UID: "alice", DisplayName: "Alice", Enabled: true,
 	}))
@@ -59,7 +60,7 @@ func TestCloudUserHandler_JSON_v1(t *testing.T) {
 
 func TestCloudUserHandler_JSON_v2(t *testing.T) {
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/cloud/user?format=json", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/cloud/user?format=json", nil)
 	req = req.WithContext(auth.WithUser(req.Context(), &auth.Principal{
 		UID: "bob", DisplayName: "Bob", Enabled: false,
 	}))
@@ -82,7 +83,7 @@ func TestCloudUserHandler_JSON_v2(t *testing.T) {
 
 func TestCloudUserHandler_XML_v1(t *testing.T) {
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/cloud/user", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/cloud/user", nil)
 	req.Header.Set("Accept", "application/xml")
 	req = req.WithContext(auth.WithUser(req.Context(), &auth.Principal{
 		UID: "alice", DisplayName: "Alice", Enabled: true,

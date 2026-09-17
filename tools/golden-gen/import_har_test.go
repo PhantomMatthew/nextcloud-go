@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -80,7 +81,7 @@ func TestImportHAR_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseRequest: %v", err)
 	}
-	if req.Method != "GET" {
+	if req.Method != http.MethodGet {
 		t.Errorf("method = %q, want GET", req.Method)
 	}
 	if req.Path != "/ocs/v2.php/cloud/capabilities?format=json" {

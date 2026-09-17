@@ -1,6 +1,7 @@
 package ocs
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -54,7 +55,7 @@ func decodeOCS(t *testing.T, body []byte) (status string, statuscode int, data m
 }
 
 func newAuthedRequest(method string, principal *auth.Principal) *http.Request {
-	r := httptest.NewRequest(method, "/?format=json", nil)
+	r := httptest.NewRequestWithContext(context.Background(), method, "/?format=json", nil)
 	if principal != nil {
 		r = r.WithContext(auth.WithUser(r.Context(), principal))
 	}
@@ -108,7 +109,7 @@ func TestGetAppPasswordHandler_UnauthorizedWhenNoPrincipal(t *testing.T) {
 	issuer := &stubIssuer{}
 	h := GetAppPasswordHandler(V2, issuer)
 	rr := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodGet, "/?format=json", nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/?format=json", nil)
 
 	h.ServeHTTP(rr, r)
 
@@ -174,7 +175,7 @@ func TestDeleteAppPasswordHandler_UnauthorizedWhenNoPrincipal(t *testing.T) {
 	issuer := &stubIssuer{}
 	h := DeleteAppPasswordHandler(V2, issuer)
 	rr := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodDelete, "/?format=json", nil)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, "/?format=json", nil)
 
 	h.ServeHTTP(rr, r)
 

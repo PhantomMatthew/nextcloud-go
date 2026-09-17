@@ -74,7 +74,7 @@ func basicEncode(s string) string {
 
 func TestHandleInit(t *testing.T) {
 	h := newHandler(t, stubIssuer{password: "ignored"})
-	req := httptest.NewRequest(http.MethodPost, "/index.php/login/v2", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/index.php/login/v2", nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 nctest")
 	w := httptest.NewRecorder()
 	h.HandleInit(w, req)
@@ -103,7 +103,7 @@ func TestHandleInit(t *testing.T) {
 
 func TestHandleInitMethodNotAllowed(t *testing.T) {
 	h := newHandler(t, stubIssuer{})
-	req := httptest.NewRequest(http.MethodGet, "/index.php/login/v2", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/index.php/login/v2", nil)
 	w := httptest.NewRecorder()
 	h.HandleInit(w, req)
 	if w.Code != http.StatusMethodNotAllowed {
@@ -121,7 +121,7 @@ func TestHandlePollPending(t *testing.T) {
 		t.Fatalf("init: %v", err)
 	}
 	body := strings.NewReader(url.Values{"token": {flow.PollToken}}.Encode())
-	req := httptest.NewRequest(http.MethodPost, "/index.php/login/v2/poll", body)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/index.php/login/v2/poll", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	h.HandlePoll(w, req)
@@ -148,7 +148,7 @@ func TestHandlePollGranted(t *testing.T) {
 	}
 
 	body := strings.NewReader(url.Values{"token": {flow.PollToken}}.Encode())
-	req := httptest.NewRequest(http.MethodPost, "/index.php/login/v2/poll", body)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/index.php/login/v2/poll", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	h.HandlePoll(w, req)
@@ -164,7 +164,7 @@ func TestHandlePollGranted(t *testing.T) {
 	}
 
 	body2 := strings.NewReader(url.Values{"token": {flow.PollToken}}.Encode())
-	req2 := httptest.NewRequest(http.MethodPost, "/index.php/login/v2/poll", body2)
+	req2 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/index.php/login/v2/poll", body2)
 	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w2 := httptest.NewRecorder()
 	h.HandlePoll(w2, req2)
@@ -179,7 +179,7 @@ func TestHandleFlowTokenRedirect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodGet, h.FlowRoute+"/"+flow.LoginToken, nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, h.FlowRoute+"/"+flow.LoginToken, nil)
 	w := httptest.NewRecorder()
 	h.HandleFlowToken(w, req)
 	if w.Code != http.StatusSeeOther {
@@ -193,7 +193,7 @@ func TestHandleFlowTokenRedirect(t *testing.T) {
 
 func TestHandleFlowTokenUnknown(t *testing.T) {
 	h := newHandler(t, stubIssuer{})
-	req := httptest.NewRequest(http.MethodGet, h.FlowRoute+"/doesnotexist", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, h.FlowRoute+"/doesnotexist", nil)
 	w := httptest.NewRecorder()
 	h.HandleFlowToken(w, req)
 	if w.Code != http.StatusNotFound {
@@ -211,7 +211,7 @@ func TestHandlePickerRequiresAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin grant: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodGet, h.FlowRoute+"?stateToken="+st.StateToken, nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, h.FlowRoute+"?stateToken="+st.StateToken, nil)
 	w := httptest.NewRecorder()
 	h.HandlePicker(w, req)
 	if w.Code != http.StatusUnauthorized {
@@ -232,7 +232,7 @@ func TestHandlePickerAuthorized(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin grant: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodGet, h.FlowRoute+"?stateToken="+st.StateToken, nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, h.FlowRoute+"?stateToken="+st.StateToken, nil)
 	req.Header.Set("Authorization", basicAuth("alice", "wonderland"))
 	w := httptest.NewRecorder()
 	h.HandlePicker(w, req)
@@ -253,7 +253,7 @@ func TestHandlePickerAuthorized(t *testing.T) {
 
 func TestHandlePickerMissingStateToken(t *testing.T) {
 	h := newHandler(t, stubIssuer{})
-	req := httptest.NewRequest(http.MethodGet, h.FlowRoute, nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, h.FlowRoute, nil)
 	req.Header.Set("Authorization", basicAuth("alice", "wonderland"))
 	w := httptest.NewRecorder()
 	h.HandlePicker(w, req)
@@ -273,7 +273,7 @@ func TestHandleGrantSuccess(t *testing.T) {
 		t.Fatalf("begin grant: %v", err)
 	}
 	body := strings.NewReader(url.Values{"stateToken": {st.StateToken}}.Encode())
-	req := httptest.NewRequest(http.MethodPost, "/index.php/login/v2/grant", body)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/index.php/login/v2/grant", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Authorization", basicAuth("alice", "wonderland"))
 	w := httptest.NewRecorder()
@@ -283,7 +283,7 @@ func TestHandleGrantSuccess(t *testing.T) {
 	}
 
 	pollBody := strings.NewReader(url.Values{"token": {flow.PollToken}}.Encode())
-	pollReq := httptest.NewRequest(http.MethodPost, "/index.php/login/v2/poll", pollBody)
+	pollReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/index.php/login/v2/poll", pollBody)
 	pollReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	pw := httptest.NewRecorder()
 	h.HandlePoll(pw, pollReq)
@@ -310,7 +310,7 @@ func TestHandleGrantUnauthorized(t *testing.T) {
 		t.Fatalf("begin grant: %v", err)
 	}
 	body := strings.NewReader(url.Values{"stateToken": {st.StateToken}}.Encode())
-	req := httptest.NewRequest(http.MethodPost, "/index.php/login/v2/grant", body)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/index.php/login/v2/grant", body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	h.HandleGrant(w, req)

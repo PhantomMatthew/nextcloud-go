@@ -1,6 +1,7 @@
 package status
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,7 +12,7 @@ import (
 func TestHandlerByteExactGolden(t *testing.T) {
 	p := Provider{}
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/status.php", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/status.php", nil)
 	p.Handler().ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
@@ -59,7 +60,7 @@ func TestHandlerFlags(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rr := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodGet, "/status.php", nil)
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/status.php", nil)
 			tc.p.Handler().ServeHTTP(rr, req)
 			if got := rr.Body.String(); got != tc.want {
 				t.Errorf("body:\n got: %s\nwant: %s", got, tc.want)
@@ -73,7 +74,7 @@ func TestHandlerAcceptsAnyMethod(t *testing.T) {
 	for _, m := range methods {
 		t.Run(m, func(t *testing.T) {
 			rr := httptest.NewRecorder()
-			req := httptest.NewRequest(m, "/status.php", nil)
+			req := httptest.NewRequestWithContext(context.Background(), m, "/status.php", nil)
 			Provider{}.Handler().ServeHTTP(rr, req)
 			if rr.Code != http.StatusOK {
 				t.Errorf("method %s: got %d want 200", m, rr.Code)

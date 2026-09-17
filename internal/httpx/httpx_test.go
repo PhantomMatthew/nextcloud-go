@@ -17,7 +17,7 @@ func TestRequestID_GeneratesAndPropagates(t *testing.T) {
 		captured = RequestIDFromContext(r.Context())
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -43,7 +43,7 @@ func TestRequestID_PreservesIncomingValue(t *testing.T) {
 		captured = RequestIDFromContext(r.Context())
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	req.Header.Set(HeaderRequestID, incoming)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -60,7 +60,7 @@ func TestSecurityHeaders_DefaultSet(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 
 	wantHeaders := map[string]string{
 		"X-Content-Type-Options":            "nosniff",
@@ -88,7 +88,7 @@ func TestRecover_WritesFiveHundredOnPanic(t *testing.T) {
 	}))
 
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d; want 500", rec.Code)
@@ -114,7 +114,7 @@ func TestChain_OutermostFirst(t *testing.T) {
 	handler := Chain(mw("a"), mw("b"), mw("c"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		order = append(order, "handler")
 	}))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 
 	want := []string{"in:a", "in:b", "in:c", "handler", "out:c", "out:b", "out:a"}
 	if strings.Join(order, ",") != strings.Join(want, ",") {
@@ -130,7 +130,7 @@ func TestMaintenance_OCSReturns503Envelope(t *testing.T) {
 		t.Fatal("next handler must not be invoked in maintenance mode")
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/ocs/v2.php/cloud/capabilities?format=json", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/ocs/v2.php/cloud/capabilities?format=json", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -160,7 +160,7 @@ func TestMaintenance_StatusPHPBypasses(t *testing.T) {
 	}))
 
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/status.php", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/status.php", nil))
 
 	if !called {
 		t.Fatal("status.php must bypass maintenance")
@@ -178,7 +178,7 @@ func TestMaintenance_DisabledPassthrough(t *testing.T) {
 	handler := Maintenance(enabled)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 	}))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/ocs/v1.php/foo", nil))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/ocs/v1.php/foo", nil))
 	if !called {
 		t.Fatal("disabled maintenance must pass through")
 	}
@@ -191,7 +191,7 @@ func TestCSRF_BypassesForOCSRequest(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodPost, "/ocs/v2.php/foo", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/ocs/v2.php/foo", nil)
 	req.Header.Set(HeaderOCSAPIRequest, "true")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -206,7 +206,7 @@ func TestCSRF_BypassesForBearer(t *testing.T) {
 	handler := CSRF(CSRFConfig{})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest(http.MethodPost, "/x", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/x", nil)
 	req.Header.Set("Authorization", "Bearer abc")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -222,7 +222,7 @@ func TestCSRF_RejectsUnsafeWithoutToken(t *testing.T) {
 		t.Fatal("must not reach next handler")
 	}))
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/x", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/x", nil))
 	if rec.Code != http.StatusPreconditionFailed {
 		t.Fatalf("status = %d; want 412", rec.Code)
 	}
@@ -235,7 +235,7 @@ func TestCSRF_SafeMethodPassthrough(t *testing.T) {
 	handler := CSRF(CSRFConfig{})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 	}))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 	if !called {
 		t.Fatal("GET must pass through CSRF")
 	}

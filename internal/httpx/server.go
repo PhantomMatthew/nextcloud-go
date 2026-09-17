@@ -81,7 +81,7 @@ func NewServer(cfg ServerConfig) *Server {
 func (s *Server) Run(ctx context.Context) error {
 	errCh := make(chan error, 1)
 	go func() {
-		s.logger.Info("http server starting", "addr", s.srv.Addr)
+		s.logger.InfoContext(ctx, "http server starting", slog.String("addr", s.srv.Addr))
 		err := s.srv.ListenAndServe()
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
@@ -94,9 +94,9 @@ func (s *Server) Run(ctx context.Context) error {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
 		defer cancel()
-		s.logger.Info("http server shutting down", "timeout", s.shutdownTimeout)
+		s.logger.InfoContext(ctx, "http server shutting down", slog.Duration("timeout", s.shutdownTimeout))
 		if err := s.shutdown(shutdownCtx); err != nil {
-			s.logger.Error("http server shutdown failed", "error", err)
+			s.logger.ErrorContext(ctx, "http server shutdown failed", slog.Any("error", err))
 			return err
 		}
 		<-errCh

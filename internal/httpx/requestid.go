@@ -19,7 +19,10 @@ const ctxKeyRequestID ctxKey = iota
 
 // RequestIDFromContext returns the request ID stored on ctx, or "" if absent.
 func RequestIDFromContext(ctx context.Context) string {
-	v, _ := ctx.Value(ctxKeyRequestID).(string)
+	v, ok := ctx.Value(ctxKeyRequestID).(string)
+	if !ok {
+		return ""
+	}
 	return v
 }
 

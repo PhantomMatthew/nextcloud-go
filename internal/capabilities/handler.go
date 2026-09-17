@@ -1,7 +1,7 @@
 package capabilities
 
 import (
-	"crypto/md5"
+	"crypto/md5" //nolint:gosec // non-cryptographic: upstream-compatible ETag derivation
 	"encoding/hex"
 	"net/http"
 
@@ -59,6 +59,6 @@ func computeETag(payload ocs.OrderedMap) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	sum := md5.Sum(body)
+	sum := md5.Sum(body) //nolint:gosec // non-cryptographic: upstream-compatible ETag derivation
 	return hex.EncodeToString(sum[:]), nil
 }

@@ -543,13 +543,13 @@ func TestInMemoryFS_CopyCrossUser(t *testing.T) {
 
 func TestNormalizePath(t *testing.T) {
 	cases := map[string]string{
-		"":       "/",
-		"/":      "/",
-		"/a":     "/a",
-		"a":      "/a",
-		"/a/":    "/a",
-		"/a/b/":  "/a/b",
-		"//":     "/",
+		"":      "/",
+		"/":     "/",
+		"/a":    "/a",
+		"a":     "/a",
+		"/a/":   "/a",
+		"/a/b/": "/a/b",
+		"//":    "/",
 	}
 	for in, want := range cases {
 		if got := normalizePath(in); got != want {

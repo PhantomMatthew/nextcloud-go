@@ -307,8 +307,8 @@ func generateAlphaToken(n int) (string, error) {
 	}
 	out := make([]byte, n)
 	alpha := []byte(TokenAlphabet)
-	alphaLen := byte(len(alpha))
-	max := byte(256 - (256 % int(alphaLen)))
+	alphaLen := len(alpha)
+	limit := 256 - (256 % alphaLen)
 	buf := make([]byte, n*2)
 	filled := 0
 	for filled < n {
@@ -316,10 +316,10 @@ func generateAlphaToken(n int) (string, error) {
 			return "", fmt.Errorf("login: read random: %w", err)
 		}
 		for _, b := range buf {
-			if b >= max {
+			if int(b) >= limit {
 				continue
 			}
-			out[filled] = alpha[b%alphaLen]
+			out[filled] = alpha[int(b)%alphaLen]
 			filled++
 			if filled == n {
 				break

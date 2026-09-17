@@ -43,7 +43,7 @@ type FS interface {
 	Mkdir(ctx context.Context, user, path string) (*Entry, error)
 	Remove(ctx context.Context, user, path string) error
 	Move(ctx context.Context, srcUser, srcPath, dstUser, dstPath string, overwrite bool) (*Entry, bool, error)
-	Copy(ctx context.Context, srcUser, srcPath, dstUser, dstPath string, overwrite bool, depthInfinity bool) (*Entry, bool, error)
+	Copy(ctx context.Context, srcUser, srcPath, dstUser, dstPath string, overwrite, depthInfinity bool) (*Entry, bool, error)
 }
 
 type InMemoryFS struct {
@@ -303,7 +303,7 @@ func (fs *InMemoryFS) Move(_ context.Context, srcUser, srcPath, dstUser, dstPath
 	return t.files[dst].entry, created, nil
 }
 
-func (fs *InMemoryFS) Copy(_ context.Context, srcUser, srcPath, dstUser, dstPath string, overwrite bool, depthInfinity bool) (*Entry, bool, error) {
+func (fs *InMemoryFS) Copy(_ context.Context, srcUser, srcPath, dstUser, dstPath string, overwrite, depthInfinity bool) (*Entry, bool, error) {
 	if srcUser != dstUser {
 		return nil, false, ErrForbidden
 	}

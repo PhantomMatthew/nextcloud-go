@@ -88,8 +88,8 @@ func (s *MemoryStore) DeleteByHash(_ context.Context, hash string) error {
 func GenerateToken() (string, error) {
 	out := make([]byte, TokenLength)
 	alpha := []byte(TokenAlphabet)
-	alphaLen := byte(len(alpha))
-	max := byte(256 - (256 % int(alphaLen)))
+	alphaLen := len(alpha)
+	limit := 256 - (256 % alphaLen)
 	buf := make([]byte, TokenLength*2)
 	filled := 0
 	for filled < TokenLength {
@@ -97,10 +97,10 @@ func GenerateToken() (string, error) {
 			return "", fmt.Errorf("auth: read random: %w", err)
 		}
 		for _, b := range buf {
-			if b >= max {
+			if int(b) >= limit {
 				continue
 			}
-			out[filled] = alpha[b%alphaLen]
+			out[filled] = alpha[int(b)%alphaLen]
 			filled++
 			if filled == TokenLength {
 				break

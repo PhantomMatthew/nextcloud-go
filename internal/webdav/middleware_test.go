@@ -31,7 +31,7 @@ func TestBasicAuth_NoHeader(t *testing.T) {
 	called := false
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/remote.php/dav/files/alice/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/remote.php/dav/files/alice/", nil)
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("status: got %d want 401", rr.Code)
@@ -53,7 +53,7 @@ func TestBasicAuth_BadHeader(t *testing.T) {
 		t.Fatal("next handler must not be called")
 	}))
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/remote.php/dav/files/alice/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/remote.php/dav/files/alice/", nil)
 	req.Header.Set("Authorization", "Bearer xyz")
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
@@ -67,7 +67,7 @@ func TestBasicAuth_BadCredentials(t *testing.T) {
 		t.Fatal("next handler must not be called")
 	}))
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/remote.php/dav/files/alice/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/remote.php/dav/files/alice/", nil)
 	req.Header.Set("Authorization", basicHeader("alice", "wrong"))
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
@@ -86,7 +86,7 @@ func TestBasicAuth_Success_InjectsPrincipal(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/remote.php/dav/files/alice/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/remote.php/dav/files/alice/", nil)
 	req.Header.Set("Authorization", basicHeader("alice", "wonderland"))
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusNoContent {
@@ -107,7 +107,7 @@ func TestBasicAuth_DistinctFromOCS_NoBody(t *testing.T) {
 	mw := BasicAuth(stubVerifier{user: "alice", pass: "wonderland"})
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest("PROPFIND", "/remote.php/dav/files/alice/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "PROPFIND", "/remote.php/dav/files/alice/", nil)
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("status: got %d want 401", rr.Code)
