@@ -1,0 +1,71 @@
+server:
+  listen: "127.0.0.1:9000"
+  trusted_proxies: ["10.0.0.0/8"]
+  trusted_domains: ["cloud.example.com"]
+  base_url: "https://cloud.example.com"
+
+database:
+  driver: postgres
+  dsn: "postgres://ncgo:secret@db:5432/ncgo?sslmode=disable"
+  max_open_conns: 50
+  max_idle_conns: 10
+  conn_max_lifetime: 1h
+  auto_migrate: true
+
+cache:
+  l1_max_items: 100000
+  l1_max_cost_mb: 256
+  redis_addr: "redis:6379"
+  redis_db: 0
+  redis_password: "s3cret"
+
+storage:
+  default_backend: local
+  backends:
+    local:
+      type: localfs
+      root: /var/lib/ncgo/data
+    s3_primary:
+      type: s3
+      endpoint: https://s3.example.com
+      bucket: ncgo-files
+      access_key_id: AKIATEST
+      secret_access_key: secret
+      region: us-east-1
+
+auth:
+  session_ttl: 24h
+  app_password_ttl: 0s
+  password_hash: argon2id
+  argon2id:
+    memory_kb: 65536
+    iterations: 3
+    parallelism: 4
+  bootstrap_admin:
+    uid: admin
+    password: changeme
+    display_name: Administrator
+
+jobs:
+  workers: 4
+  poll_interval: 5s
+
+plugin:
+  enabled: true
+  install_dir: /var/lib/ncgo/plugins
+  default_memory_limit_mb: 32
+  default_cpu_timeout_ms: 5000
+
+observability:
+  log_level: info
+  log_format: json
+  metrics_listen: "127.0.0.1:9090"
+  otel_endpoint: ""
+
+maintenance:
+  enabled: false
+  needs_db_upgrade: false
+
+instance:
+  id: ocabcdef0123
+  secret: supersecret

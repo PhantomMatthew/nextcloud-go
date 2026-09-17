@@ -1,0 +1,3 @@
+database:
+  driver: sqlite
+  dsn: "file:ncgo.db"
