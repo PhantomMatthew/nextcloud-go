@@ -53,7 +53,7 @@ type Store interface {
 	GetByLogin(ctx context.Context, loginToken string) (*Flow, error)
 	GetByState(ctx context.Context, stateToken string) (*Flow, error)
 	Update(ctx context.Context, f *Flow) error
-	DeleteExpired(ctx context.Context, now time.Time) int
+	DeleteExpired(ctx context.Context, now time.Time) (int, error)
 }
 
 type MemoryStore struct {
@@ -86,7 +86,9 @@ func (s *MemoryStore) StartGC(every time.Duration) {
 			case <-s.stop:
 				return
 			case now := <-t.C:
-				s.DeleteExpired(context.Background(), now.UTC())
+				if _, err := s.DeleteExpired(context.Background(), now.UTC()); err != nil {
+					continue
+				}
 			}
 		}
 	}()
@@ -163,7 +165,7 @@ func (s *MemoryStore) Update(_ context.Context, f *Flow) error {
 	return nil
 }
 
-func (s *MemoryStore) DeleteExpired(_ context.Context, now time.Time) int {
+func (s *MemoryStore) DeleteExpired(_ context.Context, now time.Time) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
@@ -177,7 +179,7 @@ func (s *MemoryStore) DeleteExpired(_ context.Context, now time.Time) int {
 			n++
 		}
 	}
-	return n
+	return n, nil
 }
 
 type Service struct {

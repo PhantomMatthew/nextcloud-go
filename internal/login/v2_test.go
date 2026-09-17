@@ -107,7 +107,10 @@ func TestPollExpired(t *testing.T) {
 		t.Fatalf("expected expired begin grant, got %v", err)
 	}
 
-	deleted := store.DeleteExpired(ctx, cur)
+	deleted, err := store.DeleteExpired(ctx, cur)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if deleted != 1 {
 		t.Fatalf("expected 1 expired deleted, got %d", deleted)
 	}
