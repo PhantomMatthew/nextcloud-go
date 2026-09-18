@@ -8,6 +8,7 @@ import (
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
 	"github.com/PhantomMatthew/nextcloud-go/internal/capabilities"
+	"github.com/PhantomMatthew/nextcloud-go/internal/files"
 	"github.com/PhantomMatthew/nextcloud-go/internal/httpx"
 	"github.com/PhantomMatthew/nextcloud-go/internal/login"
 	"github.com/PhantomMatthew/nextcloud-go/internal/ocs"
@@ -78,6 +79,8 @@ func (a *App) mountRoutes() error {
 
 	capManager := capabilities.NewManager()
 	capManager.Register(capabilities.DefaultCoreProvider())
+	capManager.Register(capabilities.DefaultDAVProvider())
+	capManager.Register(capabilities.DefaultFilesProvider())
 	capHandler := capabilities.Handler{Manager: capManager}
 	for _, m := range []string{"GET", "HEAD"} {
 		router.Handle(m, "/ocs/v1.php/cloud/capabilities", capHandler.ServeOCS(ocs.V1))
@@ -130,6 +133,17 @@ func (a *App) mountRoutes() error {
 	}
 	a.configureDAV(webdavRoot, true)
 	router.HandlePrefix(httpx.MethodAny, "/remote.php/webdav/", webdav.Auth(authCfg)(webdavRoot))
+
+	if up, ok := a.uploadsFS.(*files.Uploads); ok {
+		uploadsHandler, err := webdav.NewHandler("/remote.php/dav/uploads/", up, a.instanceID)
+		if err != nil {
+			return fmt.Errorf("app: uploads: %w", err)
+		}
+		uploadsHandler.FilesPrefix = "/remote.php/dav/files/"
+		uploadsHandler.Assemble = up.Assemble
+		a.configureDAV(uploadsHandler, false)
+		router.HandlePrefix(httpx.MethodAny, "/remote.php/dav/uploads/", webdav.Auth(authCfg)(uploadsHandler))
+	}
 
 	a.Router = router
 	return nil

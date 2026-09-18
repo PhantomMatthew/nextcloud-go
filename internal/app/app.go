@@ -47,6 +47,7 @@ type App struct {
 	redisCache *cache.Redis
 	fileMeta   files.Store
 	davFS      webdav.FS
+	uploadsFS  webdav.FS
 }
 
 // New opens dependencies and mounts routes.
@@ -133,7 +134,9 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	}
 	meta := files.NewSQLStore(db)
 	a.fileMeta = meta
-	a.davFS = files.NewDAV(st, meta, a.Users)
+	dav := files.NewDAV(st, meta, a.Users)
+	a.davFS = dav
+	a.uploadsFS = files.NewUploads(st, files.NewSQLUploadStore(db), dav, a.Users)
 	if cfg.Plugin.Enabled {
 		ph, err := plugins.NewHost(ctx, plugins.HostConfig{
 			DefaultMemoryLimitMB: cfg.Plugin.DefaultMemoryLimitMB,

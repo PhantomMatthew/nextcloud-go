@@ -89,6 +89,9 @@ func seedPhase1DAV(t *testing.T, a *App) {
 	}
 	freeze := time.Date(2025, 5, 1, 12, 0, 0, 0, time.UTC)
 	d.Clock = func() time.Time { return freeze }
+	if up, ok := a.uploadsFS.(*files.Uploads); ok {
+		up.Clock = func() time.Time { return freeze }
+	}
 	mt := freeze
 	if _, _, err := a.davFS.Write(context.Background(), "admin", "/hello.txt", strings.NewReader("hello world\n"), &mt); err != nil {
 		t.Fatal(err)
@@ -111,49 +114,51 @@ func TestCaptureWebDAVGoldens(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = a.Close(ctx) })
 	seedPhase1DAV(t, a)
-	root := filepath.Join(repoRoot(t), "testdata", "golden", "webdav")
-	dirs, err := goldentest.Discover(root)
-	if err != nil {
-		t.Fatal(err)
-	}
 	h := a.Handler()
-	for _, dir := range dirs {
-		c, err := goldentest.Load(dir)
+	for _, area := range []string{"webdav", "capabilities"} {
+		root := filepath.Join(repoRoot(t), "testdata", "golden", area)
+		dirs, err := goldentest.Discover(root)
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, err := goldentest.Execute(ctx, c, func(req *http.Request) (*http.Response, error) {
-			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, req)
-			return rec.Result(), nil
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		var buf bytes.Buffer
-		fmt.Fprintf(&buf, "HTTP/1.1 %d %s\n", got.Status, http.StatusText(got.Status))
-		fmt.Fprintf(&buf, "Server: nginx\n")
-		keys := make([]string, 0, len(got.Headers))
-		for k := range got.Headers {
-			switch http.CanonicalHeaderKey(k) {
-			case "Date", "X-Request-Id", "Set-Cookie", "Server":
-				continue
+		for _, dir := range dirs {
+			c, err := goldentest.Load(dir)
+			if err != nil {
+				t.Fatal(err)
 			}
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			if http.CanonicalHeaderKey(k) == "Content-Length" {
-				continue
+			got, err := goldentest.Execute(ctx, c, func(req *http.Request) (*http.Response, error) {
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, req)
+				return rec.Result(), nil
+			})
+			if err != nil {
+				t.Fatal(err)
 			}
-			for _, v := range got.Headers.Values(k) {
-				fmt.Fprintf(&buf, "%s: %s\n", k, v)
+			var buf bytes.Buffer
+			fmt.Fprintf(&buf, "HTTP/1.1 %d %s\n", got.Status, http.StatusText(got.Status))
+			fmt.Fprintf(&buf, "Server: nginx\n")
+			keys := make([]string, 0, len(got.Headers))
+			for k := range got.Headers {
+				switch http.CanonicalHeaderKey(k) {
+				case "Date", "X-Request-Id", "Set-Cookie", "Server":
+					continue
+				}
+				keys = append(keys, k)
 			}
-		}
-		buf.WriteByte('\n')
-		buf.Write(got.Body)
-		if err := os.WriteFile(filepath.Join(dir, "response.http"), buf.Bytes(), 0o644); err != nil {
-			t.Fatal(err)
+			sort.Strings(keys)
+			for _, k := range keys {
+				if http.CanonicalHeaderKey(k) == "Content-Length" {
+					continue
+				}
+				for _, v := range got.Headers.Values(k) {
+					fmt.Fprintf(&buf, "%s: %s\n", k, v)
+				}
+			}
+			buf.WriteByte('\n')
+			buf.Write(got.Body)
+			if err := os.WriteFile(filepath.Join(dir, "response.http"), buf.Bytes(), 0o644); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 }
