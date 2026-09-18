@@ -9,21 +9,15 @@ import (
 const wwwAuthenticateValue = `Basic realm="Authorisation Required"`
 
 func BasicAuth(version Version, verifier auth.Verifier) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			user, pass, ok := auth.ParseBasicHeader(r.Header.Get("Authorization"))
-			if !ok {
-				writeUnauthorized(w, r, version)
-				return
-			}
-			principal, err := verifier.Verify(r.Context(), user, pass)
-			if err != nil {
-				writeUnauthorized(w, r, version)
-				return
-			}
-			next.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), principal)))
-		})
+	return Auth(version, auth.MiddlewareConfig{Verifier: verifier})
+}
+
+func Auth(version Version, cfg auth.MiddlewareConfig) func(http.Handler) http.Handler {
+	cfg.Action = "login"
+	cfg.OnAuthFail = func(w http.ResponseWriter, r *http.Request, _ error) {
+		writeUnauthorized(w, r, version)
 	}
+	return auth.Middleware(cfg)
 }
 
 func writeUnauthorized(w http.ResponseWriter, r *http.Request, version Version) {

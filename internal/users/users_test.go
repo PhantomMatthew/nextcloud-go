@@ -58,6 +58,10 @@ func TestSQLStoreUsers(t *testing.T) {
 	if got.DisplayName != "Alice" || !got.Enabled {
 		t.Errorf("%+v", got)
 	}
+	byID, err := store.GetByID(ctx, got.ID)
+	if err != nil || byID.UID != "alice" {
+		t.Fatalf("GetByID = %+v %v", byID, err)
+	}
 	if err := store.Create(ctx, u); !errors.Is(err, ErrExists) {
 		t.Errorf("dup = %v", err)
 	}

@@ -5,6 +5,8 @@ import "context"
 const (
 	AuthMethodBasic       = "basic"
 	AuthMethodAppPassword = "app_password"
+	AuthMethodBearer      = "bearer"
+	AuthMethodSession     = "session"
 )
 
 type Principal struct {
@@ -12,6 +14,20 @@ type Principal struct {
 	DisplayName string
 	Enabled     bool
 	AuthMethod  string
+}
+
+// UserInfo is the account projection auth needs without importing internal/users.
+type UserInfo struct {
+	ID          int64
+	UID         string
+	DisplayName string
+	Enabled     bool
+}
+
+// UserSource looks up accounts for Bearer and session authentication.
+type UserSource interface {
+	GetByUID(ctx context.Context, uid string) (*UserInfo, error)
+	GetByID(ctx context.Context, id int64) (*UserInfo, error)
 }
 
 type ctxKey struct{}

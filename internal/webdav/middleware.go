@@ -9,21 +9,15 @@ import (
 const wwwAuthenticateValue = `Basic realm="Authorisation Required"`
 
 func BasicAuth(verifier auth.Verifier) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			user, pass, ok := auth.ParseBasicHeader(r.Header.Get("Authorization"))
-			if !ok {
-				writeWebDAVUnauthorized(w)
-				return
-			}
-			principal, err := verifier.Verify(r.Context(), user, pass)
-			if err != nil {
-				writeWebDAVUnauthorized(w)
-				return
-			}
-			next.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), principal)))
-		})
+	return Auth(auth.MiddlewareConfig{Verifier: verifier})
+}
+
+func Auth(cfg auth.MiddlewareConfig) func(http.Handler) http.Handler {
+	cfg.Action = "webdav"
+	cfg.OnAuthFail = func(w http.ResponseWriter, _ *http.Request, _ error) {
+		writeWebDAVUnauthorized(w)
 	}
+	return auth.Middleware(cfg)
 }
 
 func writeWebDAVUnauthorized(w http.ResponseWriter) {

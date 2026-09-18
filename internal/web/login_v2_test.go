@@ -9,9 +9,12 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
 	"github.com/PhantomMatthew/nextcloud-go/internal/login"
+	"github.com/PhantomMatthew/nextcloud-go/internal/session"
+	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 )
 
 type stubVerifier struct {
@@ -44,7 +47,7 @@ func newHandler(t *testing.T, issuer AppPasswordIssuer) *LoginV2 {
 	return h
 }
 
-func basicAuth(user, pass string) string {
+func basicAuth(user, pass string) string { //nolint:unparam
 	return "Basic " + basicEncode(user+":"+pass)
 }
 
@@ -296,6 +299,84 @@ func TestHandleGrantSuccess(t *testing.T) {
 	}
 	if got.LoginName != "alice" || got.AppPassword != "app-pw-grant" {
 		t.Fatalf("poll response: %+v", got)
+	}
+}
+
+type stubUserStore struct {
+	u *users.User
+}
+
+func (s stubUserStore) Create(context.Context, *users.User) error { return nil }
+func (s stubUserStore) GetByUID(_ context.Context, uid string) (*users.User, error) {
+	if s.u == nil || s.u.UID != uid {
+		return nil, users.ErrNotFound
+	}
+	cp := *s.u
+	return &cp, nil
+}
+
+func (s stubUserStore) GetByID(_ context.Context, id int64) (*users.User, error) {
+	if s.u == nil || s.u.ID != id {
+		return nil, users.ErrNotFound
+	}
+	cp := *s.u
+	return &cp, nil
+}
+func (stubUserStore) UpdatePasswordHash(context.Context, int64, string) error { return nil }
+func (stubUserStore) Count(context.Context) (int64, error)                    { return 1, nil }
+
+type stubSessionStore struct {
+	created *session.Session
+}
+
+func (s *stubSessionStore) Create(_ context.Context, userID int64, ua, ip string, ttl time.Duration, now time.Time) (*session.Session, error) {
+	s.created = &session.Session{ID: "sessidhex", UserID: userID, UserAgent: ua, IP: ip, CreatedAt: now, LastSeenAt: now, ExpiresAt: now.Add(ttl)}
+	return s.created, nil
+}
+
+func (*stubSessionStore) Get(context.Context, string) (*session.Session, error) {
+	return nil, session.ErrNotFound
+}
+
+func (*stubSessionStore) Touch(context.Context, string, time.Time, time.Duration) error {
+	return nil
+}
+func (*stubSessionStore) Delete(context.Context, string) error { return nil }
+
+func TestHandleGrantSetsSessionCookie(t *testing.T) {
+	h := newHandler(t, stubIssuer{password: "app-pw-grant"})
+	h.Users = stubUserStore{u: &users.User{ID: 7, UID: "alice", DisplayName: "Alice", Enabled: true}}
+	ss := &stubSessionStore{}
+	h.Sessions = ss
+	flow, err := h.Service.Init(context.Background(), "test client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := h.Service.BeginGrant(context.Background(), flow.LoginToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := strings.NewReader(url.Values{"stateToken": {st.StateToken}}.Encode())
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/index.php/login/v2/grant", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", basicAuth("alice", "wonderland"))
+	w := httptest.NewRecorder()
+	h.HandleGrant(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200", w.Code)
+	}
+	cookie := w.Result().Cookies()
+	found := false
+	for _, c := range cookie {
+		if c.Name == session.CookieName && c.Value == "sessidhex" && c.HttpOnly {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing session cookie: %+v", cookie)
+	}
+	if ss.created == nil || ss.created.UserID != 7 {
+		t.Fatalf("session %+v", ss.created)
 	}
 }
 

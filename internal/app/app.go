@@ -20,6 +20,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/login"
 	"github.com/PhantomMatthew/nextcloud-go/internal/migrations"
 	"github.com/PhantomMatthew/nextcloud-go/internal/plugins"
+	"github.com/PhantomMatthew/nextcloud-go/internal/session"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage/localfs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
@@ -39,6 +40,7 @@ type App struct {
 	hasher     auth.PasswordHasher
 	authStore  auth.Store
 	loginStore login.Store
+	sessions   session.Store
 	secret     string
 	instanceID string
 	memCache   *cache.Memory
@@ -86,6 +88,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	a.Users = users.NewSQLStore(db)
 	a.authStore = auth.NewSQLStore(db)
 	a.loginStore = login.NewSQLStore(db)
+	a.sessions = session.NewSQLStore(db)
 	if err := users.EnsureBootstrapAdmin(ctx, a.Users, a.hasher, users.BootstrapAdmin{
 		UID:         cfg.Auth.BootstrapAdmin.UID,
 		Password:    cfg.Auth.BootstrapAdmin.Password,

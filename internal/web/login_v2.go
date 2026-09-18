@@ -4,11 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
 	"github.com/PhantomMatthew/nextcloud-go/internal/login"
+	"github.com/PhantomMatthew/nextcloud-go/internal/session"
+	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 )
 
 const wwwAuthenticateValue = `Basic realm="Authorisation Required"`
@@ -18,12 +22,16 @@ type AppPasswordIssuer interface {
 }
 
 type LoginV2 struct {
-	Service   *login.Service
-	Verifier  auth.Verifier
-	Issuer    AppPasswordIssuer
-	BaseURL   func(*http.Request) string
-	FlowRoute string
-	PollRoute string
+	Service    *login.Service
+	Verifier   auth.Verifier
+	Issuer     AppPasswordIssuer
+	BaseURL    func(*http.Request) string
+	FlowRoute  string
+	PollRoute  string
+	Sessions   session.Store
+	Users      users.Store
+	SessionTTL time.Duration
+	Now        func() time.Time
 }
 
 func NewLoginV2(svc *login.Service, verifier auth.Verifier, issuer AppPasswordIssuer) *LoginV2 {
@@ -194,6 +202,7 @@ func (h *LoginV2) HandleGrant(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to record grant", http.StatusInternalServerError)
 		return
 	}
+	h.setSessionCookie(w, r, principal)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(grantedHTML()))
@@ -211,6 +220,42 @@ func (h *LoginV2) requireAuth(w http.ResponseWriter, r *http.Request) (*auth.Pri
 		return nil, false
 	}
 	return principal, true
+}
+
+func (h *LoginV2) setSessionCookie(w http.ResponseWriter, r *http.Request, principal *auth.Principal) {
+	if h.Sessions == nil || h.Users == nil || principal == nil {
+		return
+	}
+	u, err := h.Users.GetByUID(r.Context(), principal.UID)
+	if err != nil {
+		return
+	}
+	now := time.Now().UTC()
+	if h.Now != nil {
+		now = h.Now().UTC()
+	}
+	ttl := h.SessionTTL
+	if ttl <= 0 {
+		ttl = 24 * time.Hour
+	}
+	ua := r.Header.Get("User-Agent")
+	ip := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		ip = host
+	}
+	sess, err := h.Sessions.Create(r.Context(), u.ID, ua, ip, ttl, now)
+	if err != nil {
+		return
+	}
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Phase 1 login v2 is HTTP; Secure follows TLS in a later phase.
+		Name:     session.CookieName,
+		Value:    sess.ID,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   false,
+		MaxAge:   int(ttl.Seconds()),
+	})
 }
 
 func writePlainUnauthorized(w http.ResponseWriter) {

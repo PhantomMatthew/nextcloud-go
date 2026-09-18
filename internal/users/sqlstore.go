@@ -57,9 +57,17 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 }
 
 func (s *SQLStore) GetByUID(ctx context.Context, uid string) (*User, error) {
-	row := s.db.QueryRow(ctx, `
-SELECT id, uid, display_name, email, password_hash, quota_bytes, enabled, created_at, updated_at
+	return s.getUser(ctx, `SELECT id, uid, display_name, email, password_hash, quota_bytes, enabled, created_at, updated_at
 FROM users WHERE uid = ?`, uid)
+}
+
+func (s *SQLStore) GetByID(ctx context.Context, id int64) (*User, error) {
+	return s.getUser(ctx, `SELECT id, uid, display_name, email, password_hash, quota_bytes, enabled, created_at, updated_at
+FROM users WHERE id = ?`, id)
+}
+
+func (s *SQLStore) getUser(ctx context.Context, q string, arg any) (*User, error) {
+	row := s.db.QueryRow(ctx, q, arg)
 	var u User
 	var email sql.NullString
 	var quota sql.NullInt64

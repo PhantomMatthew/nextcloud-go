@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
 	"github.com/PhantomMatthew/nextcloud-go/internal/capabilities"
 	"github.com/PhantomMatthew/nextcloud-go/internal/httpx"
 	"github.com/PhantomMatthew/nextcloud-go/internal/login"
 	"github.com/PhantomMatthew/nextcloud-go/internal/ocs"
+	"github.com/PhantomMatthew/nextcloud-go/internal/session"
 	"github.com/PhantomMatthew/nextcloud-go/internal/status"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 	"github.com/PhantomMatthew/nextcloud-go/internal/web"
@@ -85,21 +87,31 @@ func (a *App) mountRoutes() error {
 	userVerifier := users.NewPasswordVerifier(a.Users, a.hasher)
 	appPasswordVerifier := auth.NewAppPasswordVerifier(a.authStore, a.secret)
 	verifier := auth.NewChainVerifier(appPasswordVerifier, userVerifier)
+	userAccounts := authUsers{store: a.Users}
+	authCfg := auth.MiddlewareConfig{
+		Verifier: verifier,
+		Bearer:   &auth.BearerVerifier{Store: a.authStore, Users: userAccounts, Secret: a.secret, Cache: a.Cache},
+		Sessions: &auth.SessionVerifier{Sessions: a.sessions, Users: userAccounts},
+		Throttle: auth.NewCacheThrottler(a.Cache, 8, 30*time.Second),
+		Cookie:   session.CookieName,
+	}
 	issuer := &appPasswordIssuer{store: a.authStore, secret: a.secret}
 
 	for _, m := range []string{"GET", "HEAD"} {
-		router.Handle(m, "/ocs/v1.php/cloud/user", ocs.CloudUserHandler(ocs.V1), httpx.Middleware(ocs.BasicAuth(ocs.V1, verifier)))
-		router.Handle(m, "/ocs/v2.php/cloud/user", ocs.CloudUserHandler(ocs.V2), httpx.Middleware(ocs.BasicAuth(ocs.V2, verifier)))
+		router.Handle(m, "/ocs/v1.php/cloud/user", ocs.CloudUserHandler(ocs.V1), httpx.Middleware(ocs.Auth(ocs.V1, authCfg)))
+		router.Handle(m, "/ocs/v2.php/cloud/user", ocs.CloudUserHandler(ocs.V2), httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
 	}
 	for _, m := range []string{"GET", "HEAD"} {
-		router.Handle(m, "/ocs/v1.php/core/getapppassword", ocs.GetAppPasswordHandler(ocs.V1, issuer), httpx.Middleware(ocs.BasicAuth(ocs.V1, verifier)))
-		router.Handle(m, "/ocs/v2.php/core/getapppassword", ocs.GetAppPasswordHandler(ocs.V2, issuer), httpx.Middleware(ocs.BasicAuth(ocs.V2, verifier)))
+		router.Handle(m, "/ocs/v1.php/core/getapppassword", ocs.GetAppPasswordHandler(ocs.V1, issuer), httpx.Middleware(ocs.Auth(ocs.V1, authCfg)))
+		router.Handle(m, "/ocs/v2.php/core/getapppassword", ocs.GetAppPasswordHandler(ocs.V2, issuer), httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
 	}
-	router.Handle("DELETE", "/ocs/v1.php/core/apppassword", ocs.DeleteAppPasswordHandler(ocs.V1, issuer), httpx.Middleware(ocs.BasicAuth(ocs.V1, verifier)))
-	router.Handle("DELETE", "/ocs/v2.php/core/apppassword", ocs.DeleteAppPasswordHandler(ocs.V2, issuer), httpx.Middleware(ocs.BasicAuth(ocs.V2, verifier)))
+	router.Handle("DELETE", "/ocs/v1.php/core/apppassword", ocs.DeleteAppPasswordHandler(ocs.V1, issuer), httpx.Middleware(ocs.Auth(ocs.V1, authCfg)))
+	router.Handle("DELETE", "/ocs/v2.php/core/apppassword", ocs.DeleteAppPasswordHandler(ocs.V2, issuer), httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
 
 	loginSvc := login.NewService(a.loginStore)
 	lv2 := web.NewLoginV2(loginSvc, verifier, issuer)
+	lv2.Sessions = a.sessions
+	lv2.Users = a.Users
 	router.Handle(http.MethodPost, "/index.php/login/v2", http.HandlerFunc(lv2.HandleInit))
 	router.Handle(http.MethodPost, "/index.php/login/v2/poll", http.HandlerFunc(lv2.HandlePoll))
 	router.HandlePrefix(http.MethodGet, "/index.php/login/v2/flow/", http.HandlerFunc(lv2.HandleFlowToken))
@@ -111,13 +123,13 @@ func (a *App) mountRoutes() error {
 		return fmt.Errorf("app: webdav: %w", err)
 	}
 	a.configureDAV(davHandler, false)
-	router.HandlePrefix(httpx.MethodAny, "/remote.php/dav/files/", webdav.BasicAuth(verifier)(davHandler))
+	router.HandlePrefix(httpx.MethodAny, "/remote.php/dav/files/", webdav.Auth(authCfg)(davHandler))
 	webdavRoot, err := webdav.NewHandler("/remote.php/webdav/", a.davFS, a.instanceID)
 	if err != nil {
 		return fmt.Errorf("app: webdav-root: %w", err)
 	}
 	a.configureDAV(webdavRoot, true)
-	router.HandlePrefix(httpx.MethodAny, "/remote.php/webdav/", webdav.BasicAuth(verifier)(webdavRoot))
+	router.HandlePrefix(httpx.MethodAny, "/remote.php/webdav/", webdav.Auth(authCfg)(webdavRoot))
 
 	a.Router = router
 	return nil
