@@ -6,12 +6,14 @@ import "github.com/PhantomMatthew/nextcloud-go/internal/ocs"
 type FilesProvider struct {
 	ChunkedMaxSize     int64
 	ChunkedMaxParallel int
+	Undelete           bool
 }
 
 func DefaultFilesProvider() FilesProvider {
 	return FilesProvider{
 		ChunkedMaxSize:     5368709120,
 		ChunkedMaxParallel: 20,
+		Undelete:           true,
 	}
 }
 
@@ -22,6 +24,7 @@ func (f FilesProvider) GetCapabilities() ocs.OrderedMap {
 				ocs.K("max_size", f.ChunkedMaxSize),
 				ocs.K("max_parallel_count", f.ChunkedMaxParallel),
 			)),
+			ocs.K("undelete", f.Undelete),
 		)),
 	)
 }

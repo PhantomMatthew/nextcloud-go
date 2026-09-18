@@ -29,6 +29,7 @@
      <max_size>5368709120</max_size>
      <max_parallel_count>20</max_parallel_count>
     </chunked_upload>
+    <undelete>1</undelete>
    </files>
   </capabilities>
  </data>
