@@ -43,6 +43,10 @@ Copy resulting HAR files to `testdata/captures/` and import with `tools/golden-g
 
 Target: ≥50 HAR files archived. Replayable cases should be imported into `testdata/golden/`.
 
+## Phase 1 只读（操作员）
+
+针对已启动的 `ncgo`（不是 PHP reference）做桌面冒烟：登录 + 浏览 + 下载。证据目录 `docs/evidence/phase1/` 本阶段不强制。进程内 golden 在 `testdata/golden/webdav/`。
+
 ## Addon
 
 `mitmproxy_har.py` names output files from `CAPTURE_SCENARIO` and a UTC timestamp.
