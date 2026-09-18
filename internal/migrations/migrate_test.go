@@ -29,13 +29,13 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("up: %v", err)
 	}
-	if n != 2 {
-		t.Errorf("applied = %d, want 2", n)
+	if n != 3 {
+		t.Errorf("applied = %d, want 3", n)
 	}
 
 	want := []string{
 		"users", "groups", "group_members", "sessions",
-		"app_passwords", "login_flows", "jobs", "module_config", "files",
+		"app_passwords", "login_flows", "jobs", "module_config", "files", "uploads",
 	}
 	for _, table := range want {
 		var name string
@@ -49,7 +49,7 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version: %v", err)
 	}
-	if v != 2 || dirty {
+	if v != 3 || dirty {
 		t.Errorf("version=%d dirty=%v", v, dirty)
 	}
 
@@ -68,13 +68,17 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version after down: %v", err)
 	}
-	if v != 1 || dirty {
+	if v != 2 || dirty {
 		t.Errorf("after down version=%d dirty=%v", v, dirty)
 	}
-	var filesName string
-	err = db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "files").Scan(&filesName)
+	var uploadsName string
+	err = db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "uploads").Scan(&uploadsName)
 	if err == nil {
-		t.Error("table files still present after down to v1")
+		t.Error("table uploads still present after down to v2")
+	}
+	var filesName string
+	if err := db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "files").Scan(&filesName); err != nil {
+		t.Errorf("table files missing after down to v2: %v", err)
 	}
 
 	n, err = Up(ctx, std, database.DialectSQLite, logger)
@@ -88,7 +92,7 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version after re-up: %v", err)
 	}
-	if v != 2 || dirty {
+	if v != 3 || dirty {
 		t.Errorf("after re-up version=%d dirty=%v", v, dirty)
 	}
 }
