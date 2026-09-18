@@ -3,12 +3,12 @@ package webdav
 import (
 	"context"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
 )
@@ -562,4 +562,45 @@ func TestHandler_NewHandler_ErrorOnBadPrefix(t *testing.T) {
 	}
 }
 
-var _ io.Reader = (*strings.Reader)(nil)
+func TestHandler_AssembleMoveDotFile(t *testing.T) {
+	h, err := NewHandler("/remote.php/dav/uploads/", NewInMemoryFS(), "oc123abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotTID, gotDest string
+	h.Assemble = func(_ context.Context, srcUser, transferID, destUser, destPath string, overwrite bool, mtime *time.Time, checksum, ifHeader string) (*Entry, bool, error) {
+		if srcUser != "alice" || destUser != "alice" || !overwrite {
+			t.Errorf("users overwrite = %s %s %v", srcUser, destUser, overwrite)
+		}
+		gotTID = transferID
+		gotDest = destPath
+		if checksum != "SHA256:ab" || ifHeader == "" || mtime == nil {
+			t.Errorf("meta checksum=%q if=%q mtime=%v", checksum, ifHeader, mtime)
+		}
+		return &Entry{Path: destPath, ETag: "etag1", NumericID: 9, ModTime: time.Unix(1, 0).UTC()}, true, nil
+	}
+	p := &auth.Principal{UID: "alice", AuthMethod: auth.AuthMethodBasic}
+	rr := doRequest(h, "MOVE", "/remote.php/dav/uploads/alice/tid1/.file", p, map[string]string{
+		HeaderDestination: "https://cloud.example.com/remote.php/dav/files/alice/path/to/file.bin",
+		HeaderOCChecksum:  "SHA256:ab",
+		HeaderOCMtime:     "1714579200",
+		HeaderIf:          `</remote.php/dav/files/alice/path/to/file.bin> (["old"])`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if gotTID != "tid1" || gotDest != "/path/to/file.bin" {
+		t.Fatalf("tid=%q dest=%q", gotTID, gotDest)
+	}
+	if rr.Header().Get(HeaderOCFileID) == "" || rr.Header().Get(HeaderOCETag) == "" {
+		t.Fatalf("missing headers %v", rr.Header())
+	}
+}
+
+func TestHandler_ParseFilesDestination(t *testing.T) {
+	h := &Handler{FilesPrefix: "/remote.php/dav/files/"}
+	user, sub, err := h.parseFilesDestination("/remote.php/dav/files/alice/foo.bin")
+	if err != nil || user != "alice" || sub != "/foo.bin" {
+		t.Fatalf("got %s %s %v", user, sub, err)
+	}
+}

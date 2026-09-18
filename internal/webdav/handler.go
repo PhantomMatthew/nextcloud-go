@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,9 @@ const (
 	HeaderOCChunked   = "OC-Chunked"
 	HeaderOCETag      = "OC-ETag"
 	HeaderOCFileID    = "OC-FileId"
+	HeaderOCChecksum  = "OC-Checksum"
+	HeaderOCTotalLen  = "OC-Total-Length"
+	HeaderIf          = "If"
 
 	davCompliance  = "1, 3, extended-mkcol"
 	allowedMethods = "OPTIONS, GET, HEAD, PROPFIND, PUT, MKCOL, DELETE, MOVE, COPY"
@@ -37,12 +41,14 @@ const (
 )
 
 type Handler struct {
-	Prefix     string
-	FS         FS
-	InstanceID string
-	OwnerUID   func(*http.Request) string
-	OwnerName  func(uid string) string
-	Quota      func(ctx context.Context, uid string) (used, available int64, unlimited bool)
+	Prefix      string
+	FS          FS
+	InstanceID  string
+	OwnerUID    func(*http.Request) string
+	OwnerName   func(uid string) string
+	Quota       func(ctx context.Context, uid string) (used, available int64, unlimited bool)
+	FilesPrefix string
+	Assemble    func(ctx context.Context, srcUser, transferID, destUser, destPath string, overwrite bool, mtime *time.Time, checksum, ifHeader string) (*Entry, bool, error)
 }
 
 // ErrInvalidPrefix is returned by NewHandler when the mount prefix does not
@@ -222,19 +228,13 @@ func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	body := r.Body
-	defer body.Close()
-	data, err := io.ReadAll(body)
-	if err != nil {
-		http.Error(w, "Bad Request", http.StatusBadRequest)
-		return
-	}
-	if r.ContentLength >= 0 && int64(len(data)) != r.ContentLength {
-		http.Error(w, "Bad Request", http.StatusBadRequest)
-		return
+	body := io.Reader(r.Body)
+	defer r.Body.Close()
+	if r.ContentLength >= 0 {
+		body = io.LimitReader(r.Body, r.ContentLength)
 	}
 
-	entry, created, err := h.FS.Write(r.Context(), user, sub, bytes.NewReader(data), mtimePtr)
+	entry, created, err := h.FS.Write(r.Context(), user, sub, body, mtimePtr)
 	if err != nil {
 		writeFSError(w, err)
 		return
@@ -356,6 +356,10 @@ func writeFSError(w http.ResponseWriter, err error) {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 	case errors.Is(err, ErrLocked):
 		http.Error(w, "Locked", http.StatusLocked)
+	case errors.Is(err, ErrPrecondition):
+		http.Error(w, "Precondition Failed", http.StatusPreconditionFailed)
+	case errors.Is(err, ErrBadRequest):
+		http.Error(w, "Bad Request", http.StatusBadRequest)
 	case errors.Is(err, ErrExists):
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 	case errors.Is(err, ErrNotDir), errors.Is(err, ErrIsDir), errors.Is(err, ErrParentMissing):
@@ -378,7 +382,25 @@ func (h *Handler) mkcol(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	entry, err := h.FS.Mkdir(r.Context(), user, sub)
+	var entry *Entry
+	var err error
+	if mm, ok := h.FS.(MetaMkdirFS); ok {
+		meta := CollectionMeta{}
+		if raw := r.Header.Get(HeaderDestination); raw != "" {
+			if _, dest, derr := h.parseFilesDestination(raw); derr == nil {
+				meta.Destination = dest
+			}
+		}
+		if v := r.Header.Get(HeaderOCTotalLen); v != "" {
+			n, perr := strconv.ParseInt(v, 10, 64)
+			if perr == nil {
+				meta.TotalLength = n
+			}
+		}
+		entry, err = mm.MkdirMeta(r.Context(), user, sub, meta)
+	} else {
+		entry, err = h.FS.Mkdir(r.Context(), user, sub)
+	}
 	if err != nil {
 		writeFSError(w, err)
 		return
@@ -416,6 +438,42 @@ func (h *Handler) moveOrCopy(w http.ResponseWriter, r *http.Request, isCopy bool
 		return
 	}
 
+	overwrite := parseOverwrite(r)
+
+	if !isCopy && h.Assemble != nil {
+		if tid, ok := assembleTransferID(srcSub); ok {
+			dstUser, dstSub, derr := h.parseFilesDestination(r.Header.Get(HeaderDestination))
+			if derr != nil {
+				http.Error(w, derr.Error(), http.StatusBadRequest)
+				return
+			}
+			if dstUser != srcUser {
+				http.Error(w, "Bad Gateway", http.StatusBadGateway)
+				return
+			}
+			var mtimePtr *time.Time
+			if v := r.Header.Get(HeaderOCMtime); v != "" {
+				secs, err := strconv.ParseInt(v, 10, 64)
+				if err == nil {
+					t := time.Unix(secs, 0).UTC()
+					mtimePtr = &t
+				}
+			}
+			entry, created, err := h.Assemble(r.Context(), srcUser, tid, dstUser, dstSub, overwrite, mtimePtr, r.Header.Get(HeaderOCChecksum), r.Header.Get(HeaderIf))
+			if err != nil {
+				writeMoveCopyErr(w, err)
+				return
+			}
+			emitMoveCopyHeaders(w, h.InstanceID, entry)
+			if created {
+				w.WriteHeader(http.StatusCreated)
+			} else {
+				w.WriteHeader(http.StatusNoContent)
+			}
+			return
+		}
+	}
+
 	dstUser, dstSub, derr := h.parseDestination(r)
 	if derr != nil {
 		http.Error(w, derr.Error(), http.StatusBadRequest)
@@ -429,8 +487,6 @@ func (h *Handler) moveOrCopy(w http.ResponseWriter, r *http.Request, isCopy bool
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
-
-	overwrite := parseOverwrite(r)
 
 	if isCopy {
 		depth := r.Header.Get(HeaderDepth)
@@ -475,11 +531,69 @@ func emitMoveCopyHeaders(w http.ResponseWriter, instanceID string, entry *Entry)
 
 func writeMoveCopyErr(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, ErrExists):
+	case errors.Is(err, ErrExists), errors.Is(err, ErrPrecondition):
 		http.Error(w, "Precondition Failed", http.StatusPreconditionFailed)
 	default:
 		writeFSError(w, err)
 	}
+}
+
+func (h *Handler) filesPrefix() string {
+	p := h.FilesPrefix
+	if p == "" {
+		p = "/remote.php/dav/files/"
+	}
+	if !strings.HasSuffix(p, "/") {
+		p += "/"
+	}
+	return p
+}
+
+func assembleTransferID(sub string) (string, bool) {
+	np := normalizePath(sub)
+	if path.Base(np) != ".file" {
+		return "", false
+	}
+	tid := strings.TrimPrefix(path.Dir(np), "/")
+	if tid == "" || strings.Contains(tid, "/") {
+		return "", false
+	}
+	return tid, true
+}
+
+func (h *Handler) parseFilesDestination(raw string) (user, sub string, err error) {
+	if raw == "" {
+		return "", "", errors.New("missing Destination")
+	}
+	u, perr := url.Parse(raw)
+	if perr != nil {
+		return "", "", errors.New("invalid Destination")
+	}
+	p := u.Path
+	if p == "" {
+		return "", "", errors.New("invalid Destination path")
+	}
+	prefix := h.filesPrefix()
+	if !strings.HasPrefix(p, prefix) {
+		return "", "", errors.New("destination outside DAV namespace")
+	}
+	rest := strings.TrimPrefix(p, prefix)
+	if rest == "" {
+		return "", "", errors.New("invalid Destination path")
+	}
+	slash := strings.IndexByte(rest, '/')
+	if slash < 0 {
+		return rest, "/", nil
+	}
+	user = rest[:slash]
+	sub = rest[slash:]
+	if user == "" {
+		return "", "", errors.New("invalid Destination path")
+	}
+	if sub == "" {
+		sub = "/"
+	}
+	return user, sub, nil
 }
 
 func (h *Handler) parseDestination(r *http.Request) (user, sub string, err error) {

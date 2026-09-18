@@ -19,6 +19,8 @@ var (
 	ErrParentMissing = errors.New("webdav: parent collection missing")
 	ErrExists        = errors.New("webdav: target already exists")
 	ErrLocked        = errors.New("webdav: locked")
+	ErrBadRequest    = errors.New("webdav: bad request")
+	ErrPrecondition  = errors.New("webdav: precondition failed")
 )
 
 type Entry struct {
@@ -45,6 +47,17 @@ type FS interface {
 	Remove(ctx context.Context, user, path string) error
 	Move(ctx context.Context, srcUser, srcPath, dstUser, dstPath string, overwrite bool) (*Entry, bool, error)
 	Copy(ctx context.Context, srcUser, srcPath, dstUser, dstPath string, overwrite, depthInfinity bool) (*Entry, bool, error)
+}
+
+// CollectionMeta is optional MKCOL metadata (chunked upload v2).
+type CollectionMeta struct {
+	Destination string
+	TotalLength int64
+}
+
+// MetaMkdirFS is implemented by filesystems that accept MKCOL headers.
+type MetaMkdirFS interface {
+	MkdirMeta(ctx context.Context, user, path string, meta CollectionMeta) (*Entry, error)
 }
 
 type InMemoryFS struct {
