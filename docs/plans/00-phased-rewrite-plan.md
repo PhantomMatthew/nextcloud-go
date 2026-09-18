@@ -189,6 +189,9 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-19** — Phase 2e: RFC 4918 exclusive write LOCK/UNLOCK on files DAV,
+  `0007_file_locks`, 423 on unlocked writes, DAV class 2 (see ADR-0012).
+  Sharing, S3, jobs, and search remain later.
 - **2026-09-18** — Phase 2d: WebDAV PROPPATCH for `oc:favorite` on
   path-keyed `file_properties`, files PROPFIND emits favorite
   (see ADR-0011). LOCK, sharing, S3, jobs, and search remain later.
