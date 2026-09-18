@@ -1,0 +1,24 @@
+schema_version: 1
+id: webdav/029-lock-file
+description: |
+  Authenticated exclusive write LOCK on assembled.bin returns 200 and a lock token.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 2e
+  captured_at: "2026-09-19T00:00:00Z"
+request:
+  body_kind: xml
+response:
+  body_kind: xml
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 200
+replayable: true
+mutating: true
+synthetic: true
+tags: [webdav, lock, phase2]

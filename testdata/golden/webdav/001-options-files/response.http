@@ -1,7 +1,7 @@
 HTTP/1.1 200 OK
 Server: nginx
-Allow: OPTIONS, GET, HEAD, PROPFIND, PUT, MKCOL, DELETE, MOVE, COPY, PROPPATCH
-Dav: 1, 3, extended-mkcol
+Allow: OPTIONS, GET, HEAD, PROPFIND, PUT, MKCOL, DELETE, MOVE, COPY, PROPPATCH, LOCK, UNLOCK
+Dav: 1, 2, 3, extended-mkcol
 Feature-Policy: autoplay 'self';camera 'none';fullscreen 'self';geolocation 'none';microphone 'none';payment 'none'
 Ms-Author-Via: DAV
 Referrer-Policy: no-referrer

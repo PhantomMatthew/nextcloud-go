@@ -1,0 +1,15 @@
+HTTP/1.1 200 OK
+Server: nginx
+Content-Type: application/xml; charset=utf-8
+Feature-Policy: autoplay 'self';camera 'none';fullscreen 'self';geolocation 'none';microphone 'none';payment 'none'
+Lock-Token: <opaquelocktoken:ncgo0000000000000000000000000001>
+Referrer-Policy: no-referrer
+Timeout: Second-1800
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Permitted-Cross-Domain-Policies: none
+X-Robots-Tag: noindex, nofollow
+X-Xss-Protection: 1; mode=block
+
+<?xml version="1.0"?>
+<d:prop xmlns:d="DAV:"><d:lockdiscovery><d:activelock><d:locktype><d:write/></d:locktype><d:lockscope><d:exclusive/></d:lockscope><d:depth>0</d:depth><d:owner>admin</d:owner><d:timeout>Second-1800</d:timeout><d:locktoken><d:href>opaquelocktoken:ncgo0000000000000000000000000001</d:href></d:locktoken><d:lockroot><d:href>/remote.php/dav/files/admin/assembled.bin</d:href></d:lockroot></d:activelock></d:lockdiscovery></d:prop>

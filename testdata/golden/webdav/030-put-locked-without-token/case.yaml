@@ -1,0 +1,24 @@
+schema_version: 1
+id: webdav/030-put-locked-without-token
+description: |
+  PUT on a locked file without If token returns 423 Locked.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 2e
+  captured_at: "2026-09-19T00:00:00Z"
+request:
+  body_kind: bytes
+response:
+  body_kind: text
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 423
+replayable: true
+mutating: false
+synthetic: true
+tags: [webdav, lock, phase2]

@@ -1,0 +1,16 @@
+LOCK /remote.php/dav/files/admin/assembled.bin HTTP/1.1
+Host: cloud.example.com
+User-Agent: ncgo-goldentest/0.0
+Accept: */*
+Authorization: Basic YWRtaW46YWRtaW4=
+Timeout: Second-1800
+Depth: 0
+Content-Type: application/xml
+Content-Length: 173
+
+<?xml version="1.0"?>
+<d:lockinfo xmlns:d="DAV:">
+  <d:lockscope><d:exclusive/></d:lockscope>
+  <d:locktype><d:write/></d:locktype>
+  <d:owner>admin</d:owner>
+</d:lockinfo>
