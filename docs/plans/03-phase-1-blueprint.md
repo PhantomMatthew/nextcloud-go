@@ -1,8 +1,10 @@
 # Phase 1 Blueprint: Status, OCS Capabilities, Basic Auth, Routing
 
-- Status: Draft (planning only — no code yet)
+- Status: Draft (planning only — WebDAV read-only was promoted into Phase 1;
+  this document's discovery-only slice is superseded by
+  `00-phased-rewrite-plan.md` where they conflict)
 - Date: 2026-04-29
-- Companion ADRs: 0004 (OCS envelope), 0005 (auth strategy)
+- Companion ADRs: 0004 (OCS envelope), 0005 (auth strategy), 0007 (filecache)
 - Predecessors: `00-phased-rewrite-plan.md`, `01-phase-0-blueprint.md`,
   `02-golden-harness.md`
 
@@ -418,4 +420,8 @@ Phase 1 *planning*.
 
 ## Change Log
 
+- **2026-09-18** — WebDAV read-only (PROPFIND/GET/HEAD/OPTIONS) is in Phase 1
+  per `00-phased-rewrite-plan.md` and ADR-0007. In-process goldens under
+  `testdata/golden/webdav/` are the code exit gate; desktop smoke remains
+  operator evidence (`docs/evidence/phase1/` is not required in this commit).
 - **2026-09-17** — CI matrix updated to Linux/macOS × Go 1.27 (ADR-0006).

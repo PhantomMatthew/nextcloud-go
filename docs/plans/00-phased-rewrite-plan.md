@@ -189,5 +189,9 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-18** — Phase 1 code path: SQL filecache, localfs DAV, webdav-root
+  alias, Bearer/session/bruteforce middleware, and in-process read-only WebDAV
+  goldens (see ADR-0007). Desktop client smoke and HAR capture remain operator
+  work.
 - **2026-09-17** — CI matrix updated to Linux/macOS × Go 1.27 (see ADR-0006).
 - **2026-04-29** — Initial plan committed.

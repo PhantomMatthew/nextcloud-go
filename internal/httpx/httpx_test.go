@@ -3,6 +3,7 @@ package httpx
 import (
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -259,5 +260,52 @@ func TestRequestIDFromContext_EmptyWhenAbsent(t *testing.T) {
 	t.Parallel()
 	if got := RequestIDFromContext(context.Background()); got != "" {
 		t.Fatalf("expected empty string, got %q", got)
+	}
+}
+
+func TestWritePlainError(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	WritePlainError(rr, http.StatusTeapot, "nope")
+	if rr.Code != http.StatusTeapot {
+		t.Fatalf("code=%d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "nope") {
+		t.Fatalf("body=%q", rr.Body.String())
+	}
+}
+
+func TestWriteOCSError(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/ocs/v2.php/cloud/user?format=json", nil)
+	WriteOCSError(rr, req, 997, "Current user is not logged in")
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("code=%d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), `"statuscode":997`) {
+		t.Fatalf("body=%s", rr.Body.String())
+	}
+}
+
+func TestLoggingAndHandleFunc(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.DiscardHandler)
+	r := NewRouter(Logging(logger))
+	r.HandleFunc(http.MethodGet, "/ping", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	r.SetNotFound(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/ping", nil))
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("ping=%d", rr.Code)
+	}
+	rr = httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/missing", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("missing=%d", rr.Code)
 	}
 }
