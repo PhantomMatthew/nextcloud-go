@@ -29,13 +29,13 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("up: %v", err)
 	}
-	if n != 6 {
-		t.Errorf("applied = %d, want 6", n)
+	if n != 7 {
+		t.Errorf("applied = %d, want 7", n)
 	}
 
 	want := []string{
 		"users", "groups", "group_members", "sessions",
-		"app_passwords", "login_flows", "jobs", "module_config", "files", "uploads", "trash_items", "file_versions", "file_properties",
+		"app_passwords", "login_flows", "jobs", "module_config", "files", "uploads", "trash_items", "file_versions", "file_properties", "file_locks",
 	}
 	for _, table := range want {
 		var name string
@@ -49,7 +49,7 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version: %v", err)
 	}
-	if v != 6 || dirty {
+	if v != 7 || dirty {
 		t.Errorf("version=%d dirty=%v", v, dirty)
 	}
 
@@ -68,17 +68,17 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version after down: %v", err)
 	}
-	if v != 5 || dirty {
+	if v != 6 || dirty {
 		t.Errorf("after down version=%d dirty=%v", v, dirty)
 	}
-	var propsName string
-	err = db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "file_properties").Scan(&propsName)
+	var locksName string
+	err = db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "file_locks").Scan(&locksName)
 	if err == nil {
-		t.Error("table file_properties still present after down to v5")
+		t.Error("table file_locks still present after down to v6")
 	}
-	var versionsName string
-	if err := db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "file_versions").Scan(&versionsName); err != nil {
-		t.Errorf("table file_versions missing after down to v5: %v", err)
+	var propsName string
+	if err := db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "file_properties").Scan(&propsName); err != nil {
+		t.Errorf("table file_properties missing after down to v6: %v", err)
 	}
 
 	n, err = Up(ctx, std, database.DialectSQLite, logger)
@@ -92,7 +92,7 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version after re-up: %v", err)
 	}
-	if v != 6 || dirty {
+	if v != 7 || dirty {
 		t.Errorf("after re-up version=%d dirty=%v", v, dirty)
 	}
 }
