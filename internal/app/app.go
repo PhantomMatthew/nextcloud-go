@@ -15,11 +15,15 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/cache"
 	"github.com/PhantomMatthew/nextcloud-go/internal/config"
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
+	"github.com/PhantomMatthew/nextcloud-go/internal/files"
 	"github.com/PhantomMatthew/nextcloud-go/internal/httpx"
 	"github.com/PhantomMatthew/nextcloud-go/internal/login"
 	"github.com/PhantomMatthew/nextcloud-go/internal/migrations"
 	"github.com/PhantomMatthew/nextcloud-go/internal/plugins"
+	"github.com/PhantomMatthew/nextcloud-go/internal/storage"
+	"github.com/PhantomMatthew/nextcloud-go/internal/storage/localfs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
+	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
 )
 
 // App is the wired server process.
@@ -39,6 +43,7 @@ type App struct {
 	instanceID string
 	memCache   *cache.Memory
 	redisCache *cache.Redis
+	davFS      webdav.FS
 }
 
 // New opens dependencies and mounts routes.
@@ -113,6 +118,16 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	} else {
 		a.Cache = mem
 	}
+	st, err := openStorage(cfg)
+	if err != nil {
+		mem.Close()
+		if a.redisCache != nil {
+			_ = a.redisCache.Close()
+		}
+		_ = db.Close()
+		return nil, err
+	}
+	a.davFS = files.NewDAV(st, files.NewSQLStore(db), a.Users)
 	if cfg.Plugin.Enabled {
 		ph, err := plugins.NewHost(ctx, plugins.HostConfig{
 			DefaultMemoryLimitMB: cfg.Plugin.DefaultMemoryLimitMB,
@@ -202,4 +217,21 @@ func joinErr(a, b error) error {
 		return a
 	}
 	return errors.Join(a, b)
+}
+
+func openStorage(cfg *config.Config) (storage.Storage, error) {
+	name := cfg.Storage.DefaultBackend
+	if name == "" {
+		name = "local"
+	}
+	b, ok := cfg.Storage.Backends[name]
+	if !ok {
+		return nil, fmt.Errorf("app: storage backend %q not configured", name)
+	}
+	switch b.Type {
+	case "localfs":
+		return localfs.New(b.Root)
+	default:
+		return nil, fmt.Errorf("app: storage backend %q type %q unsupported", name, b.Type)
+	}
 }

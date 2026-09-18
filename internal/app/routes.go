@@ -51,6 +51,7 @@ func (a *App) mountRoutes() error {
 			"/index.php/login/v2/poll",
 			"/index.php/login/v2/grant",
 			"/remote.php/dav/",
+			"/remote.php/webdav/",
 		},
 	}
 	baseChain := []httpx.Middleware{
@@ -104,11 +105,16 @@ func (a *App) mountRoutes() error {
 	router.Handle(http.MethodGet, "/index.php/login/v2/flow", http.HandlerFunc(lv2.HandlePicker))
 	router.Handle(http.MethodPost, "/index.php/login/v2/grant", http.HandlerFunc(lv2.HandleGrant))
 
-	davHandler, err := webdav.NewHandler("/remote.php/dav/files/", webdav.NewInMemoryFS(), a.instanceID)
+	davHandler, err := webdav.NewHandler("/remote.php/dav/files/", a.davFS, a.instanceID)
 	if err != nil {
 		return fmt.Errorf("app: webdav: %w", err)
 	}
 	router.HandlePrefix(httpx.MethodAny, "/remote.php/dav/files/", webdav.BasicAuth(verifier)(davHandler))
+	webdavRoot, err := webdav.NewHandler("/remote.php/webdav/", a.davFS, a.instanceID)
+	if err != nil {
+		return fmt.Errorf("app: webdav-root: %w", err)
+	}
+	router.HandlePrefix(httpx.MethodAny, "/remote.php/webdav/", webdav.BasicAuth(verifier)(webdavRoot))
 
 	a.Router = router
 	return nil

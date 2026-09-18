@@ -1,6 +1,9 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
+
 	"github.com/PhantomMatthew/nextcloud-go/internal/config"
 )
 
@@ -23,8 +26,9 @@ func DevConfig() *config.Config {
 	cfg.Cache.RedisAddr = ""
 	cfg.Instance.Secret = "dev-secret-not-for-production"
 	cfg.Instance.ID = "ocdev00001"
+	cfg.Storage.DefaultBackend = "local"
 	cfg.Storage.Backends = map[string]config.BackendConfig{
-		"local": {Type: "localfs", Root: "/tmp/ncgo-dev"},
+		"local": {Type: "localfs", Root: filepath.Join(os.TempDir(), "ncgo-dev")},
 	}
 	return cfg
 }

@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/PhantomMatthew/nextcloud-go/internal/config"
 	"github.com/PhantomMatthew/nextcloud-go/internal/goldentest"
 )
 
@@ -24,6 +25,9 @@ func TestGoldenReplay(t *testing.T) {
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	cfg := DevConfig()
+	cfg.Storage.Backends = map[string]config.BackendConfig{
+		"local": {Type: "localfs", Root: t.TempDir()},
+	}
 	a, err := New(ctx, cfg, logger)
 	if err != nil {
 		t.Fatal(err)
@@ -33,6 +37,9 @@ func TestGoldenReplay(t *testing.T) {
 	maintCfg := DevConfig()
 	maintCfg.Database.DSN = "file:ncgo-dev-maint?mode=memory&cache=shared"
 	maintCfg.Maintenance.Enabled = true
+	maintCfg.Storage.Backends = map[string]config.BackendConfig{
+		"local": {Type: "localfs", Root: t.TempDir()},
+	}
 	ma, err := New(ctx, maintCfg, logger)
 	if err != nil {
 		t.Fatal(err)
