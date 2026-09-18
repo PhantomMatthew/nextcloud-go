@@ -17,6 +17,8 @@ var update = flag.Bool("update", false, "regenerate golden fixtures")
 func newHandler() Handler {
 	m := NewManager()
 	m.Register(DefaultCoreProvider())
+	m.Register(DefaultDAVProvider())
+	m.Register(DefaultFilesProvider())
 	return Handler{Manager: m}
 }
 

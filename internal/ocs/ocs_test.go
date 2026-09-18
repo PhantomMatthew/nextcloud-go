@@ -30,6 +30,15 @@ func capabilitiesPayload() ocs.OrderedMap {
 				ocs.K("reference-api", true),
 				ocs.K("reference-regex", referenceRegex),
 			)),
+			ocs.K("dav", ocs.Obj(
+				ocs.K("chunking", "1.0"),
+			)),
+			ocs.K("files", ocs.Obj(
+				ocs.K("chunked_upload", ocs.Obj(
+					ocs.K("max_size", int64(5368709120)),
+					ocs.K("max_parallel_count", 20),
+				)),
+			)),
 		)),
 	)
 }

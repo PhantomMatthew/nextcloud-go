@@ -21,6 +21,15 @@
     <reference-api>1</reference-api>
     <reference-regex>(\s|\n|^)(https?:\/\/)((?:[-A-Z0-9+_]+\.)+[-A-Z]+(?:\/[-A-Z0-9+&amp;@#%?=~_|!:,.;()]*)*)(\s|\n|$)</reference-regex>
    </core>
+   <dav>
+    <chunking>1.0</chunking>
+   </dav>
+   <files>
+    <chunked_upload>
+     <max_size>5368709120</max_size>
+     <max_parallel_count>20</max_parallel_count>
+    </chunked_upload>
+   </files>
   </capabilities>
  </data>
 </ocs>
