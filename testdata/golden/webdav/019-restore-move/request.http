@@ -1,0 +1,8 @@
+MOVE /remote.php/dav/trashbin/admin/trash/assembled.bin.d1746100800 HTTP/1.1
+Host: cloud.example.com
+User-Agent: ncgo-goldentest/0.0
+Accept: */*
+Authorization: Basic YWRtaW46YWRtaW4=
+Destination: /remote.php/dav/trashbin/admin/restore/assembled.bin.d1746100800
+Overwrite: T
+

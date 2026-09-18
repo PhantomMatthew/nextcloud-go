@@ -1,0 +1,16 @@
+PROPFIND /remote.php/dav/trashbin/admin/trash/ HTTP/1.1
+Host: cloud.example.com
+User-Agent: ncgo-goldentest/0.0
+Accept: */*
+Authorization: Basic YWRtaW46YWRtaW4=
+Depth: 1
+Content-Type: application/xml
+Content-Length: 118
+
+<?xml version="1.0"?>
+<d:propfind xmlns:d="DAV:">
+  <d:prop>
+    <d:resourcetype/>
+    <d:getcontentlength/>
+  </d:prop>
+</d:propfind>

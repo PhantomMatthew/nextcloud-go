@@ -1,7 +1,7 @@
 HTTP/1.1 200 OK
 Server: nginx
 Content-Type: application/xml; charset=utf-8
-Etag: "35bce56e0cbc0b04caf1f0f4878829c4"
+Etag: "0bb6f3314a9583ba094ce683a69e8b5a"
 Feature-Policy: autoplay 'self';camera 'none';fullscreen 'self';geolocation 'none';microphone 'none';payment 'none'
 Referrer-Policy: no-referrer
 X-Content-Type-Options: nosniff
@@ -41,6 +41,7 @@ X-Xss-Protection: 1; mode=block
      <max_size>5368709120</max_size>
      <max_parallel_count>20</max_parallel_count>
     </chunked_upload>
+    <undelete>1</undelete>
    </files>
   </capabilities>
  </data>
