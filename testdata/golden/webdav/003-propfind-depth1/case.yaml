@@ -1,0 +1,25 @@
+schema_version: 1
+id: webdav/003-propfind-depth1
+description: |
+  Authenticated PROPFIND Depth 1 after fixture seed lists the root and
+  hello.txt. Seed is applied in app_test, not in this case.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 1
+  captured_at: "2026-09-18T00:00:00Z"
+request:
+  body_kind: empty
+response:
+  body_kind: xml
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 207
+replayable: true
+mutating: false
+synthetic: true
+tags: [webdav, phase1]

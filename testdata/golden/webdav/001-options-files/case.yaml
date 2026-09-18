@@ -1,0 +1,27 @@
+schema_version: 1
+id: webdav/001-options-files
+description: |
+  Authenticated OPTIONS on the files DAV namespace advertises DAV class
+  and allowed methods for a Nextcloud desktop client probe.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 1
+  captured_at: "2026-09-18T00:00:00Z"
+  notes: |
+    Synthetic; credentials admin:admin match DevConfig bootstrap.
+request:
+  body_kind: empty
+response:
+  body_kind: empty
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 200
+replayable: true
+mutating: false
+synthetic: true
+tags: [webdav, phase1]

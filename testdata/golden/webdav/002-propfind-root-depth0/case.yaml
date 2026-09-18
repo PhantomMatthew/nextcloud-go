@@ -1,0 +1,25 @@
+schema_version: 1
+id: webdav/002-propfind-root-depth0
+description: |
+  Authenticated PROPFIND Depth 0 on the user files root returns the
+  collection, oc:/nc: properties, and quota bytes.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 1
+  captured_at: "2026-09-18T00:00:00Z"
+request:
+  body_kind: empty
+response:
+  body_kind: xml
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 207
+replayable: true
+mutating: false
+synthetic: true
+tags: [webdav, phase1]
