@@ -89,6 +89,7 @@ func seedPhase1DAV(t *testing.T, a *App) {
 	}
 	freeze := time.Date(2025, 5, 1, 12, 0, 0, 0, time.UTC)
 	d.Clock = func() time.Time { return freeze }
+	d.NewToken = func() string { return "opaquelocktoken:ncgo0000000000000000000000000001" }
 	if up, ok := a.uploadsFS.(*files.Uploads); ok {
 		up.Clock = func() time.Time { return freeze }
 	}

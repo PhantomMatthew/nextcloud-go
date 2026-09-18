@@ -138,6 +138,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	a.fileMeta = meta
 	dav := files.NewDAV(st, meta, a.Users)
 	dav.Props = files.NewSQLPropertyStore(db)
+	dav.Locks = files.NewSQLLockStore(db)
 	a.davFS = dav
 	a.uploadsFS = files.NewUploads(st, files.NewSQLUploadStore(db), dav, a.Users)
 	tr := files.NewTrash(st, files.NewSQLTrashStore(db), dav, a.Users)
