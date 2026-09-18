@@ -415,6 +415,38 @@ func TestHandler_GET_AfterPUT(t *testing.T) {
 	}
 }
 
+func TestHandler_PropPatchFavorite(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	putRR := doRequestBody(h, "PUT", "/remote.php/dav/files/admin/foo.txt", p, nil, "hello")
+	if putRR.Code != http.StatusCreated {
+		t.Fatalf("PUT status = %d, want 201", putRR.Code)
+	}
+	body := `<?xml version="1.0"?><d:propertyupdate xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns"><d:set><d:prop><oc:favorite>1</oc:favorite></d:prop></d:set></d:propertyupdate>`
+	rr := doRequestBody(h, "PROPPATCH", "/remote.php/dav/files/admin/foo.txt", p, map[string]string{"Content-Type": "application/xml"}, body)
+	if rr.Code != StatusMultiStatus {
+		t.Fatalf("status = %d, want 207 body=%s", rr.Code, rr.Body.String())
+	}
+	got := rr.Body.String()
+	if !strings.Contains(got, `<oc:favorite/>`) || !strings.Contains(got, `HTTP/1.1 200 OK`) {
+		t.Fatalf("proppatch body=%s", got)
+	}
+	rr = doRequest(h, "PROPFIND", "/remote.php/dav/files/admin/foo.txt", p, map[string]string{"Depth": "0"})
+	if rr.Code != StatusMultiStatus {
+		t.Fatalf("propfind status = %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), `<oc:favorite>1</oc:favorite>`) {
+		t.Fatalf("propfind missing favorite 1: %s", rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), `/foo.txt/foo.txt`) {
+		t.Fatalf("propfind doubled href: %s", rr.Body.String())
+	}
+	bad := doRequestBody(h, "PROPPATCH", "/remote.php/dav/files/admin/foo.txt", p, nil, "not-xml")
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("invalid xml status = %d", bad.Code)
+	}
+}
+
 func TestHandler_HEAD_AfterPUT(t *testing.T) {
 	h := newTestHandler()
 	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}

@@ -22,6 +22,7 @@ type PropfindContext struct {
 	EmitQuota        bool
 	QuotaUsed        int64
 	QuotaAvailable   int64
+	EmitFavorite     bool
 }
 
 func WriteMultistatus(buf *bytes.Buffer, ctx PropfindContext, entries []*Entry) {
@@ -71,6 +72,13 @@ func writeProps(buf *bytes.Buffer, ctx PropfindContext, e *Entry) {
 	fmt.Fprintf(buf, `<oc:id>%s</oc:id>`, FileID(e.NumericID, ctx.InstanceID))
 	fmt.Fprintf(buf, `<oc:fileid>%s</oc:fileid>`, FileID(e.NumericID, ctx.InstanceID))
 	fmt.Fprintf(buf, `<oc:permissions>%s</oc:permissions>`, PermissionString(e.Permissions, e.IsDir, e.Shareable, e.Mounted, e.Shared))
+	if ctx.EmitFavorite {
+		fav := 0
+		if e.Favorite == 1 {
+			fav = 1
+		}
+		fmt.Fprintf(buf, `<oc:favorite>%d</oc:favorite>`, fav)
+	}
 
 	if e.IsDir {
 		fmt.Fprintf(buf, `<oc:size>%d</oc:size>`, e.Size)

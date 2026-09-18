@@ -38,6 +38,7 @@ type Entry struct {
 	Checksum      string
 	TrashOriginal string
 	TrashDeleted  int64
+	Favorite      int
 }
 
 type FS interface {
@@ -60,6 +61,26 @@ type CollectionMeta struct {
 // MetaMkdirFS is implemented by filesystems that accept MKCOL headers.
 type MetaMkdirFS interface {
 	MkdirMeta(ctx context.Context, user, path string, meta CollectionMeta) (*Entry, error)
+}
+
+// PropPatchOp is one set or remove in a PROPPATCH body.
+type PropPatchOp struct {
+	Remove bool
+	Space  string
+	Name   string
+	Value  string
+}
+
+// PropPatchResult is the per-property status for a 207 Multi-Status.
+type PropPatchResult struct {
+	Space  string
+	Name   string
+	Status int
+}
+
+// PropPatchFS is implemented by filesystems that persist PROPPATCH properties.
+type PropPatchFS interface {
+	PatchProps(ctx context.Context, user, path string, ops []PropPatchOp) ([]PropPatchResult, error)
 }
 
 type InMemoryFS struct {
@@ -478,6 +499,53 @@ func (fs *InMemoryFS) Write(_ context.Context, user, p string, r io.Reader, mtim
 		ContentType: "application/octet-stream",
 	}
 	entry.ETag = ComputeETag(entry.Size, entry.ModTime, entry.Path)
+	if existed {
+		entry.Favorite = existing.entry.Favorite
+	}
 	t.files[np] = &fileNode{entry: entry, data: data}
 	return entry, !existed, nil
+}
+
+func (fs *InMemoryFS) PatchProps(_ context.Context, user, p string, ops []PropPatchOp) ([]PropPatchResult, error) {
+	t := fs.ensureUser(user)
+	np := normalizePath(p)
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	var entry *Entry
+	if np == "/" {
+		entry = t.root
+	} else {
+		f, ok := t.files[np]
+		if !ok {
+			return nil, ErrNotFound
+		}
+		entry = f.entry
+	}
+	out := make([]PropPatchResult, 0, len(ops))
+	for _, op := range ops {
+		res := PropPatchResult{Space: op.Space, Name: op.Name, Status: 403}
+		if op.Name != "favorite" || (op.Space != "" && op.Space != "http://owncloud.org/ns") {
+			out = append(out, res)
+			continue
+		}
+		if op.Remove {
+			entry.Favorite = 0
+			res.Status = 200
+			out = append(out, res)
+			continue
+		}
+		val := strings.TrimSpace(op.Value)
+		if val != "0" && val != "1" {
+			out = append(out, res)
+			continue
+		}
+		if val == "1" {
+			entry.Favorite = 1
+		} else {
+			entry.Favorite = 0
+		}
+		res.Status = 200
+		out = append(out, res)
+	}
+	return out, nil
 }

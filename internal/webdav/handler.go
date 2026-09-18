@@ -33,7 +33,7 @@ const (
 	HeaderIf          = "If"
 
 	davCompliance  = "1, 3, extended-mkcol"
-	allowedMethods = "OPTIONS, GET, HEAD, PROPFIND, PUT, MKCOL, DELETE, MOVE, COPY"
+	allowedMethods = "OPTIONS, GET, HEAD, PROPFIND, PUT, MKCOL, DELETE, MOVE, COPY, PROPPATCH"
 	contentTypeXML = "application/xml; charset=utf-8"
 
 	HeaderDestination = "Destination"
@@ -89,6 +89,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.moveOrCopy(w, r, false)
 	case "COPY":
 		h.moveOrCopy(w, r, true)
+	case "PROPPATCH":
+		h.proppatch(w, r)
 	default:
 		h.methodNotAllowed(w, r)
 	}
@@ -125,7 +127,10 @@ func (h *Handler) propfind(w http.ResponseWriter, r *http.Request) {
 		entries = append(entries, children...)
 	}
 
-	baseHref := h.hrefPrefix(user) + strings.TrimSuffix(sub, "/")
+	baseHref := h.hrefPrefix(user)
+	if root.IsDir && sub != "/" && sub != "" {
+		baseHref = h.hrefPrefix(user) + strings.TrimSuffix(sub, "/")
+	}
 	if root.IsDir && !strings.HasSuffix(baseHref, "/") {
 		baseHref += "/"
 	}
@@ -137,6 +142,7 @@ func (h *Handler) propfind(w http.ResponseWriter, r *http.Request) {
 		OwnerDisplayName: h.ownerDisplayName(user),
 		EmitQuota:        sub == "/" && root.IsDir,
 		QuotaAvailable:   -3,
+		EmitFavorite:     h.emitFavorite(),
 	}
 	if pctx.EmitQuota && h.Quota != nil {
 		used, available, unlimited := h.Quota(r.Context(), user)
@@ -594,6 +600,11 @@ func writeMoveCopyErr(w http.ResponseWriter, err error) {
 	default:
 		writeFSError(w, err)
 	}
+}
+
+func (h *Handler) emitFavorite() bool {
+	p := strings.ToLower(h.Prefix)
+	return strings.Contains(p, "/dav/files/") || strings.Contains(p, "/webdav/")
 }
 
 func (h *Handler) filesPrefix() string {
