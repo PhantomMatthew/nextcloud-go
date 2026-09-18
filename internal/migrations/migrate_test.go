@@ -29,13 +29,13 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("up: %v", err)
 	}
-	if n != 3 {
-		t.Errorf("applied = %d, want 3", n)
+	if n != 4 {
+		t.Errorf("applied = %d, want 4", n)
 	}
 
 	want := []string{
 		"users", "groups", "group_members", "sessions",
-		"app_passwords", "login_flows", "jobs", "module_config", "files", "uploads",
+		"app_passwords", "login_flows", "jobs", "module_config", "files", "uploads", "trash_items",
 	}
 	for _, table := range want {
 		var name string
@@ -49,7 +49,7 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version: %v", err)
 	}
-	if v != 3 || dirty {
+	if v != 4 || dirty {
 		t.Errorf("version=%d dirty=%v", v, dirty)
 	}
 
@@ -68,17 +68,17 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version after down: %v", err)
 	}
-	if v != 2 || dirty {
+	if v != 3 || dirty {
 		t.Errorf("after down version=%d dirty=%v", v, dirty)
 	}
-	var uploadsName string
-	err = db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "uploads").Scan(&uploadsName)
+	var trashName string
+	err = db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "trash_items").Scan(&trashName)
 	if err == nil {
-		t.Error("table uploads still present after down to v2")
+		t.Error("table trash_items still present after down to v3")
 	}
-	var filesName string
-	if err := db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "files").Scan(&filesName); err != nil {
-		t.Errorf("table files missing after down to v2: %v", err)
+	var uploadsName string
+	if err := db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "uploads").Scan(&uploadsName); err != nil {
+		t.Errorf("table uploads missing after down to v3: %v", err)
 	}
 
 	n, err = Up(ctx, std, database.DialectSQLite, logger)
@@ -92,7 +92,7 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version after re-up: %v", err)
 	}
-	if v != 3 || dirty {
+	if v != 4 || dirty {
 		t.Errorf("after re-up version=%d dirty=%v", v, dirty)
 	}
 }
