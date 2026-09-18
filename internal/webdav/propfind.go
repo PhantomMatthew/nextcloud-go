@@ -15,8 +15,13 @@ const (
 )
 
 type PropfindContext struct {
-	BaseHref   string
-	InstanceID string
+	BaseHref         string
+	InstanceID       string
+	OwnerID          string
+	OwnerDisplayName string
+	EmitQuota        bool
+	QuotaUsed        int64
+	QuotaAvailable   int64
 }
 
 func WriteMultistatus(buf *bytes.Buffer, ctx PropfindContext, entries []*Entry) {
@@ -69,6 +74,17 @@ func writeProps(buf *bytes.Buffer, ctx PropfindContext, e *Entry) {
 
 	if e.IsDir {
 		fmt.Fprintf(buf, `<oc:size>%d</oc:size>`, e.Size)
+	}
+	if e.Checksum != "" {
+		fmt.Fprintf(buf, `<oc:checksums><oc:checksum>%s</oc:checksum></oc:checksums>`, xmlEscape(e.Checksum))
+	}
+	fmt.Fprintf(buf, `<oc:owner-id>%s</oc:owner-id>`, xmlEscape(ctx.OwnerID))
+	fmt.Fprintf(buf, `<oc:owner-display-name>%s</oc:owner-display-name>`, xmlEscape(ctx.OwnerDisplayName))
+	buf.WriteString(`<nc:is-encrypted>false</nc:is-encrypted>`)
+	buf.WriteString(`<nc:mount-type></nc:mount-type>`)
+	if ctx.EmitQuota && (e.Path == "" || e.Path == "/") {
+		fmt.Fprintf(buf, `<d:quota-used-bytes>%d</d:quota-used-bytes>`, ctx.QuotaUsed)
+		fmt.Fprintf(buf, `<d:quota-available-bytes>%d</d:quota-available-bytes>`, ctx.QuotaAvailable)
 	}
 }
 

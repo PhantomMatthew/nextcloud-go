@@ -97,6 +97,7 @@ func toEntry(f *File) *webdav.Entry {
 		Permissions: f.Permissions,
 		Shareable:   true,
 		ContentType: f.MIME,
+		Checksum:    f.Checksum,
 	}
 }
 

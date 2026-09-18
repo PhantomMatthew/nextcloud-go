@@ -43,6 +43,7 @@ type App struct {
 	instanceID string
 	memCache   *cache.Memory
 	redisCache *cache.Redis
+	fileMeta   files.Store
 	davFS      webdav.FS
 }
 
@@ -127,7 +128,9 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		_ = db.Close()
 		return nil, err
 	}
-	a.davFS = files.NewDAV(st, files.NewSQLStore(db), a.Users)
+	meta := files.NewSQLStore(db)
+	a.fileMeta = meta
+	a.davFS = files.NewDAV(st, meta, a.Users)
 	if cfg.Plugin.Enabled {
 		ph, err := plugins.NewHost(ctx, plugins.HostConfig{
 			DefaultMemoryLimitMB: cfg.Plugin.DefaultMemoryLimitMB,

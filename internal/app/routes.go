@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
@@ -109,13 +110,54 @@ func (a *App) mountRoutes() error {
 	if err != nil {
 		return fmt.Errorf("app: webdav: %w", err)
 	}
+	a.configureDAV(davHandler, false)
 	router.HandlePrefix(httpx.MethodAny, "/remote.php/dav/files/", webdav.BasicAuth(verifier)(davHandler))
 	webdavRoot, err := webdav.NewHandler("/remote.php/webdav/", a.davFS, a.instanceID)
 	if err != nil {
 		return fmt.Errorf("app: webdav-root: %w", err)
 	}
+	a.configureDAV(webdavRoot, true)
 	router.HandlePrefix(httpx.MethodAny, "/remote.php/webdav/", webdav.BasicAuth(verifier)(webdavRoot))
 
 	a.Router = router
 	return nil
+}
+
+func (a *App) configureDAV(h *webdav.Handler, ownerFromPrincipal bool) {
+	if ownerFromPrincipal {
+		h.OwnerUID = func(r *http.Request) string {
+			p, ok := auth.UserFromContext(r.Context())
+			if !ok {
+				return ""
+			}
+			return p.UID
+		}
+	}
+	h.OwnerName = func(uid string) string {
+		u, err := a.Users.GetByUID(context.Background(), uid)
+		if err != nil {
+			return uid
+		}
+		if u.DisplayName != "" {
+			return u.DisplayName
+		}
+		return uid
+	}
+	h.Quota = func(ctx context.Context, uid string) (used, available int64, unlimited bool) {
+		if a.fileMeta == nil || a.Users == nil {
+			return 0, -3, true
+		}
+		u, err := a.Users.GetByUID(ctx, uid)
+		if err != nil {
+			return 0, -3, true
+		}
+		used, err = a.fileMeta.Usage(ctx, u.ID)
+		if err != nil {
+			return 0, -3, true
+		}
+		if u.QuotaBytes == nil {
+			return used, -3, true
+		}
+		return used, *u.QuotaBytes - used, false
+	}
 }

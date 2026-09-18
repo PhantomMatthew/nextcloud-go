@@ -33,6 +33,7 @@ type Entry struct {
 	Mounted     bool
 	Shared      bool
 	ContentType string
+	Checksum    string
 }
 
 type FS interface {

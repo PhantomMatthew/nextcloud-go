@@ -2,6 +2,7 @@ package webdav
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -39,6 +40,9 @@ type Handler struct {
 	Prefix     string
 	FS         FS
 	InstanceID string
+	OwnerUID   func(*http.Request) string
+	OwnerName  func(uid string) string
+	Quota      func(ctx context.Context, uid string) (used, available int64, unlimited bool)
 }
 
 // ErrInvalidPrefix is returned by NewHandler when the mount prefix does not
@@ -90,14 +94,8 @@ func (h *Handler) options(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) propfind(w http.ResponseWriter, r *http.Request) {
-	user, sub, ok := h.parsePath(r.URL.Path)
+	user, sub, ok := h.authorizePath(w, r)
 	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	principal, ok := auth.UserFromContext(r.Context())
-	if !ok || principal.UID != user {
-		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -119,16 +117,31 @@ func (h *Handler) propfind(w http.ResponseWriter, r *http.Request) {
 		entries = append(entries, children...)
 	}
 
-	baseHref := h.Prefix + user + strings.TrimSuffix(sub, "/")
+	baseHref := h.hrefPrefix(user) + strings.TrimSuffix(sub, "/")
 	if root.IsDir && !strings.HasSuffix(baseHref, "/") {
 		baseHref += "/"
 	}
 
+	pctx := PropfindContext{
+		BaseHref:         baseHref,
+		InstanceID:       h.InstanceID,
+		OwnerID:          user,
+		OwnerDisplayName: h.ownerDisplayName(user),
+		EmitQuota:        sub == "/" && root.IsDir,
+		QuotaAvailable:   -3,
+	}
+	if pctx.EmitQuota && h.Quota != nil {
+		used, available, unlimited := h.Quota(r.Context(), user)
+		pctx.QuotaUsed = used
+		if unlimited {
+			pctx.QuotaAvailable = -3
+		} else {
+			pctx.QuotaAvailable = available
+		}
+	}
+
 	var buf bytes.Buffer
-	WriteMultistatus(&buf, PropfindContext{
-		BaseHref:   baseHref,
-		InstanceID: h.InstanceID,
-	}, entries)
+	WriteMultistatus(&buf, pctx, entries)
 
 	w.Header().Set("Content-Type", contentTypeXML)
 	w.WriteHeader(StatusMultiStatus)
@@ -136,14 +149,8 @@ func (h *Handler) propfind(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) get(w http.ResponseWriter, r *http.Request, writeBody bool) {
-	user, sub, ok := h.parsePath(r.URL.Path)
+	user, sub, ok := h.authorizePath(w, r)
 	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	principal, ok := auth.UserFromContext(r.Context())
-	if !ok || principal.UID != user {
-		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -170,14 +177,8 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request, writeBody bool) {
 }
 
 func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
-	user, sub, ok := h.parsePath(r.URL.Path)
+	user, sub, ok := h.authorizePath(w, r)
 	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	principal, ok := auth.UserFromContext(r.Context())
-	if !ok || principal.UID != user {
-		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -259,6 +260,31 @@ func (h *Handler) methodNotAllowed(w http.ResponseWriter, _ *http.Request) {
 	http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 }
 
+func (h *Handler) authorizePath(w http.ResponseWriter, r *http.Request) (user, sub string, ok bool) {
+	if h.OwnerUID != nil && h.OwnerUID(r) == "" {
+		writeWebDAVUnauthorized(w)
+		return "", "", false
+	}
+	user, sub, ok = h.requestPath(r)
+	if !ok {
+		http.NotFound(w, r)
+		return "", "", false
+	}
+	principal, authed := auth.UserFromContext(r.Context())
+	if !authed || principal.UID != user {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return "", "", false
+	}
+	return user, sub, true
+}
+
+func (h *Handler) requestPath(r *http.Request) (user, sub string, ok bool) {
+	if h.OwnerUID != nil {
+		return h.parseOwnerPath(r.URL.Path, h.OwnerUID(r))
+	}
+	return h.parsePath(r.URL.Path)
+}
+
 func (h *Handler) parsePath(p string) (user, sub string, ok bool) {
 	if !strings.HasPrefix(p, h.Prefix) {
 		return "", "", false
@@ -280,6 +306,22 @@ func (h *Handler) parsePath(p string) (user, sub string, ok bool) {
 		sub = "/"
 	}
 	return user, sub, true
+}
+
+func (h *Handler) hrefPrefix(user string) string {
+	if h.OwnerUID != nil {
+		return h.Prefix
+	}
+	return h.Prefix + user
+}
+
+func (h *Handler) ownerDisplayName(uid string) string {
+	if h.OwnerName != nil {
+		if name := h.OwnerName(uid); name != "" {
+			return name
+		}
+	}
+	return uid
 }
 
 func normalizeDepth(d string) string {
@@ -324,14 +366,8 @@ func writeFSError(w http.ResponseWriter, err error) {
 }
 
 func (h *Handler) mkcol(w http.ResponseWriter, r *http.Request) {
-	user, sub, ok := h.parsePath(r.URL.Path)
+	user, sub, ok := h.authorizePath(w, r)
 	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	principal, ok := auth.UserFromContext(r.Context())
-	if !ok || principal.UID != user {
-		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 	if r.ContentLength > 0 {
@@ -354,14 +390,8 @@ func (h *Handler) mkcol(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
-	user, sub, ok := h.parsePath(r.URL.Path)
+	user, sub, ok := h.authorizePath(w, r)
 	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	principal, ok := auth.UserFromContext(r.Context())
-	if !ok || principal.UID != user {
-		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 	if sub == "/" {
@@ -377,14 +407,8 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) moveOrCopy(w http.ResponseWriter, r *http.Request, isCopy bool) {
-	srcUser, srcSub, ok := h.parsePath(r.URL.Path)
+	srcUser, srcSub, ok := h.authorizePath(w, r)
 	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	principal, ok := auth.UserFromContext(r.Context())
-	if !ok || principal.UID != srcUser {
-		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 	if srcSub == "/" {
@@ -474,7 +498,12 @@ func (h *Handler) parseDestination(r *http.Request) (user, sub string, err error
 	if !strings.HasPrefix(p, h.Prefix) {
 		return "", "", errors.New("destination outside DAV namespace")
 	}
-	user, sub, ok := h.parsePath(p)
+	var ok bool
+	if h.OwnerUID != nil {
+		user, sub, ok = h.parseOwnerPath(p, h.OwnerUID(r))
+	} else {
+		user, sub, ok = h.parsePath(p)
+	}
 	if !ok {
 		return "", "", errors.New("invalid Destination path")
 	}

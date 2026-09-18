@@ -22,8 +22,12 @@ func TestWriteMultistatus_EmptyHomeRoot(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	WriteMultistatus(&buf, PropfindContext{
-		BaseHref:   "/remote.php/dav/files/alice/",
-		InstanceID: "oc123abc",
+		BaseHref:         "/remote.php/dav/files/alice/",
+		InstanceID:       "oc123abc",
+		OwnerID:          "alice",
+		OwnerDisplayName: "alice",
+		EmitQuota:        true,
+		QuotaAvailable:   -3,
 	}, []*Entry{root})
 
 	out := buf.String()
@@ -39,6 +43,12 @@ func TestWriteMultistatus_EmptyHomeRoot(t *testing.T) {
 		`<oc:fileid>00000001oc123abc</oc:fileid>`,
 		`<oc:permissions>RGDNVCK</oc:permissions>`,
 		`<oc:size>0</oc:size>`,
+		`<oc:owner-id>alice</oc:owner-id>`,
+		`<oc:owner-display-name>alice</oc:owner-display-name>`,
+		`<nc:is-encrypted>false</nc:is-encrypted>`,
+		`<nc:mount-type></nc:mount-type>`,
+		`<d:quota-used-bytes>0</d:quota-used-bytes>`,
+		`<d:quota-available-bytes>-3</d:quota-available-bytes>`,
 		`<d:status>HTTP/1.1 200 OK</d:status>`,
 		`</d:multistatus>`,
 	}
@@ -68,8 +78,10 @@ func TestWriteMultistatus_File(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	WriteMultistatus(&buf, PropfindContext{
-		BaseHref:   "/remote.php/dav/files/alice/",
-		InstanceID: "oc123abc",
+		BaseHref:         "/remote.php/dav/files/alice/",
+		InstanceID:       "oc123abc",
+		OwnerID:          "alice",
+		OwnerDisplayName: "Alice",
 	}, []*Entry{f})
 
 	out := buf.String()
@@ -79,6 +91,9 @@ func TestWriteMultistatus_File(t *testing.T) {
 		`<d:getcontentlength>13</d:getcontentlength>`,
 		`<d:getcontenttype>text/plain</d:getcontenttype>`,
 		`<oc:id>00000042oc123abc</oc:id>`,
+		`<oc:owner-id>alice</oc:owner-id>`,
+		`<oc:owner-display-name>Alice</oc:owner-display-name>`,
+		`<nc:is-encrypted>false</nc:is-encrypted>`,
 	}
 	for _, s := range mustContain {
 		if !strings.Contains(out, s) {
@@ -87,6 +102,36 @@ func TestWriteMultistatus_File(t *testing.T) {
 	}
 	if strings.Contains(out, `<oc:size>`) {
 		t.Errorf("file should NOT emit oc:size")
+	}
+	if strings.Contains(out, `<d:quota-used-bytes>`) {
+		t.Errorf("non-root file should NOT emit quota")
+	}
+	if strings.Contains(out, `<oc:checksums>`) {
+		t.Errorf("empty checksum should omit oc:checksums")
+	}
+}
+
+func TestWriteMultistatus_FileChecksum(t *testing.T) {
+	f := &Entry{
+		Path:        "/hello.txt",
+		IsDir:       false,
+		Size:        13,
+		ETag:        "abc123",
+		ModTime:     time.Date(2025, 5, 1, 12, 0, 0, 0, time.UTC),
+		NumericID:   42,
+		Permissions: PermRead,
+		ContentType: "text/plain",
+		Checksum:    "SHA256:abcd",
+	}
+	var buf bytes.Buffer
+	WriteMultistatus(&buf, PropfindContext{
+		BaseHref:         "/remote.php/dav/files/alice/",
+		InstanceID:       "oc123abc",
+		OwnerID:          "alice",
+		OwnerDisplayName: "alice",
+	}, []*Entry{f})
+	if !strings.Contains(buf.String(), `<oc:checksums><oc:checksum>SHA256:abcd</oc:checksum></oc:checksums>`) {
+		t.Fatalf("missing checksums:\n%s", buf.String())
 	}
 }
 
@@ -113,8 +158,12 @@ func TestGolden_PropfindHomeDepth0(t *testing.T) {
 	root := emptyHomeRootEntry()
 	var buf bytes.Buffer
 	WriteMultistatus(&buf, PropfindContext{
-		BaseHref:   "/remote.php/dav/files/alice/",
-		InstanceID: "oc123abc",
+		BaseHref:         "/remote.php/dav/files/alice/",
+		InstanceID:       "oc123abc",
+		OwnerID:          "alice",
+		OwnerDisplayName: "alice",
+		EmitQuota:        true,
+		QuotaAvailable:   -3,
 	}, []*Entry{root})
 	assertGolden(t, "home_depth0.xml", buf.Bytes())
 }
@@ -123,8 +172,12 @@ func TestGolden_PropfindHomeDepth1(t *testing.T) {
 	root := emptyHomeRootEntry()
 	var buf bytes.Buffer
 	WriteMultistatus(&buf, PropfindContext{
-		BaseHref:   "/remote.php/dav/files/alice/",
-		InstanceID: "oc123abc",
+		BaseHref:         "/remote.php/dav/files/alice/",
+		InstanceID:       "oc123abc",
+		OwnerID:          "alice",
+		OwnerDisplayName: "alice",
+		EmitQuota:        true,
+		QuotaAvailable:   -3,
 	}, []*Entry{root})
 	assertGolden(t, "home_depth1.xml", buf.Bytes())
 }

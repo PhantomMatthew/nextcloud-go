@@ -431,6 +431,77 @@ func TestHandler_HEAD_AfterPUT(t *testing.T) {
 	}
 }
 
+func TestHandler_WebDAVRoot_PROPFIND(t *testing.T) {
+	h, err := NewHandler("/remote.php/webdav/", NewInMemoryFS(), "oc123abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.OwnerUID = func(r *http.Request) string {
+		p, ok := auth.UserFromContext(r.Context())
+		if !ok {
+			return ""
+		}
+		return p.UID
+	}
+	h.OwnerName = func(uid string) string { return uid }
+	h.Quota = func(_ context.Context, _ string) (int64, int64, bool) {
+		return 13, -3, true
+	}
+	p := &auth.Principal{UID: "admin", DisplayName: "admin", Enabled: true, AuthMethod: auth.AuthMethodBasic}
+	rr := doRequest(h, "PROPFIND", "/remote.php/webdav/", p, map[string]string{"Depth": "0"})
+	if rr.Code != StatusMultiStatus {
+		t.Fatalf("status = %d, want 207, body=%s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	for _, s := range []string{
+		`<d:href>/remote.php/webdav/</d:href>`,
+		`<oc:owner-id>admin</oc:owner-id>`,
+		`<d:quota-used-bytes>13</d:quota-used-bytes>`,
+		`<d:quota-available-bytes>-3</d:quota-available-bytes>`,
+		`<nc:is-encrypted>false</nc:is-encrypted>`,
+	} {
+		if !strings.Contains(body, s) {
+			t.Errorf("body missing %q\nbody=%s", s, body)
+		}
+	}
+}
+
+func TestHandler_WebDAVRoot_Unauthenticated(t *testing.T) {
+	h, err := NewHandler("/remote.php/webdav/", NewInMemoryFS(), "oc123abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.OwnerUID = func(_ *http.Request) string { return "" }
+	rr := doRequest(h, "PROPFIND", "/remote.php/webdav/", nil, nil)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rr.Code)
+	}
+}
+
+func TestHandler_ParseOwnerPath(t *testing.T) {
+	h, err := NewHandler("/remote.php/webdav/", NewInMemoryFS(), "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		in      string
+		wantSub string
+		wantOK  bool
+	}{
+		{"/remote.php/webdav/", "/", true},
+		{"/remote.php/webdav/foo.txt", "/foo.txt", true},
+		{"/remote.php/webdav/dir/a", "/dir/a", true},
+		{"/remote.php/webdav", "", false},
+		{"/other", "", false},
+	}
+	for _, tc := range tests {
+		u, s, ok := h.parseOwnerPath(tc.in, "admin")
+		if ok != tc.wantOK || (ok && (u != "admin" || s != tc.wantSub)) {
+			t.Errorf("parseOwnerPath(%q) = (%q,%q,%v), want (admin,%q,%v)", tc.in, u, s, ok, tc.wantSub, tc.wantOK)
+		}
+	}
+}
+
 func TestHandler_ParsePath(t *testing.T) {
 	h := newTestHandler()
 	tests := []struct {
