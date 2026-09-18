@@ -472,6 +472,9 @@ func (u *Uploads) Assemble(ctx context.Context, srcUser, transferID, destUser, d
 		return nil, false, webdav.ErrBadRequest
 	}
 	dest = np
+	if err := u.Files.CheckLock(ctx, destUser, dest, ifHeader); err != nil {
+		return nil, false, err
+	}
 	if dest != sess.Destination {
 		if err := u.Sessions.UpdateDest(ctx, usr.ID, transferID, dest, sess.TotalLength); err != nil && !errors.Is(err, ErrNotFound) {
 			return nil, false, mapMeta(err)

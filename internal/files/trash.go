@@ -247,6 +247,11 @@ func (t *Trash) MoveToTrash(ctx context.Context, user, p, deletedBy string) erro
 	if err := t.Files.Meta.DeleteSubtree(ctx, usr.ID, np); err != nil {
 		return mapMeta(err)
 	}
+	if t.Files.Locks != nil {
+		if err := t.Files.Locks.DeleteByPath(ctx, usr.ID, np); err != nil {
+			return err
+		}
+	}
 	return t.Files.Meta.RecalcAncestors(ctx, usr.ID, parent, now)
 }
 

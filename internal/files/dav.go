@@ -26,6 +26,8 @@ type DAV struct {
 	Trash    *Trash
 	Versions *Versions
 	Props    PropertyStore
+	Locks    LockStore
+	NewToken func() string
 }
 
 // NewDAV returns a DAV adapter.
@@ -91,7 +93,7 @@ func (d *DAV) toEntry(ctx context.Context, userID int64, f *File) *webdav.Entry 
 	if f.ID > 0 {
 		id = uint64(f.ID)
 	}
-	return &webdav.Entry{
+	e := &webdav.Entry{
 		Path:        f.Path,
 		IsDir:       f.IsDir,
 		Size:        f.Size,
@@ -104,6 +106,8 @@ func (d *DAV) toEntry(ctx context.Context, userID int64, f *File) *webdav.Entry 
 		Checksum:    f.Checksum,
 		Favorite:    d.favoriteValue(ctx, userID, f.Path),
 	}
+	d.applyLock(ctx, userID, f.Path, e)
+	return e
 }
 
 func (d *DAV) favoriteValue(ctx context.Context, userID int64, p string) int {
@@ -442,6 +446,11 @@ func (d *DAV) Purge(ctx context.Context, user, p string) error {
 			return err
 		}
 	}
+	if d.Locks != nil {
+		if err := d.Locks.DeleteByPath(ctx, u.ID, np); err != nil {
+			return err
+		}
+	}
 	return d.Meta.RecalcAncestors(ctx, u.ID, parent, d.now())
 }
 
@@ -523,6 +532,11 @@ func (d *DAV) Move(ctx context.Context, srcUser, srcPath, dstUser, dstPath strin
 	}
 	if d.Props != nil {
 		if err := d.Props.RenamePath(ctx, u.ID, src, dst); err != nil {
+			return nil, false, err
+		}
+	}
+	if d.Locks != nil {
+		if err := d.Locks.RenamePath(ctx, u.ID, src, dst); err != nil {
 			return nil, false, err
 		}
 	}
