@@ -546,7 +546,7 @@ func (u *Uploads) Assemble(ctx context.Context, srcUser, transferID, destUser, d
 	if hasSum {
 		got := hex.EncodeToString(hasher.Sum(nil))
 		if !strings.EqualFold(got, wantHex) {
-			if err := u.Files.Remove(ctx, destUser, dest); err != nil {
+			if err := u.Files.Purge(ctx, destUser, dest); err != nil {
 				return nil, false, errors.Join(webdav.ErrBadRequest, err)
 			}
 			return nil, false, webdav.ErrBadRequest

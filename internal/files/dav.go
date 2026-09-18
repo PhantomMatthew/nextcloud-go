@@ -22,6 +22,7 @@ type DAV struct {
 	Meta    Store
 	Users   users.Store
 	Clock   func() time.Time
+	Trash   *Trash
 }
 
 // NewDAV returns a DAV adapter.
@@ -293,6 +294,14 @@ func (d *DAV) Mkdir(ctx context.Context, user, p string) (*webdav.Entry, error) 
 }
 
 func (d *DAV) Remove(ctx context.Context, user, p string) error {
+	if d.Trash != nil {
+		return d.Trash.MoveToTrash(ctx, user, p, user)
+	}
+	return d.Purge(ctx, user, p)
+}
+
+// Purge permanently deletes path from storage and filecache.
+func (d *DAV) Purge(ctx context.Context, user, p string) error {
 	u, err := d.resolveUser(ctx, user)
 	if err != nil {
 		return err
@@ -379,7 +388,7 @@ func (d *DAV) Move(ctx context.Context, srcUser, srcPath, dstUser, dstPath strin
 		if !overwrite {
 			return nil, false, webdav.ErrExists
 		}
-		if err := d.Remove(ctx, srcUser, dst); err != nil {
+		if err := d.Purge(ctx, srcUser, dst); err != nil {
 			return nil, false, err
 		}
 		created = false
@@ -436,7 +445,7 @@ func (d *DAV) Copy(ctx context.Context, srcUser, srcPath, dstUser, dstPath strin
 		if !overwrite {
 			return nil, false, webdav.ErrExists
 		}
-		if err := d.Remove(ctx, srcUser, dstPath); err != nil {
+		if err := d.Purge(ctx, srcUser, dstPath); err != nil {
 			return nil, false, err
 		}
 	}
@@ -477,6 +486,70 @@ func (d *DAV) copyOne(ctx context.Context, uid, src, dst string, isDir, depthInf
 	defer rc.Close()
 	_, _, err = d.Write(ctx, uid, dst, rc, nil)
 	return err
+}
+
+func (d *DAV) ingestFromStorage(ctx context.Context, user, p string) error {
+	u, err := d.resolveUser(ctx, user)
+	if err != nil {
+		return err
+	}
+	np, err := NormalizePath(p)
+	if err != nil {
+		return mapMeta(err)
+	}
+	key, err := storageKey(user, np)
+	if err != nil {
+		return err
+	}
+	info, err := d.Storage.Stat(ctx, key)
+	if err != nil {
+		return mapStorage(err)
+	}
+	mt := d.now()
+	if info.IsDir {
+		if np != "/" {
+			f := &File{
+				UserID:      u.ID,
+				Path:        np,
+				IsDir:       true,
+				Mtime:       mt,
+				MIME:        "httpd/unix-directory",
+				Permissions: webdav.PermAll,
+			}
+			if err := d.Meta.Insert(ctx, f); err != nil && !errors.Is(err, ErrExists) {
+				return mapMeta(err)
+			}
+		}
+		kids, err := d.Storage.List(ctx, key)
+		if err != nil {
+			return mapStorage(err)
+		}
+		sort.Slice(kids, func(i, j int) bool { return kids[i].Path < kids[j].Path })
+		for _, k := range kids {
+			child := path.Join(np, path.Base(k.Path))
+			if err := d.ingestFromStorage(ctx, user, child); err != nil {
+				return err
+			}
+		}
+		dir, err := d.Meta.GetByPath(ctx, u.ID, np)
+		if err != nil {
+			return mapMeta(err)
+		}
+		return d.Meta.RecalcAncestors(ctx, u.ID, dir.ParentID, mt)
+	}
+	f := &File{
+		UserID:      u.ID,
+		Path:        np,
+		IsDir:       false,
+		Size:        info.Size,
+		Mtime:       mt,
+		MIME:        "application/octet-stream",
+		Permissions: webdav.PermAll,
+	}
+	if err := d.Meta.Insert(ctx, f); err != nil {
+		return mapMeta(err)
+	}
+	return d.Meta.RecalcAncestors(ctx, u.ID, f.ParentID, mt)
 }
 
 func (d *DAV) compensateDelete(ctx context.Context, key string, cause error) error {
