@@ -1,0 +1,24 @@
+schema_version: 1
+id: webdav/010-move-file
+description: |
+  Authenticated MOVE of upload.txt created by 007-put-file.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 2a
+  captured_at: "2026-09-18T00:00:00Z"
+request:
+  body_kind: empty
+response:
+  body_kind: empty
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 201
+replayable: true
+mutating: true
+synthetic: true
+tags: [webdav, phase2]

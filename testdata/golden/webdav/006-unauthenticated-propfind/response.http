@@ -1,6 +1,5 @@
 HTTP/1.1 401 Unauthorized
 Server: nginx
-Content-Length: 0
 Feature-Policy: autoplay 'self';camera 'none';fullscreen 'self';geolocation 'none';microphone 'none';payment 'none'
 Referrer-Policy: no-referrer
 Www-Authenticate: Basic realm="Authorisation Required"

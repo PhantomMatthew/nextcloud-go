@@ -1,0 +1,12 @@
+PUT /remote.php/dav/uploads/admin/tidgold/000002 HTTP/1.1
+Host: cloud.example.com
+User-Agent: ncgo-goldentest/0.0
+Accept: */*
+Authorization: Basic YWRtaW46YWRtaW4=
+OC-Chunk-Offset: 2
+OC-Total-Length: 5
+Destination: /remote.php/dav/files/admin/assembled.bin
+Content-Type: application/octet-stream
+Content-Length: 3
+
+llo

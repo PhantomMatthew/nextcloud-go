@@ -1,6 +1,5 @@
 HTTP/1.1 200 OK
 Server: nginx
-Content-Length: 12
 Content-Type: application/octet-stream
 Etag: "65721783787e1e86b5d71b2d3e7b74eacdb723d2"
 Feature-Policy: autoplay 'self';camera 'none';fullscreen 'self';geolocation 'none';microphone 'none';payment 'none'

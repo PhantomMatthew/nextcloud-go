@@ -1,0 +1,10 @@
+MOVE /remote.php/dav/uploads/admin/tidgold/.file HTTP/1.1
+Host: cloud.example.com
+User-Agent: ncgo-goldentest/0.0
+Accept: */*
+Authorization: Basic YWRtaW46YWRtaW4=
+Destination: /remote.php/dav/files/admin/assembled.bin
+OC-Total-Length: 5
+X-OC-Mtime: 1746097200
+Overwrite: T
+
