@@ -1,0 +1,16 @@
+PROPPATCH /remote.php/dav/files/admin/assembled.bin HTTP/1.1
+Host: cloud.example.com
+User-Agent: ncgo-goldentest/0.0
+Accept: */*
+Authorization: Basic YWRtaW46YWRtaW4=
+Content-Type: application/xml
+Content-Length: 193
+
+<?xml version="1.0"?>
+<d:propertyupdate xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">
+  <d:set>
+    <d:prop>
+      <oc:favorite>1</oc:favorite>
+    </d:prop>
+  </d:set>
+</d:propertyupdate>

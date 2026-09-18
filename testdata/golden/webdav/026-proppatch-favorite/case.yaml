@@ -1,0 +1,24 @@
+schema_version: 1
+id: webdav/026-proppatch-favorite
+description: |
+  Authenticated PROPPATCH sets oc:favorite on assembled.bin.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 2d
+  captured_at: "2026-09-18T00:00:00Z"
+request:
+  body_kind: xml
+response:
+  body_kind: xml
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 207
+replayable: true
+mutating: true
+synthetic: true
+tags: [webdav, proppatch, phase2]
