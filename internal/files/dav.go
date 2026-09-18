@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"net/http"
 	"path"
 	"sort"
 	"strings"
@@ -24,6 +25,7 @@ type DAV struct {
 	Clock    func() time.Time
 	Trash    *Trash
 	Versions *Versions
+	Props    PropertyStore
 }
 
 // NewDAV returns a DAV adapter.
@@ -84,7 +86,7 @@ func storageKey(uid, rel string) (string, error) {
 	return uid + "/" + rest, nil
 }
 
-func toEntry(f *File) *webdav.Entry {
+func (d *DAV) toEntry(ctx context.Context, userID int64, f *File) *webdav.Entry {
 	var id uint64
 	if f.ID > 0 {
 		id = uint64(f.ID)
@@ -100,7 +102,90 @@ func toEntry(f *File) *webdav.Entry {
 		Shareable:   true,
 		ContentType: f.MIME,
 		Checksum:    f.Checksum,
+		Favorite:    d.favoriteValue(ctx, userID, f.Path),
 	}
+}
+
+func (d *DAV) favoriteValue(ctx context.Context, userID int64, p string) int {
+	if d == nil || d.Props == nil {
+		return 0
+	}
+	prop, err := d.Props.Get(ctx, userID, p, PropNSOwnCloud, PropFavorite)
+	if err != nil || prop == nil || prop.Value != "1" {
+		return 0
+	}
+	return 1
+}
+
+func davPropSpace(space string) bool {
+	s := strings.TrimRight(space, "/")
+	return s == "DAV:" || s == "DAV"
+}
+
+func isProtectedLiveProp(space, name string) bool {
+	if !davPropSpace(space) && space != "" {
+		return false
+	}
+	switch name {
+	case "getetag", "resourcetype", "getcontentlength", "getcontenttype", "quota-used-bytes", "quota-available-bytes":
+		return true
+	}
+	return false
+}
+
+func isFavoriteProp(space, name string) bool {
+	if name != PropFavorite {
+		return false
+	}
+	return space == "" || space == PropNSOwnCloud
+}
+
+// PatchProps applies PROPPATCH operations. Only oc:favorite is persisted.
+func (d *DAV) PatchProps(ctx context.Context, user, p string, ops []webdav.PropPatchOp) ([]webdav.PropPatchResult, error) {
+	u, err := d.resolveUser(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+	np, err := NormalizePath(p)
+	if err != nil {
+		return nil, mapMeta(err)
+	}
+	if _, err := d.Meta.GetByPath(ctx, u.ID, np); err != nil {
+		return nil, mapMeta(err)
+	}
+	out := make([]webdav.PropPatchResult, 0, len(ops))
+	for _, op := range ops {
+		res := webdav.PropPatchResult{Space: op.Space, Name: op.Name, Status: http.StatusForbidden}
+		if isProtectedLiveProp(op.Space, op.Name) || !isFavoriteProp(op.Space, op.Name) || d.Props == nil {
+			out = append(out, res)
+			continue
+		}
+		if op.Remove {
+			if err := d.Props.Remove(ctx, u.ID, np, PropNSOwnCloud, PropFavorite); err != nil {
+				return nil, err
+			}
+			res.Status = http.StatusOK
+			out = append(out, res)
+			continue
+		}
+		val := strings.TrimSpace(op.Value)
+		if val != "0" && val != "1" {
+			out = append(out, res)
+			continue
+		}
+		if err := d.Props.Set(ctx, &FileProperty{
+			UserID: u.ID,
+			Path:   np,
+			NS:     PropNSOwnCloud,
+			Name:   PropFavorite,
+			Value:  val,
+		}); err != nil {
+			return nil, err
+		}
+		res.Status = http.StatusOK
+		out = append(out, res)
+	}
+	return out, nil
 }
 
 func (d *DAV) Stat(ctx context.Context, user, p string) (*webdav.Entry, error) {
@@ -112,7 +197,7 @@ func (d *DAV) Stat(ctx context.Context, user, p string) (*webdav.Entry, error) {
 	if err != nil {
 		return nil, mapMeta(err)
 	}
-	return toEntry(f), nil
+	return d.toEntry(ctx, u.ID, f), nil
 }
 
 func (d *DAV) List(ctx context.Context, user, p string) ([]*webdav.Entry, error) {
@@ -133,7 +218,7 @@ func (d *DAV) List(ctx context.Context, user, p string) ([]*webdav.Entry, error)
 	}
 	out := make([]*webdav.Entry, 0, len(children))
 	for i := range children {
-		out = append(out, toEntry(&children[i]))
+		out = append(out, d.toEntry(ctx, u.ID, &children[i]))
 	}
 	return out, nil
 }
@@ -158,7 +243,7 @@ func (d *DAV) Read(ctx context.Context, user, p string) (io.ReadCloser, *webdav.
 	if err != nil {
 		return nil, nil, mapStorage(err)
 	}
-	return rc, toEntry(f), nil
+	return rc, d.toEntry(ctx, u.ID, f), nil
 }
 
 func (d *DAV) Write(ctx context.Context, user, p string, r io.Reader, mtime *time.Time) (*webdav.Entry, bool, error) {
@@ -261,7 +346,7 @@ func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *tim
 	if err != nil {
 		return nil, false, mapMeta(err)
 	}
-	return toEntry(got), created, nil
+	return d.toEntry(ctx, u.ID, got), created, nil
 }
 
 func (d *DAV) Mkdir(ctx context.Context, user, p string) (*webdav.Entry, error) {
@@ -301,7 +386,7 @@ func (d *DAV) Mkdir(ctx context.Context, user, p string) (*webdav.Entry, error) 
 	if err != nil {
 		return nil, mapMeta(err)
 	}
-	return toEntry(got), nil
+	return d.toEntry(ctx, u.ID, got), nil
 }
 
 func (d *DAV) Remove(ctx context.Context, user, p string) error {
@@ -349,6 +434,11 @@ func (d *DAV) Purge(ctx context.Context, user, p string) error {
 	}
 	if d.Versions != nil {
 		if err := d.Versions.DeleteByPath(ctx, user, np); err != nil {
+			return err
+		}
+	}
+	if d.Props != nil {
+		if err := d.Props.DeleteByPath(ctx, u.ID, np); err != nil {
 			return err
 		}
 	}
@@ -431,6 +521,11 @@ func (d *DAV) Move(ctx context.Context, srcUser, srcPath, dstUser, dstPath strin
 			return nil, false, err
 		}
 	}
+	if d.Props != nil {
+		if err := d.Props.RenamePath(ctx, u.ID, src, dst); err != nil {
+			return nil, false, err
+		}
+	}
 	now := d.now()
 	moved, err := d.Meta.GetByPath(ctx, u.ID, dst)
 	if err != nil {
@@ -446,7 +541,7 @@ func (d *DAV) Move(ctx context.Context, srcUser, srcPath, dstUser, dstPath strin
 	if err != nil {
 		return nil, false, mapMeta(err)
 	}
-	return toEntry(got), created, nil
+	return d.toEntry(ctx, u.ID, got), created, nil
 }
 
 func (d *DAV) Copy(ctx context.Context, srcUser, srcPath, dstUser, dstPath string, overwrite, depthInfinity bool) (*webdav.Entry, bool, error) {
@@ -485,6 +580,9 @@ func (d *DAV) copyOne(ctx context.Context, uid, src, dst string, isDir, depthInf
 		if _, err := d.Mkdir(ctx, uid, dst); err != nil && !errors.Is(err, webdav.ErrExists) {
 			return err
 		}
+		if err := d.copyProps(ctx, uid, src, dst); err != nil {
+			return err
+		}
 		if !depthInfinity {
 			return nil
 		}
@@ -506,7 +604,21 @@ func (d *DAV) copyOne(ctx context.Context, uid, src, dst string, isDir, depthInf
 	}
 	defer rc.Close()
 	_, _, err = d.Write(ctx, uid, dst, rc, nil)
-	return err
+	if err != nil {
+		return err
+	}
+	return d.copyProps(ctx, uid, src, dst)
+}
+
+func (d *DAV) copyProps(ctx context.Context, uid, src, dst string) error {
+	if d.Props == nil {
+		return nil
+	}
+	u, err := d.resolveUser(ctx, uid)
+	if err != nil {
+		return err
+	}
+	return d.Props.CopyPath(ctx, u.ID, src, dst)
 }
 
 func (d *DAV) ingestFromStorage(ctx context.Context, user, p string) error {

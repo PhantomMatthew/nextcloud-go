@@ -323,6 +323,11 @@ func (t *Trash) Restore(ctx context.Context, user, locationID, destUser, destPat
 			return nil, false, err
 		}
 	}
+	if t.Files.Props != nil && dest != item.OriginalPath {
+		if err := t.Files.Props.RenamePath(ctx, usr.ID, item.OriginalPath, dest); err != nil {
+			return nil, false, err
+		}
+	}
 	if err := t.Sessions.Delete(ctx, usr.ID, locationID); err != nil && !errors.Is(err, ErrNotFound) {
 		return nil, false, mapMeta(err)
 	}
@@ -358,6 +363,11 @@ func (t *Trash) PurgeLocation(ctx context.Context, user, locationID string) erro
 	}
 	if t.Files != nil && t.Files.Versions != nil {
 		if err := t.Files.Versions.DeleteByPath(ctx, user, item.OriginalPath); err != nil {
+			return err
+		}
+	}
+	if t.Files != nil && t.Files.Props != nil {
+		if err := t.Files.Props.DeleteByPath(ctx, usr.ID, item.OriginalPath); err != nil {
 			return err
 		}
 	}
