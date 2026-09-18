@@ -145,6 +145,17 @@ func (a *App) mountRoutes() error {
 		router.HandlePrefix(httpx.MethodAny, "/remote.php/dav/uploads/", webdav.Auth(authCfg)(uploadsHandler))
 	}
 
+	if a.trashFS != nil {
+		trashHandler, err := webdav.NewHandler("/remote.php/dav/trashbin/", a.trashFS, a.instanceID)
+		if err != nil {
+			return fmt.Errorf("app: trashbin: %w", err)
+		}
+		trashHandler.FilesPrefix = "/remote.php/dav/files/"
+		trashHandler.Restore = a.trashFS.Restore
+		a.configureDAV(trashHandler, false)
+		router.HandlePrefix(httpx.MethodAny, "/remote.php/dav/trashbin/", webdav.Auth(authCfg)(trashHandler))
+	}
+
 	a.Router = router
 	return nil
 }

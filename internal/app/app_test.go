@@ -92,6 +92,9 @@ func seedPhase1DAV(t *testing.T, a *App) {
 	if up, ok := a.uploadsFS.(*files.Uploads); ok {
 		up.Clock = func() time.Time { return freeze }
 	}
+	if a.trashFS != nil {
+		a.trashFS.Clock = func() time.Time { return freeze }
+	}
 	mt := freeze
 	if _, _, err := a.davFS.Write(context.Background(), "admin", "/hello.txt", strings.NewReader("hello world\n"), &mt); err != nil {
 		t.Fatal(err)
