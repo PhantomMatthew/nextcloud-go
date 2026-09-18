@@ -1,6 +1,7 @@
 package files
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -55,5 +56,15 @@ func TestComputeDirETagOrder(t *testing.T) {
 	b := []File{{Path: "/a", ETag: "aa"}, {Path: "/b", ETag: "bb"}}
 	if ComputeDirETag(a) != ComputeDirETag(b) {
 		t.Fatal("dir etag must be path-order invariant")
+	}
+}
+
+func TestValidTransferID(t *testing.T) {
+	t.Parallel()
+	if !ValidTransferID("3847562910") || !ValidTransferID("a_b-1") {
+		t.Fatal("expected valid")
+	}
+	if ValidTransferID("") || ValidTransferID("../x") || ValidTransferID(strings.Repeat("a", 65)) {
+		t.Fatal("expected invalid")
 	}
 }

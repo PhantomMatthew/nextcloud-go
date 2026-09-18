@@ -395,7 +395,7 @@ func (d *DAV) Move(ctx context.Context, srcUser, srcPath, dstUser, dstPath strin
 	if err := d.Storage.Rename(ctx, from, to); err != nil {
 		return nil, false, mapStorage(err)
 	}
-	if err := d.Meta.RenameSubtree(ctx, u.ID, src, dst); err != nil {
+	if err := d.Meta.RenameSubtree(ctx, u.ID, src, dst, d.now()); err != nil {
 		if rb := d.Storage.Rename(ctx, to, from); rb != nil && !errors.Is(rb, storage.ErrNotFound) {
 			return nil, false, errors.Join(mapMeta(err), rb)
 		}

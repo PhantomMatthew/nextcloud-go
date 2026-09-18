@@ -117,7 +117,7 @@ func TestSQLStoreFilecache(t *testing.T) {
 		t.Errorf("usage = %d %v", n, err)
 	}
 
-	if err := store.RenameSubtree(ctx, uid, "/docs", "/papers"); err != nil {
+	if err := store.RenameSubtree(ctx, uid, "/docs", "/papers", now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.GetByPath(ctx, uid, "/docs"); !errors.Is(err, ErrNotFound) {

@@ -20,7 +20,7 @@ type Store interface {
 	Insert(ctx context.Context, f *File) error
 	UpdateMeta(ctx context.Context, f *File) error
 	DeleteSubtree(ctx context.Context, userID int64, p string) error
-	RenameSubtree(ctx context.Context, userID int64, srcPath, dstPath string) error
+	RenameSubtree(ctx context.Context, userID int64, srcPath, dstPath string, now time.Time) error
 	Usage(ctx context.Context, userID int64) (int64, error)
 	RecalcAncestors(ctx context.Context, userID int64, startParent *int64, now time.Time) error
 }
@@ -230,7 +230,7 @@ func (s *SQLStore) DeleteSubtree(ctx context.Context, userID int64, p string) er
 	return nil
 }
 
-func (s *SQLStore) RenameSubtree(ctx context.Context, userID int64, srcPath, dstPath string) error {
+func (s *SQLStore) RenameSubtree(ctx context.Context, userID int64, srcPath, dstPath string, now time.Time) error {
 	src, err := NormalizePath(srcPath)
 	if err != nil {
 		return err
@@ -287,7 +287,11 @@ FROM files WHERE user_id = ? AND (path = ? OR path LIKE ?)`, userID, src, src+"/
 
 	prefix := src + "/"
 	newPrefix := dst + "/"
-	now := time.Now().UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
 	for i := range batch {
 		f := batch[i]
 		switch {

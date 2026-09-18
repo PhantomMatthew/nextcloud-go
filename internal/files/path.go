@@ -10,6 +10,22 @@ import (
 	"unicode/utf8"
 )
 
+const maxTransferIDLen = 64
+
+// ValidTransferID reports whether tid is a chunked-upload v2 transfer folder name.
+func ValidTransferID(tid string) bool {
+	if tid == "" || len(tid) > maxTransferIDLen {
+		return false
+	}
+	for _, r := range tid {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // NormalizePath returns a canonical DAV path starting with / and without a
 // trailing slash except for the root.
 func NormalizePath(p string) (string, error) {
