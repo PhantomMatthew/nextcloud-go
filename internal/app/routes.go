@@ -156,6 +156,16 @@ func (a *App) mountRoutes() error {
 		router.HandlePrefix(httpx.MethodAny, "/remote.php/dav/trashbin/", webdav.Auth(authCfg)(trashHandler))
 	}
 
+	if a.versionsFS != nil {
+		versionsHandler, err := webdav.NewHandler("/remote.php/dav/versions/", a.versionsFS, a.instanceID)
+		if err != nil {
+			return fmt.Errorf("app: versions: %w", err)
+		}
+		versionsHandler.RestoreVersion = a.versionsFS.RestoreVersion
+		a.configureDAV(versionsHandler, false)
+		router.HandlePrefix(httpx.MethodAny, "/remote.php/dav/versions/", webdav.Auth(authCfg)(versionsHandler))
+	}
+
 	a.Router = router
 	return nil
 }
