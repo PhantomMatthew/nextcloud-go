@@ -189,6 +189,9 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-18** — Phase 2c: file versions on `/remote.php/dav/versions/`,
+  overwrite snapshots, restore MOVE, `files.versioning` (see ADR-0010).
+  PROPPATCH, LOCK, sharing, S3, jobs, and search remain later.
 - **2026-09-18** — Phase 2b: trashbin on `/remote.php/dav/trashbin/`, DELETE
   into `trash_items`, restore MOVE, `files.undelete` (see ADR-0009). Versions,
   sharing, S3, jobs, and search remain later.
