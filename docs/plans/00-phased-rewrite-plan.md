@@ -189,6 +189,9 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-18** — Phase 2d: WebDAV PROPPATCH for `oc:favorite` on
+  path-keyed `file_properties`, files PROPFIND emits favorite
+  (see ADR-0011). LOCK, sharing, S3, jobs, and search remain later.
 - **2026-09-18** — Phase 2c: file versions on `/remote.php/dav/versions/`,
   overwrite snapshots, restore MOVE, `files.versioning` (see ADR-0010).
   PROPPATCH, LOCK, sharing, S3, jobs, and search remain later.
