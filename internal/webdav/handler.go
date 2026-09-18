@@ -49,6 +49,7 @@ type Handler struct {
 	Quota       func(ctx context.Context, uid string) (used, available int64, unlimited bool)
 	FilesPrefix string
 	Assemble    func(ctx context.Context, srcUser, transferID, destUser, destPath string, overwrite bool, mtime *time.Time, checksum, ifHeader string) (*Entry, bool, error)
+	Restore     func(ctx context.Context, srcUser, locationID, destUser, destPath string, overwrite bool) (*Entry, bool, error)
 }
 
 // ErrInvalidPrefix is returned by NewHandler when the mount prefix does not
@@ -440,6 +441,36 @@ func (h *Handler) moveOrCopy(w http.ResponseWriter, r *http.Request, isCopy bool
 
 	overwrite := parseOverwrite(r)
 
+	if !isCopy && h.Restore != nil {
+		if loc, ok := restoreLocationID(srcSub); ok {
+			dstUser, dstSub, useOriginal, derr := h.parseRestoreDestination(r)
+			if derr != nil {
+				http.Error(w, derr.Error(), http.StatusBadRequest)
+				return
+			}
+			if dstUser != srcUser {
+				http.Error(w, "Bad Gateway", http.StatusBadGateway)
+				return
+			}
+			destPath := dstSub
+			if useOriginal {
+				destPath = ""
+			}
+			entry, created, err := h.Restore(r.Context(), srcUser, loc, dstUser, destPath, overwrite)
+			if err != nil {
+				writeMoveCopyErr(w, err)
+				return
+			}
+			emitMoveCopyHeaders(w, h.InstanceID, entry)
+			if created {
+				w.WriteHeader(http.StatusCreated)
+			} else {
+				w.WriteHeader(http.StatusNoContent)
+			}
+			return
+		}
+	}
+
 	if !isCopy && h.Assemble != nil {
 		if tid, ok := assembleTransferID(srcSub); ok {
 			dstUser, dstSub, derr := h.parseFilesDestination(r.Header.Get(HeaderDestination))
@@ -559,6 +590,50 @@ func assembleTransferID(sub string) (string, bool) {
 		return "", false
 	}
 	return tid, true
+}
+
+func restoreLocationID(sub string) (string, bool) {
+	np := normalizePath(sub)
+	rel := strings.TrimPrefix(np, "/")
+	coll, loc, ok := strings.Cut(rel, "/")
+	if !ok || loc == "" || strings.Contains(loc, "/") {
+		return "", false
+	}
+	if coll != "trash" && coll != "restore" {
+		return "", false
+	}
+	return loc, true
+}
+
+func (h *Handler) parseRestoreDestination(r *http.Request) (user, destPath string, useOriginal bool, err error) {
+	raw := r.Header.Get(HeaderDestination)
+	if raw == "" {
+		return "", "", false, errors.New("missing Destination")
+	}
+	u, perr := url.Parse(raw)
+	if perr != nil {
+		return "", "", false, errors.New("invalid Destination")
+	}
+	p := u.Path
+	if p == "" {
+		return "", "", false, errors.New("invalid Destination path")
+	}
+	if strings.HasPrefix(p, h.filesPrefix()) {
+		user, destPath, err = h.parseFilesDestination(raw)
+		return user, destPath, false, err
+	}
+	if strings.HasPrefix(p, h.Prefix) {
+		user, sub, ok := h.parsePath(p)
+		if !ok {
+			return "", "", false, errors.New("invalid Destination path")
+		}
+		np := normalizePath(sub)
+		if np == "/restore" || strings.HasPrefix(np+"/", "/restore/") {
+			return user, "", true, nil
+		}
+		return "", "", false, errors.New("destination outside restore namespace")
+	}
+	return "", "", false, errors.New("destination outside DAV namespace")
 }
 
 func (h *Handler) parseFilesDestination(raw string) (user, sub string, err error) {

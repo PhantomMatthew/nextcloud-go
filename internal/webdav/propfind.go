@@ -78,6 +78,12 @@ func writeProps(buf *bytes.Buffer, ctx PropfindContext, e *Entry) {
 	if e.Checksum != "" {
 		fmt.Fprintf(buf, `<oc:checksums><oc:checksum>%s</oc:checksum></oc:checksums>`, xmlEscape(e.Checksum))
 	}
+	if e.TrashOriginal != "" {
+		fmt.Fprintf(buf, `<oc:trashbin-original-location>%s</oc:trashbin-original-location>`, xmlEscape(e.TrashOriginal))
+	}
+	if e.TrashDeleted > 0 {
+		fmt.Fprintf(buf, `<oc:trashbin-deletion-time>%d</oc:trashbin-deletion-time>`, e.TrashDeleted)
+	}
 	fmt.Fprintf(buf, `<oc:owner-id>%s</oc:owner-id>`, xmlEscape(ctx.OwnerID))
 	fmt.Fprintf(buf, `<oc:owner-display-name>%s</oc:owner-display-name>`, xmlEscape(ctx.OwnerDisplayName))
 	buf.WriteString(`<nc:is-encrypted>false</nc:is-encrypted>`)

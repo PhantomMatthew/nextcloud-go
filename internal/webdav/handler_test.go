@@ -597,6 +597,43 @@ func TestHandler_AssembleMoveDotFile(t *testing.T) {
 	}
 }
 
+func TestHandler_RestoreMove(t *testing.T) {
+	h, err := NewHandler("/remote.php/dav/trashbin/", NewInMemoryFS(), "oc123abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotLoc, gotDest string
+	h.Restore = func(_ context.Context, srcUser, locationID, destUser, destPath string, overwrite bool) (*Entry, bool, error) {
+		if srcUser != "alice" || destUser != "alice" || !overwrite {
+			t.Errorf("users overwrite = %s %s %v", srcUser, destUser, overwrite)
+		}
+		gotLoc = locationID
+		gotDest = destPath
+		return &Entry{Path: "/assembled.bin", ETag: "etag1", NumericID: 9, ModTime: time.Unix(1, 0).UTC()}, true, nil
+	}
+	p := &auth.Principal{UID: "alice", AuthMethod: auth.AuthMethodBasic}
+	rr := doRequest(h, "MOVE", "/remote.php/dav/trashbin/alice/trash/assembled.bin.d1746100800", p, map[string]string{
+		HeaderDestination: "https://cloud.example.com/remote.php/dav/trashbin/alice/restore/assembled.bin.d1746100800",
+		HeaderOverwrite:   "T",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if gotLoc != "assembled.bin.d1746100800" || gotDest != "" {
+		t.Fatalf("loc=%q dest=%q", gotLoc, gotDest)
+	}
+
+	rr = doRequest(h, "MOVE", "/remote.php/dav/trashbin/alice/trash/assembled.bin.d1746100800", p, map[string]string{
+		HeaderDestination: "https://cloud.example.com/remote.php/dav/files/alice/restored.bin",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("files dest status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if gotDest != "/restored.bin" {
+		t.Fatalf("files dest=%q", gotDest)
+	}
+}
+
 func TestHandler_ParseFilesDestination(t *testing.T) {
 	h := &Handler{FilesPrefix: "/remote.php/dav/files/"}
 	user, sub, err := h.parseFilesDestination("/remote.php/dav/files/alice/foo.bin")

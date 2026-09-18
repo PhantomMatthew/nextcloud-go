@@ -24,18 +24,20 @@ var (
 )
 
 type Entry struct {
-	Path        string
-	IsDir       bool
-	Size        int64
-	ETag        string
-	ModTime     time.Time
-	NumericID   uint64
-	Permissions int
-	Shareable   bool
-	Mounted     bool
-	Shared      bool
-	ContentType string
-	Checksum    string
+	Path          string
+	IsDir         bool
+	Size          int64
+	ETag          string
+	ModTime       time.Time
+	NumericID     uint64
+	Permissions   int
+	Shareable     bool
+	Mounted       bool
+	Shared        bool
+	ContentType   string
+	Checksum      string
+	TrashOriginal string
+	TrashDeleted  int64
 }
 
 type FS interface {

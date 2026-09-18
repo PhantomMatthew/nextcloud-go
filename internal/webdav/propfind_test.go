@@ -135,6 +135,38 @@ func TestWriteMultistatus_FileChecksum(t *testing.T) {
 	}
 }
 
+func TestWriteMultistatus_TrashItem(t *testing.T) {
+	f := &Entry{
+		Path:          "/a.txt.d1746100800",
+		IsDir:         false,
+		Size:          5,
+		ETag:          "abc123",
+		ModTime:       time.Date(2025, 5, 1, 12, 0, 0, 0, time.UTC),
+		NumericID:     7,
+		Permissions:   PermRead | PermDelete,
+		ContentType:   "application/octet-stream",
+		TrashOriginal: "a.txt",
+		TrashDeleted:  1746100800,
+	}
+	var buf bytes.Buffer
+	WriteMultistatus(&buf, PropfindContext{
+		BaseHref:         "/remote.php/dav/trashbin/alice/trash/",
+		InstanceID:       "oc123abc",
+		OwnerID:          "alice",
+		OwnerDisplayName: "alice",
+	}, []*Entry{f})
+	out := buf.String()
+	for _, s := range []string{
+		`<oc:trashbin-original-location>a.txt</oc:trashbin-original-location>`,
+		`<oc:trashbin-deletion-time>1746100800</oc:trashbin-deletion-time>`,
+		`<d:href>/remote.php/dav/trashbin/alice/trash/a.txt.d1746100800</d:href>`,
+	} {
+		if !strings.Contains(out, s) {
+			t.Errorf("missing %q\n%s", s, out)
+		}
+	}
+}
+
 func TestBuildHref_EncodesPath(t *testing.T) {
 	cases := []struct {
 		base string
