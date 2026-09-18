@@ -189,6 +189,9 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-18** — Phase 2b: trashbin on `/remote.php/dav/trashbin/`, DELETE
+  into `trash_items`, restore MOVE, `files.undelete` (see ADR-0009). Versions,
+  sharing, S3, jobs, and search remain later.
 - **2026-09-18** — Phase 2a: filecache write goldens, `0003_uploads`, chunked
   upload v2 on `/remote.php/dav/uploads/`, and `dav.chunking` / `files.chunked_upload`
   capabilities (see ADR-0008). Trash, sharing, S3, jobs, and search remain later.
