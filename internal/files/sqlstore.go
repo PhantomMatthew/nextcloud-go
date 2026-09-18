@@ -1,0 +1,404 @@
+package files
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"path"
+	"strings"
+	"time"
+
+	"github.com/PhantomMatthew/nextcloud-go/internal/database"
+)
+
+// Store persists filecache metadata.
+type Store interface {
+	EnsureRoot(ctx context.Context, userID int64) (*File, error)
+	GetByPath(ctx context.Context, userID int64, p string) (*File, error)
+	ListChildren(ctx context.Context, userID, parentID int64) ([]File, error)
+	Insert(ctx context.Context, f *File) error
+	UpdateMeta(ctx context.Context, f *File) error
+	DeleteSubtree(ctx context.Context, userID int64, p string) error
+	RenameSubtree(ctx context.Context, userID int64, srcPath, dstPath string) error
+	Usage(ctx context.Context, userID int64) (int64, error)
+	RecalcAncestors(ctx context.Context, userID int64, startParent *int64, now time.Time) error
+}
+
+// SQLStore is a Store backed by database.DB.
+type SQLStore struct {
+	db database.DB
+}
+
+// NewSQLStore returns a filecache Store.
+func NewSQLStore(db database.DB) *SQLStore {
+	return &SQLStore{db: db}
+}
+
+func (s *SQLStore) EnsureRoot(ctx context.Context, userID int64) (*File, error) {
+	f, err := s.GetByPath(ctx, userID, "/")
+	if err == nil {
+		return f, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	root := &File{
+		UserID:      userID,
+		Name:        "",
+		Path:        "/",
+		IsDir:       true,
+		Size:        0,
+		Mtime:       now,
+		MIME:        "httpd/unix-directory",
+		Permissions: 31, // webdav.PermAll without importing webdav
+	}
+	root.ETag = ComputeDirETag(nil)
+	if err := s.Insert(ctx, root); err != nil {
+		if errors.Is(err, ErrExists) {
+			return s.GetByPath(ctx, userID, "/")
+		}
+		return nil, err
+	}
+	return root, nil
+}
+
+func (s *SQLStore) GetByPath(ctx context.Context, userID int64, p string) (*File, error) {
+	np, err := NormalizePath(p)
+	if err != nil {
+		return nil, err
+	}
+	return s.scanOne(s.db.QueryRow(ctx, `
+SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions
+FROM files WHERE user_id = ? AND path = ?`, userID, np))
+}
+
+func (s *SQLStore) getByID(ctx context.Context, id int64) (*File, error) {
+	return s.scanOne(s.db.QueryRow(ctx, `
+SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions
+FROM files WHERE id = ?`, id))
+}
+
+func (s *SQLStore) ListChildren(ctx context.Context, userID, parentID int64) ([]File, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions
+FROM files WHERE user_id = ? AND parent_id = ? ORDER BY path`, userID, parentID)
+	if err != nil {
+		return nil, fmt.Errorf("files: list: %w", err)
+	}
+	defer rows.Close()
+	var out []File
+	for rows.Next() {
+		f, err := scanFile(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("files: list: %w", err)
+	}
+	return out, nil
+}
+
+func (s *SQLStore) Insert(ctx context.Context, f *File) error {
+	if f == nil || f.UserID == 0 {
+		return fmt.Errorf("files: invalid file")
+	}
+	np, err := NormalizePath(f.Path)
+	if err != nil {
+		return err
+	}
+	f.Path = np
+	if np == "/" {
+		f.Name = ""
+		f.ParentID = nil
+		f.IsDir = true
+	} else {
+		if f.Name == "" {
+			f.Name = path.Base(np)
+		}
+		parentPath := path.Dir(np)
+		if parentPath == "." {
+			parentPath = "/"
+		}
+		parent, err := s.GetByPath(ctx, f.UserID, parentPath)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return ErrParentMissing
+			}
+			return err
+		}
+		if !parent.IsDir {
+			return ErrNotDir
+		}
+		pid := parent.ID
+		f.ParentID = &pid
+	}
+	if f.Mtime.IsZero() {
+		f.Mtime = time.Now().UTC()
+	}
+	if f.MIME == "" {
+		if f.IsDir {
+			f.MIME = "httpd/unix-directory"
+		} else {
+			f.MIME = "application/octet-stream"
+		}
+	}
+	isDir := 0
+	if f.IsDir {
+		isDir = 1
+	}
+	var parent any
+	if f.ParentID != nil {
+		parent = *f.ParentID
+	}
+	var checksum any
+	if f.Checksum != "" {
+		checksum = f.Checksum
+	}
+	if f.ETag == "" {
+		if f.IsDir {
+			f.ETag = ComputeDirETag(nil)
+		} else {
+			f.ETag = "pending"
+		}
+	}
+	_, err = s.db.Exec(ctx, `
+INSERT INTO files (user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		f.UserID, parent, f.Name, f.Path, isDir, f.Size, f.Mtime.UTC().UnixMilli(), f.ETag, checksum, f.MIME, f.Permissions)
+	if err != nil {
+		if database.IsUniqueViolation(s.db.Dialect(), err) {
+			return ErrExists
+		}
+		return fmt.Errorf("files: insert: %w", err)
+	}
+	got, err := s.GetByPath(ctx, f.UserID, f.Path)
+	if err != nil {
+		return err
+	}
+	if !got.IsDir {
+		got.ETag = ComputeFileETag(got.ID, got.Mtime, got.Size)
+		if err := s.UpdateMeta(ctx, got); err != nil {
+			return err
+		}
+	}
+	*f = *got
+	return nil
+}
+
+func (s *SQLStore) UpdateMeta(ctx context.Context, f *File) error {
+	if f == nil || f.ID == 0 {
+		return fmt.Errorf("files: invalid file")
+	}
+	isDir := 0
+	if f.IsDir {
+		isDir = 1
+	}
+	var checksum any
+	if f.Checksum != "" {
+		checksum = f.Checksum
+	}
+	_, err := s.db.Exec(ctx, `
+UPDATE files SET name = ?, path = ?, is_dir = ?, size = ?, mtime_ms = ?, etag = ?, checksum = ?, mime = ?, permissions = ?, parent_id = ?
+WHERE id = ?`,
+		f.Name, f.Path, isDir, f.Size, f.Mtime.UTC().UnixMilli(), f.ETag, checksum, f.MIME, f.Permissions, nullInt(f.ParentID), f.ID)
+	if err != nil {
+		return fmt.Errorf("files: update: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLStore) DeleteSubtree(ctx context.Context, userID int64, p string) error {
+	np, err := NormalizePath(p)
+	if err != nil {
+		return err
+	}
+	if np == "/" {
+		return ErrForbidden
+	}
+	f, err := s.GetByPath(ctx, userID, np)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx, `DELETE FROM files WHERE id = ?`, f.ID)
+	if err != nil {
+		return fmt.Errorf("files: delete: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLStore) RenameSubtree(ctx context.Context, userID int64, srcPath, dstPath string) error {
+	src, err := NormalizePath(srcPath)
+	if err != nil {
+		return err
+	}
+	dst, err := NormalizePath(dstPath)
+	if err != nil {
+		return err
+	}
+	if src == "/" || dst == "/" {
+		return ErrForbidden
+	}
+	node, err := s.GetByPath(ctx, userID, src)
+	if err != nil {
+		return err
+	}
+	if _, err := s.GetByPath(ctx, userID, dst); err == nil {
+		return ErrExists
+	} else if !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	dstParentPath := path.Dir(dst)
+	if dstParentPath == "." {
+		dstParentPath = "/"
+	}
+	dstParent, err := s.GetByPath(ctx, userID, dstParentPath)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return ErrParentMissing
+		}
+		return err
+	}
+	if !dstParent.IsDir {
+		return ErrNotDir
+	}
+
+	rows, err := s.db.Query(ctx, `
+SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions
+FROM files WHERE user_id = ? AND (path = ? OR path LIKE ?)`, userID, src, src+"/%")
+	if err != nil {
+		return fmt.Errorf("files: rename list: %w", err)
+	}
+	defer rows.Close()
+	var batch []File
+	for rows.Next() {
+		f, err := scanFile(rows)
+		if err != nil {
+			return err
+		}
+		batch = append(batch, *f)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("files: rename list: %w", err)
+	}
+
+	prefix := src + "/"
+	newPrefix := dst + "/"
+	now := time.Now().UTC()
+	for i := range batch {
+		f := batch[i]
+		switch {
+		case f.Path == src:
+			f.Path = dst
+			f.Name = path.Base(dst)
+			pid := dstParent.ID
+			f.ParentID = &pid
+		case strings.HasPrefix(f.Path, prefix):
+			f.Path = newPrefix + strings.TrimPrefix(f.Path, prefix)
+		default:
+			continue
+		}
+		f.Mtime = now
+		if !f.IsDir {
+			f.ETag = ComputeFileETag(f.ID, f.Mtime, f.Size)
+		}
+		if err := s.UpdateMeta(ctx, &f); err != nil {
+			return err
+		}
+	}
+	_ = node
+	return nil
+}
+
+func (s *SQLStore) Usage(ctx context.Context, userID int64) (int64, error) {
+	row := s.db.QueryRow(ctx, `SELECT COALESCE(SUM(size), 0) FROM files WHERE user_id = ? AND is_dir = 0`, userID)
+	var n int64
+	if err := row.Scan(&n); err != nil {
+		return 0, fmt.Errorf("files: usage: %w", err)
+	}
+	return n, nil
+}
+
+func (s *SQLStore) RecalcAncestors(ctx context.Context, userID int64, startParent *int64, now time.Time) error {
+	if startParent == nil {
+		root, err := s.EnsureRoot(ctx, userID)
+		if err != nil {
+			return err
+		}
+		startParent = &root.ID
+	}
+	id := *startParent
+	for {
+		f, err := s.getByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		if f.UserID != userID {
+			return ErrForbidden
+		}
+		children, err := s.ListChildren(ctx, userID, f.ID)
+		if err != nil {
+			return err
+		}
+		var size int64
+		for _, c := range children {
+			size += c.Size
+		}
+		f.Size = size
+		f.ETag = ComputeDirETag(children)
+		if !now.IsZero() {
+			f.Mtime = now.UTC()
+		}
+		if err := s.UpdateMeta(ctx, f); err != nil {
+			return err
+		}
+		if f.ParentID == nil {
+			return nil
+		}
+		id = *f.ParentID
+	}
+}
+
+func (s *SQLStore) scanOne(row database.Row) (*File, error) {
+	f, err := scanFile(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, database.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return f, nil
+}
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanFile(row rowScanner) (*File, error) {
+	var f File
+	var parent sql.NullInt64
+	var checksum sql.NullString
+	var isDir int
+	var mtimeMs int64
+	if err := row.Scan(&f.ID, &f.UserID, &parent, &f.Name, &f.Path, &isDir, &f.Size, &mtimeMs, &f.ETag, &checksum, &f.MIME, &f.Permissions); err != nil {
+		return nil, err
+	}
+	if parent.Valid {
+		id := parent.Int64
+		f.ParentID = &id
+	}
+	f.IsDir = isDir != 0
+	f.Mtime = time.UnixMilli(mtimeMs).UTC()
+	f.Checksum = checksum.String
+	return &f, nil
+}
+
+func nullInt(v *int64) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
