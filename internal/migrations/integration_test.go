@@ -49,7 +49,7 @@ func run(t *testing.T, d database.Dialect, dsn string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v != 1 || dirty {
+	if v != 2 || dirty {
 		t.Errorf("version=%d dirty=%v", v, dirty)
 	}
 }

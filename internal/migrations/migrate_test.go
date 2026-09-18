@@ -29,13 +29,13 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("up: %v", err)
 	}
-	if n != 1 {
-		t.Errorf("applied = %d, want 1", n)
+	if n != 2 {
+		t.Errorf("applied = %d, want 2", n)
 	}
 
 	want := []string{
 		"users", "groups", "group_members", "sessions",
-		"app_passwords", "login_flows", "jobs", "module_config",
+		"app_passwords", "login_flows", "jobs", "module_config", "files",
 	}
 	for _, table := range want {
 		var name string
@@ -49,7 +49,7 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version: %v", err)
 	}
-	if v != 1 || dirty {
+	if v != 2 || dirty {
 		t.Errorf("version=%d dirty=%v", v, dirty)
 	}
 
@@ -68,15 +68,13 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version after down: %v", err)
 	}
-	if v != 0 || dirty {
+	if v != 1 || dirty {
 		t.Errorf("after down version=%d dirty=%v", v, dirty)
 	}
-	for _, table := range want {
-		var name string
-		err := db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name)
-		if err == nil {
-			t.Errorf("table %s still present after down", table)
-		}
+	var filesName string
+	err = db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "files").Scan(&filesName)
+	if err == nil {
+		t.Error("table files still present after down to v1")
 	}
 
 	n, err = Up(ctx, std, database.DialectSQLite, logger)
@@ -85,6 +83,13 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("re-up applied = %d, want 1", n)
+	}
+	v, dirty, err = Version(ctx, std, database.DialectSQLite)
+	if err != nil {
+		t.Fatalf("version after re-up: %v", err)
+	}
+	if v != 2 || dirty {
+		t.Errorf("after re-up version=%d dirty=%v", v, dirty)
 	}
 }
 
