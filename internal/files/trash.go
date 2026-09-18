@@ -318,6 +318,11 @@ func (t *Trash) Restore(ctx context.Context, user, locationID, destUser, destPat
 		}
 		return nil, false, err
 	}
+	if t.Files.Versions != nil && dest != item.OriginalPath {
+		if err := t.Files.Versions.RenamePath(ctx, user, item.OriginalPath, dest); err != nil {
+			return nil, false, err
+		}
+	}
 	if err := t.Sessions.Delete(ctx, usr.ID, locationID); err != nil && !errors.Is(err, ErrNotFound) {
 		return nil, false, mapMeta(err)
 	}
@@ -337,7 +342,8 @@ func (t *Trash) PurgeLocation(ctx context.Context, user, locationID string) erro
 	if !ValidLocationID(locationID) {
 		return webdav.ErrForbidden
 	}
-	if _, err := t.Sessions.GetByLocation(ctx, usr.ID, locationID); err != nil {
+	item, err := t.Sessions.GetByLocation(ctx, usr.ID, locationID)
+	if err != nil {
 		return mapMeta(err)
 	}
 	key, err := trashStorageKey(user, locationID)
@@ -349,6 +355,11 @@ func (t *Trash) PurgeLocation(ctx context.Context, user, locationID string) erro
 	}
 	if err := t.Sessions.Delete(ctx, usr.ID, locationID); err != nil && !errors.Is(err, ErrNotFound) {
 		return mapMeta(err)
+	}
+	if t.Files != nil && t.Files.Versions != nil {
+		if err := t.Files.Versions.DeleteByPath(ctx, user, item.OriginalPath); err != nil {
+			return err
+		}
 	}
 	return nil
 }

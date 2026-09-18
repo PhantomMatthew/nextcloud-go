@@ -18,11 +18,12 @@ import (
 
 // DAV implements webdav.FS on storage.Storage plus the filecache Store.
 type DAV struct {
-	Storage storage.Storage
-	Meta    Store
-	Users   users.Store
-	Clock   func() time.Time
-	Trash   *Trash
+	Storage  storage.Storage
+	Meta     Store
+	Users    users.Store
+	Clock    func() time.Time
+	Trash    *Trash
+	Versions *Versions
 }
 
 // NewDAV returns a DAV adapter.
@@ -161,6 +162,10 @@ func (d *DAV) Read(ctx context.Context, user, p string) (io.ReadCloser, *webdav.
 }
 
 func (d *DAV) Write(ctx context.Context, user, p string, r io.Reader, mtime *time.Time) (*webdav.Entry, bool, error) {
+	return d.write(ctx, user, p, r, mtime, true)
+}
+
+func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *time.Time, snapshot bool) (*webdav.Entry, bool, error) {
 	u, err := d.resolveUser(ctx, user)
 	if err != nil {
 		return nil, false, err
@@ -193,6 +198,12 @@ func (d *DAV) Write(ctx context.Context, user, p string, r io.Reader, mtime *tim
 		return nil, false, mapMeta(err)
 	case existing.IsDir:
 		return nil, false, webdav.ErrIsDir
+	}
+
+	if !created && snapshot && d.Versions != nil {
+		if err := d.Versions.Snapshot(ctx, user, existing); err != nil {
+			return nil, false, err
+		}
 	}
 
 	key, err := storageKey(user, np)
@@ -336,6 +347,11 @@ func (d *DAV) Purge(ctx context.Context, user, p string) error {
 	if err := d.Meta.DeleteSubtree(ctx, u.ID, np); err != nil {
 		return mapMeta(err)
 	}
+	if d.Versions != nil {
+		if err := d.Versions.DeleteByPath(ctx, user, np); err != nil {
+			return err
+		}
+	}
 	return d.Meta.RecalcAncestors(ctx, u.ID, parent, d.now())
 }
 
@@ -409,6 +425,11 @@ func (d *DAV) Move(ctx context.Context, srcUser, srcPath, dstUser, dstPath strin
 			return nil, false, errors.Join(mapMeta(err), rb)
 		}
 		return nil, false, mapMeta(err)
+	}
+	if d.Versions != nil {
+		if err := d.Versions.RenamePath(ctx, srcUser, src, dst); err != nil {
+			return nil, false, err
+		}
 	}
 	now := d.now()
 	moved, err := d.Meta.GetByPath(ctx, u.ID, dst)

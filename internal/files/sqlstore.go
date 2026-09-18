@@ -16,6 +16,7 @@ import (
 type Store interface {
 	EnsureRoot(ctx context.Context, userID int64) (*File, error)
 	GetByPath(ctx context.Context, userID int64, p string) (*File, error)
+	GetByID(ctx context.Context, id int64) (*File, error)
 	ListChildren(ctx context.Context, userID, parentID int64) ([]File, error)
 	Insert(ctx context.Context, f *File) error
 	UpdateMeta(ctx context.Context, f *File) error
@@ -74,10 +75,17 @@ SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksu
 FROM files WHERE user_id = ? AND path = ?`, userID, np))
 }
 
-func (s *SQLStore) getByID(ctx context.Context, id int64) (*File, error) {
+func (s *SQLStore) GetByID(ctx context.Context, id int64) (*File, error) {
+	if id == 0 {
+		return nil, ErrNotFound
+	}
 	return s.scanOne(s.db.QueryRow(ctx, `
 SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions
 FROM files WHERE id = ?`, id))
+}
+
+func (s *SQLStore) getByID(ctx context.Context, id int64) (*File, error) {
+	return s.GetByID(ctx, id)
 }
 
 func (s *SQLStore) ListChildren(ctx context.Context, userID, parentID int64) ([]File, error) {
