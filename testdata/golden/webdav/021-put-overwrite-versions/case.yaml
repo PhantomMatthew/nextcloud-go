@@ -1,0 +1,24 @@
+schema_version: 1
+id: webdav/021-put-overwrite-versions
+description: |
+  Authenticated PUT overwrite of assembled.bin creates a file version.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 2c
+  captured_at: "2026-09-18T00:00:00Z"
+request:
+  body_kind: bytes
+response:
+  body_kind: empty
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 204
+replayable: true
+mutating: true
+synthetic: true
+tags: [webdav, versions, phase2]

@@ -1,0 +1,24 @@
+schema_version: 1
+id: webdav/025-get-after-version-restore
+description: |
+  GET of assembled.bin after rolling back the overwrite.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 2c
+  captured_at: "2026-09-18T00:00:00Z"
+request:
+  body_kind: empty
+response:
+  body_kind: bytes
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 200
+replayable: true
+mutating: false
+synthetic: true
+tags: [webdav, versions, phase2]

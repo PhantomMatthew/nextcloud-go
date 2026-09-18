@@ -1,0 +1,16 @@
+HTTP/1.1 200 OK
+Server: nginx
+Content-Type: application/octet-stream
+Etag: "9520b50cb8e28141e14e9f9012614a7da4be7acf"
+Feature-Policy: autoplay 'self';camera 'none';fullscreen 'self';geolocation 'none';microphone 'none';payment 'none'
+Last-Modified: Thu, 01 May 2025 12:00:00 GMT
+Oc-Etag: "9520b50cb8e28141e14e9f9012614a7da4be7acf"
+Oc-Fileid: 00000001ocdev00001
+Referrer-Policy: no-referrer
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Permitted-Cross-Domain-Policies: none
+X-Robots-Tag: noindex, nofollow
+X-Xss-Protection: 1; mode=block
+
+hello
