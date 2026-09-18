@@ -634,6 +634,33 @@ func TestHandler_RestoreMove(t *testing.T) {
 	}
 }
 
+func TestHandler_RestoreVersionMove(t *testing.T) {
+	h, err := NewHandler("/remote.php/dav/versions/", NewInMemoryFS(), "oc123abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotID, gotRev string
+	h.RestoreVersion = func(_ context.Context, srcUser, fileID, revision, destUser string) (*Entry, bool, error) {
+		if srcUser != "alice" || destUser != "alice" {
+			t.Errorf("users = %s %s", srcUser, destUser)
+		}
+		gotID = fileID
+		gotRev = revision
+		return &Entry{Path: "/a.txt", ETag: "etag1", NumericID: 6, ModTime: time.Unix(1, 0).UTC()}, false, nil
+	}
+	p := &auth.Principal{UID: "alice", AuthMethod: auth.AuthMethodBasic}
+	rr := doRequest(h, "MOVE", "/remote.php/dav/versions/alice/versions/6/1746100800", p, map[string]string{
+		HeaderDestination: "https://cloud.example.com/remote.php/dav/versions/alice/restore",
+		HeaderOverwrite:   "T",
+	})
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if gotID != "6" || gotRev != "1746100800" {
+		t.Fatalf("id=%q rev=%q", gotID, gotRev)
+	}
+}
+
 func TestHandler_ParseFilesDestination(t *testing.T) {
 	h := &Handler{FilesPrefix: "/remote.php/dav/files/"}
 	user, sub, err := h.parseFilesDestination("/remote.php/dav/files/alice/foo.bin")
