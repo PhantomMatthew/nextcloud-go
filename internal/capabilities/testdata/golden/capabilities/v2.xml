@@ -30,6 +30,7 @@
      <max_parallel_count>20</max_parallel_count>
     </chunked_upload>
     <undelete>1</undelete>
+    <versioning>1</versioning>
    </files>
   </capabilities>
  </data>

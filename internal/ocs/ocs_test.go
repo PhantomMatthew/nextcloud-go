@@ -39,6 +39,7 @@ func capabilitiesPayload() ocs.OrderedMap {
 					ocs.K("max_parallel_count", 20),
 				)),
 				ocs.K("undelete", true),
+				ocs.K("versioning", true),
 			)),
 		)),
 	)
