@@ -31,9 +31,11 @@ const (
 	HeaderOCChecksum  = "OC-Checksum"
 	HeaderOCTotalLen  = "OC-Total-Length"
 	HeaderIf          = "If"
+	HeaderTimeout     = "Timeout"
+	HeaderLockToken   = "Lock-Token"
 
-	davCompliance  = "1, 3, extended-mkcol"
-	allowedMethods = "OPTIONS, GET, HEAD, PROPFIND, PUT, MKCOL, DELETE, MOVE, COPY, PROPPATCH"
+	davCompliance  = "1, 2, 3, extended-mkcol"
+	allowedMethods = "OPTIONS, GET, HEAD, PROPFIND, PUT, MKCOL, DELETE, MOVE, COPY, PROPPATCH, LOCK, UNLOCK"
 	contentTypeXML = "application/xml; charset=utf-8"
 
 	HeaderDestination = "Destination"
@@ -91,6 +93,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.moveOrCopy(w, r, true)
 	case "PROPPATCH":
 		h.proppatch(w, r)
+	case "LOCK":
+		h.lock(w, r)
+	case "UNLOCK":
+		h.unlock(w, r)
 	default:
 		h.methodNotAllowed(w, r)
 	}
@@ -143,6 +149,7 @@ func (h *Handler) propfind(w http.ResponseWriter, r *http.Request) {
 		EmitQuota:        sub == "/" && root.IsDir,
 		QuotaAvailable:   -3,
 		EmitFavorite:     h.emitFavorite(),
+		EmitLocks:        h.emitLocks(),
 	}
 	if pctx.EmitQuota && h.Quota != nil {
 		used, available, unlimited := h.Quota(r.Context(), user)
@@ -193,6 +200,10 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request, writeBody bool) {
 func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
 	user, sub, ok := h.authorizePath(w, r)
 	if !ok {
+		return
+	}
+
+	if !h.checkLock(w, r, user, sub) {
 		return
 	}
 
@@ -370,7 +381,7 @@ func writeFSError(w http.ResponseWriter, err error) {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 	case errors.Is(err, ErrExists):
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-	case errors.Is(err, ErrNotDir), errors.Is(err, ErrIsDir), errors.Is(err, ErrParentMissing):
+	case errors.Is(err, ErrConflict), errors.Is(err, ErrNotDir), errors.Is(err, ErrIsDir), errors.Is(err, ErrParentMissing):
 		http.Error(w, "Conflict", http.StatusConflict)
 	default:
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -388,6 +399,9 @@ func (h *Handler) mkcol(w http.ResponseWriter, r *http.Request) {
 	}
 	if sub == "/" {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.checkLock(w, r, user, sub) {
 		return
 	}
 	var entry *Entry
@@ -426,6 +440,9 @@ func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
 	}
 	if sub == "/" {
 		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	if !h.checkLock(w, r, user, sub) {
 		return
 	}
 	if err := h.FS.Remove(r.Context(), user, sub); err != nil {
@@ -552,6 +569,20 @@ func (h *Handler) moveOrCopy(w http.ResponseWriter, r *http.Request, isCopy bool
 		return
 	}
 
+	if !isCopy {
+		if !h.checkLock(w, r, srcUser, srcSub) {
+			return
+		}
+	}
+	if _, err := h.FS.Stat(r.Context(), dstUser, dstSub); err == nil {
+		if !h.checkLock(w, r, dstUser, dstSub) {
+			return
+		}
+	} else if !errors.Is(err, ErrNotFound) {
+		writeFSError(w, err)
+		return
+	}
+
 	if isCopy {
 		depth := r.Header.Get(HeaderDepth)
 		depthInfinity := depth == "" || depth == "infinity"
@@ -605,6 +636,10 @@ func writeMoveCopyErr(w http.ResponseWriter, err error) {
 func (h *Handler) emitFavorite() bool {
 	p := strings.ToLower(h.Prefix)
 	return strings.Contains(p, "/dav/files/") || strings.Contains(p, "/webdav/")
+}
+
+func (h *Handler) emitLocks() bool {
+	return h.emitFavorite()
 }
 
 func (h *Handler) filesPrefix() string {

@@ -21,6 +21,9 @@ func (h *Handler) proppatch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
 	}
+	if !h.checkLock(w, r, user, sub) {
+		return
+	}
 	patcher, ok := h.FS.(PropPatchFS)
 	if !ok {
 		h.methodNotAllowed(w, r)

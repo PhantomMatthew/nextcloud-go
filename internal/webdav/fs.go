@@ -21,6 +21,7 @@ var (
 	ErrLocked        = errors.New("webdav: locked")
 	ErrBadRequest    = errors.New("webdav: bad request")
 	ErrPrecondition  = errors.New("webdav: precondition failed")
+	ErrConflict      = errors.New("webdav: conflict")
 )
 
 type Entry struct {
@@ -39,6 +40,9 @@ type Entry struct {
 	TrashOriginal string
 	TrashDeleted  int64
 	Favorite      int
+	LockToken     string
+	LockOwner     string
+	LockTimeout   time.Duration
 }
 
 type FS interface {
@@ -83,12 +87,43 @@ type PropPatchFS interface {
 	PatchProps(ctx context.Context, user, path string, ops []PropPatchOp) ([]PropPatchResult, error)
 }
 
+// LockRequest is an exclusive write LOCK or refresh.
+type LockRequest struct {
+	Refresh bool
+	Owner   string
+	Timeout time.Duration
+	Token   string
+}
+
+// LockInfo is the active exclusive write lock.
+type LockInfo struct {
+	Token   string
+	Owner   string
+	Timeout time.Duration
+	Path    string
+}
+
+// LockFS is implemented by filesystems that support RFC 4918 LOCK/UNLOCK.
+type LockFS interface {
+	Lock(ctx context.Context, user, path string, req LockRequest) (*LockInfo, error)
+	Unlock(ctx context.Context, user, path, token string) error
+	CheckLock(ctx context.Context, user, path, ifHeader string) error
+}
+
 type InMemoryFS struct {
 	mu     sync.RWMutex
 	users  map[string]*userTree
 	clock  func() time.Time
 	nextID uint64
 	idMu   sync.Mutex
+	locks  map[string]map[string]*memLock
+}
+
+type memLock struct {
+	Token   string
+	Owner   string
+	Timeout time.Time
+	Created time.Time
 }
 
 type fileNode struct {
@@ -106,6 +141,7 @@ func NewInMemoryFS() *InMemoryFS {
 		users:  make(map[string]*userTree),
 		clock:  time.Now,
 		nextID: 1,
+		locks:  make(map[string]map[string]*memLock),
 	}
 }
 
@@ -160,12 +196,14 @@ func normalizePath(p string) string {
 func (fs *InMemoryFS) Stat(_ context.Context, user, p string) (*Entry, error) {
 	t := fs.ensureUser(user)
 	np := normalizePath(p)
-	if np == "/" {
-		return t.root, nil
-	}
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
+	if np == "/" {
+		fs.applyMemLockLocked(user, "/", t.root)
+		return t.root, nil
+	}
 	if f, ok := t.files[np]; ok {
+		fs.applyMemLockLocked(user, np, f.entry)
 		return f.entry, nil
 	}
 	return nil, ErrNotFound
@@ -188,6 +226,7 @@ func (fs *InMemoryFS) List(_ context.Context, user, p string) ([]*Entry, error) 
 	out := make([]*Entry, 0, len(t.files))
 	for fp, f := range t.files {
 		if path.Dir(fp) == np {
+			fs.applyMemLockLocked(user, fp, f.entry)
 			out = append(out, f.entry)
 		}
 	}
@@ -253,6 +292,7 @@ func (fs *InMemoryFS) Remove(_ context.Context, user, p string) error {
 		}
 	}
 	delete(t.files, np)
+	fs.deleteMemLocksLocked(user, np)
 	return nil
 }
 
@@ -337,6 +377,7 @@ func (fs *InMemoryFS) Move(_ context.Context, srcUser, srcPath, dstUser, dstPath
 	} else {
 		moveOne(src, dst)
 	}
+	fs.renameMemLocksLocked(srcUser, src, dst)
 	return t.files[dst].entry, created, nil
 }
 

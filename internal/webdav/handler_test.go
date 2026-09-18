@@ -81,6 +81,8 @@ func TestHandler_PROPFIND_Depth0_Root(t *testing.T) {
 		`<oc:permissions>RGDNVCK</oc:permissions>`,
 		`<oc:id>00000001oc123abc</oc:id>`,
 		`<d:status>HTTP/1.1 200 OK</d:status>`,
+		`<d:supportedlock>`,
+		`<d:lockdiscovery/>`,
 	}
 	for _, s := range wantSubs {
 		if !strings.Contains(body, s) {
@@ -136,7 +138,7 @@ func TestHandler_PROPFIND_UnknownPath(t *testing.T) {
 func TestHandler_MethodNotAllowed(t *testing.T) {
 	h := newTestHandler()
 	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
-	rr := doRequest(h, "LOCK", "/remote.php/dav/files/admin/foo.txt", p, nil)
+	rr := doRequest(h, "PATCH", "/remote.php/dav/files/admin/foo.txt", p, nil)
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rr.Code)
 	}
@@ -698,5 +700,61 @@ func TestHandler_ParseFilesDestination(t *testing.T) {
 	user, sub, err := h.parseFilesDestination("/remote.php/dav/files/alice/foo.bin")
 	if err != nil || user != "alice" || sub != "/foo.bin" {
 		t.Fatalf("got %s %s %v", user, sub, err)
+	}
+}
+
+func TestHandler_LockUnlock(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	put := doRequestBody(h, http.MethodPut, "/remote.php/dav/files/admin/a.txt", p, nil, "hello")
+	if put.Code != http.StatusCreated {
+		t.Fatalf("put status=%d", put.Code)
+	}
+	lockBody := `<?xml version="1.0"?><d:lockinfo xmlns:d="DAV:"><d:lockscope><d:exclusive/></d:lockscope><d:locktype><d:write/></d:locktype><d:owner>admin</d:owner></d:lockinfo>`
+	locked := doRequestBody(h, "LOCK", "/remote.php/dav/files/admin/a.txt", p, map[string]string{
+		HeaderDepth:   "0",
+		HeaderTimeout: "Second-1800",
+	}, lockBody)
+	if locked.Code != http.StatusOK {
+		t.Fatalf("lock status=%d body=%s", locked.Code, locked.Body.String())
+	}
+	token := locked.Header().Get(HeaderLockToken)
+	if token == "" || !strings.Contains(locked.Body.String(), "<d:lockdiscovery>") {
+		t.Fatalf("lock token/body missing token=%q body=%s", token, locked.Body.String())
+	}
+	denied := doRequestBody(h, http.MethodPut, "/remote.php/dav/files/admin/a.txt", p, nil, "nope")
+	if denied.Code != http.StatusLocked {
+		t.Fatalf("put without if status=%d", denied.Code)
+	}
+	okPut := doRequestBody(h, http.MethodPut, "/remote.php/dav/files/admin/a.txt", p, map[string]string{
+		HeaderIf: "(" + token + ")",
+	}, "next")
+	if okPut.Code != http.StatusNoContent {
+		t.Fatalf("put with if status=%d", okPut.Code)
+	}
+	shared := `<?xml version="1.0"?><d:lockinfo xmlns:d="DAV:"><d:lockscope><d:shared/></d:lockscope><d:locktype><d:write/></d:locktype></d:lockinfo>`
+	rr := doRequestBody(h, "LOCK", "/remote.php/dav/files/admin/a.txt", p, nil, shared)
+	if rr.Code != http.StatusForbidden && rr.Code != http.StatusLocked {
+		t.Fatalf("shared lock status=%d", rr.Code)
+	}
+	inf := doRequestBody(h, "LOCK", "/remote.php/dav/files/admin/a.txt", p, map[string]string{HeaderDepth: "infinity"}, lockBody)
+	if inf.Code != http.StatusBadRequest {
+		t.Fatalf("depth infinity status=%d", inf.Code)
+	}
+	missing := doRequest(h, "UNLOCK", "/remote.php/dav/files/admin/a.txt", p, nil)
+	if missing.Code != http.StatusBadRequest {
+		t.Fatalf("unlock missing header status=%d", missing.Code)
+	}
+	wrong := doRequest(h, "UNLOCK", "/remote.php/dav/files/admin/a.txt", p, map[string]string{
+		HeaderLockToken: "<opaquelocktoken:deadbeefdeadbeefdeadbeefdeadbeef>",
+	})
+	if wrong.Code != http.StatusConflict {
+		t.Fatalf("unlock wrong token status=%d", wrong.Code)
+	}
+	unlocked := doRequest(h, "UNLOCK", "/remote.php/dav/files/admin/a.txt", p, map[string]string{
+		HeaderLockToken: token,
+	})
+	if unlocked.Code != http.StatusNoContent {
+		t.Fatalf("unlock status=%d", unlocked.Code)
 	}
 }

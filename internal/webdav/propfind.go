@@ -23,6 +23,7 @@ type PropfindContext struct {
 	QuotaUsed        int64
 	QuotaAvailable   int64
 	EmitFavorite     bool
+	EmitLocks        bool
 }
 
 func WriteMultistatus(buf *bytes.Buffer, ctx PropfindContext, entries []*Entry) {
@@ -68,6 +69,20 @@ func writeProps(buf *bytes.Buffer, ctx PropfindContext, e *Entry) {
 
 	mod := e.ModTime.UTC().Format(httpRFC1123)
 	fmt.Fprintf(buf, `<d:getlastmodified>%s</d:getlastmodified>`, mod)
+
+	if ctx.EmitLocks {
+		writeSupportedLock(buf)
+		if e.LockToken != "" {
+			writeLockDiscovery(buf, &LockInfo{
+				Token:   e.LockToken,
+				Owner:   e.LockOwner,
+				Timeout: e.LockTimeout,
+				Path:    e.Path,
+			}, "")
+		} else {
+			buf.WriteString(`<d:lockdiscovery/>`)
+		}
+	}
 
 	fmt.Fprintf(buf, `<oc:id>%s</oc:id>`, FileID(e.NumericID, ctx.InstanceID))
 	fmt.Fprintf(buf, `<oc:fileid>%s</oc:fileid>`, FileID(e.NumericID, ctx.InstanceID))
