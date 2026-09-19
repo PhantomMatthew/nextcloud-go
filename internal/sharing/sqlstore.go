@@ -140,6 +140,14 @@ FROM shares WHERE owner_user_id = ? AND (file_path = ? OR file_path LIKE ?) ORDE
 	return scanShares(rows)
 }
 
+func (s *SQLShareStore) DeleteExpired(ctx context.Context, nowMs int64) error {
+	_, err := s.db.Exec(ctx, `DELETE FROM shares WHERE expire_ms > 0 AND expire_ms <= ?`, nowMs)
+	if err != nil {
+		return fmt.Errorf("sharing: expire: %w", err)
+	}
+	return nil
+}
+
 func (s *SQLShareStore) DeleteByPath(ctx context.Context, ownerUserID int64, filePath string) error {
 	np, err := files.NormalizePath(filePath)
 	if err != nil {

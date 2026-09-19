@@ -30,6 +30,7 @@ type LockStore interface {
 	Delete(ctx context.Context, id int64) error
 	DeleteByPath(ctx context.Context, userID int64, filePath string) error
 	RenamePath(ctx context.Context, userID int64, srcPath, dstPath string) error
+	DeleteExpired(ctx context.Context, nowMs int64) error
 }
 
 // SQLLockStore is a LockStore backed by database.DB.
@@ -156,6 +157,14 @@ FROM file_locks WHERE user_id = ? AND (file_path = ? OR file_path LIKE ?) ORDER 
 		return nil, fmt.Errorf("files: lock list: %w", err)
 	}
 	return out, nil
+}
+
+func (s *SQLLockStore) DeleteExpired(ctx context.Context, nowMs int64) error {
+	_, err := s.db.Exec(ctx, `DELETE FROM file_locks WHERE timeout_ms > 0 AND timeout_ms <= ?`, nowMs)
+	if err != nil {
+		return fmt.Errorf("files: lock expire: %w", err)
+	}
+	return nil
 }
 
 func (s *SQLLockStore) DeleteByPath(ctx context.Context, userID int64, filePath string) error {

@@ -97,6 +97,16 @@ func (m *memShares) DeleteByPath(_ context.Context, ownerUserID int64, filePath 
 	return nil
 }
 
+func (m *memShares) DeleteExpired(_ context.Context, nowMs int64) error {
+	for id, s := range m.byID {
+		if s.ExpireMs > 0 && s.ExpireMs <= nowMs {
+			delete(m.byToken, s.Token)
+			delete(m.byID, id)
+		}
+	}
+	return nil
+}
+
 func (m *memShares) RenamePath(_ context.Context, ownerUserID int64, srcPath, dstPath string) error {
 	for _, s := range m.byID {
 		if s.OwnerUserID != ownerUserID {

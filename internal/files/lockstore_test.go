@@ -64,3 +64,34 @@ func TestSQLLockStoreCRUD(t *testing.T) {
 		t.Fatalf("after delete = %v", err)
 	}
 }
+
+func TestSQLLockStoreDeleteExpired(t *testing.T) {
+	ctx := t.Context()
+	db := testDB(t)
+	uid := seedUser(t, db)
+	store := NewSQLLockStore(db)
+	now := time.Date(2025, 5, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
+	dead := &FileLock{
+		UserID: uid, Path: "/dead.txt", Token: "opaquelocktoken:deaddeaddeaddeaddeaddeaddeaddead",
+		Owner: "alice", TimeoutMs: now - 1, CreatedMs: now,
+	}
+	live := &FileLock{
+		UserID: uid, Path: "/live.txt", Token: "opaquelocktoken:livelivelivelivelivelivelivelive",
+		Owner: "alice", TimeoutMs: now + 1800_000, CreatedMs: now,
+	}
+	if err := store.Insert(ctx, dead); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Insert(ctx, live); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteExpired(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetByPath(ctx, uid, "/dead.txt"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expired still present: %v", err)
+	}
+	if _, err := store.GetByPath(ctx, uid, "/live.txt"); err != nil {
+		t.Fatal(err)
+	}
+}

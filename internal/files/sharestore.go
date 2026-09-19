@@ -30,4 +30,5 @@ type ShareStore interface {
 	Delete(ctx context.Context, id int64) error
 	DeleteByPath(ctx context.Context, ownerUserID int64, filePath string) error
 	RenamePath(ctx context.Context, ownerUserID int64, srcPath, dstPath string) error
+	DeleteExpired(ctx context.Context, nowMs int64) error
 }

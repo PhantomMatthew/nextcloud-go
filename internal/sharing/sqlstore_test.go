@@ -93,3 +93,40 @@ func TestSQLShareStoreCRUD(t *testing.T) {
 		t.Fatalf("after delete = %v", err)
 	}
 }
+
+func TestSQLShareStoreDeleteExpired(t *testing.T) {
+	ctx := t.Context()
+	db := testDB(t)
+	uid := seedUser(t, db)
+	store := NewSQLShareStore(db)
+	now := int64(1746100800000)
+	live := &files.Share{
+		OwnerUserID: uid, ShareType: files.ShareTypeLink, Path: "/live.txt",
+		ItemType: "file", Token: "live00000000001", Permissions: 1, ExpireMs: now + 1000, StimeMs: now,
+	}
+	dead := &files.Share{
+		OwnerUserID: uid, ShareType: files.ShareTypeLink, Path: "/dead.txt",
+		ItemType: "file", Token: "dead00000000001", Permissions: 1, ExpireMs: now - 1, StimeMs: now,
+	}
+	never := &files.Share{
+		OwnerUserID: uid, ShareType: files.ShareTypeLink, Path: "/never.txt",
+		ItemType: "file", Token: "never0000000001", Permissions: 1, StimeMs: now,
+	}
+	for _, s := range []*files.Share{live, dead, never} {
+		if err := store.Insert(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.DeleteExpired(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetByToken(ctx, "dead00000000001"); !errors.Is(err, files.ErrNotFound) {
+		t.Fatalf("expired still present: %v", err)
+	}
+	if _, err := store.GetByToken(ctx, "live00000000001"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetByToken(ctx, "never0000000001"); err != nil {
+		t.Fatal(err)
+	}
+}
