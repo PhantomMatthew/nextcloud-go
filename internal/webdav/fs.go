@@ -12,16 +12,17 @@ import (
 )
 
 var (
-	ErrNotFound      = errors.New("webdav: not found")
-	ErrNotDir        = errors.New("webdav: not a directory")
-	ErrIsDir         = errors.New("webdav: is a directory")
-	ErrForbidden     = errors.New("webdav: forbidden")
-	ErrParentMissing = errors.New("webdav: parent collection missing")
-	ErrExists        = errors.New("webdav: target already exists")
-	ErrLocked        = errors.New("webdav: locked")
-	ErrBadRequest    = errors.New("webdav: bad request")
-	ErrPrecondition  = errors.New("webdav: precondition failed")
-	ErrConflict      = errors.New("webdav: conflict")
+	ErrNotFound         = errors.New("webdav: not found")
+	ErrNotDir           = errors.New("webdav: not a directory")
+	ErrIsDir            = errors.New("webdav: is a directory")
+	ErrForbidden        = errors.New("webdav: forbidden")
+	ErrParentMissing    = errors.New("webdav: parent collection missing")
+	ErrExists           = errors.New("webdav: target already exists")
+	ErrLocked           = errors.New("webdav: locked")
+	ErrBadRequest       = errors.New("webdav: bad request")
+	ErrPrecondition     = errors.New("webdav: precondition failed")
+	ErrConflict         = errors.New("webdav: conflict")
+	ErrMethodNotAllowed = errors.New("webdav: method not allowed")
 )
 
 type Entry struct {

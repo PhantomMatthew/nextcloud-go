@@ -27,6 +27,7 @@ type DAV struct {
 	Versions *Versions
 	Props    PropertyStore
 	Locks    LockStore
+	Shares   ShareStore
 	NewToken func() string
 }
 
@@ -451,6 +452,11 @@ func (d *DAV) Purge(ctx context.Context, user, p string) error {
 			return err
 		}
 	}
+	if d.Shares != nil {
+		if err := d.Shares.DeleteByPath(ctx, u.ID, np); err != nil {
+			return err
+		}
+	}
 	return d.Meta.RecalcAncestors(ctx, u.ID, parent, d.now())
 }
 
@@ -537,6 +543,11 @@ func (d *DAV) Move(ctx context.Context, srcUser, srcPath, dstUser, dstPath strin
 	}
 	if d.Locks != nil {
 		if err := d.Locks.RenamePath(ctx, u.ID, src, dst); err != nil {
+			return nil, false, err
+		}
+	}
+	if d.Shares != nil {
+		if err := d.Shares.RenamePath(ctx, u.ID, src, dst); err != nil {
 			return nil, false, err
 		}
 	}

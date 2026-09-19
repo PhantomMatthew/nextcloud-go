@@ -252,6 +252,11 @@ func (t *Trash) MoveToTrash(ctx context.Context, user, p, deletedBy string) erro
 			return err
 		}
 	}
+	if t.Files.Shares != nil {
+		if err := t.Files.Shares.DeleteByPath(ctx, usr.ID, np); err != nil {
+			return err
+		}
+	}
 	return t.Files.Meta.RecalcAncestors(ctx, usr.ID, parent, now)
 }
 
@@ -373,6 +378,11 @@ func (t *Trash) PurgeLocation(ctx context.Context, user, locationID string) erro
 	}
 	if t.Files != nil && t.Files.Props != nil {
 		if err := t.Files.Props.DeleteByPath(ctx, usr.ID, item.OriginalPath); err != nil {
+			return err
+		}
+	}
+	if t.Files != nil && t.Files.Shares != nil {
+		if err := t.Files.Shares.DeleteByPath(ctx, usr.ID, item.OriginalPath); err != nil {
 			return err
 		}
 	}

@@ -379,7 +379,7 @@ func writeFSError(w http.ResponseWriter, err error) {
 		http.Error(w, "Precondition Failed", http.StatusPreconditionFailed)
 	case errors.Is(err, ErrBadRequest):
 		http.Error(w, "Bad Request", http.StatusBadRequest)
-	case errors.Is(err, ErrExists):
+	case errors.Is(err, ErrExists), errors.Is(err, ErrMethodNotAllowed):
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 	case errors.Is(err, ErrConflict), errors.Is(err, ErrNotDir), errors.Is(err, ErrIsDir), errors.Is(err, ErrParentMissing):
 		http.Error(w, "Conflict", http.StatusConflict)
