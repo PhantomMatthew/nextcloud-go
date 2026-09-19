@@ -1,0 +1,24 @@
+schema_version: 1
+id: sharing/003-public-propfind
+description: |
+  Public WebDAV PROPFIND Depth 0 on a file public link.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 2f
+  captured_at: "2026-09-19T00:00:00Z"
+request:
+  body_kind: empty
+response:
+  body_kind: xml
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 207
+replayable: true
+mutating: false
+synthetic: true
+tags: [sharing, public, webdav, phase2]

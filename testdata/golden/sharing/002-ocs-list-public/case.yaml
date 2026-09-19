@@ -1,0 +1,24 @@
+schema_version: 1
+id: sharing/002-ocs-list-public
+description: |
+  Owner lists public-link shares after creating one on /hello.txt.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 2f
+  captured_at: "2026-09-19T00:00:00Z"
+request:
+  body_kind: empty
+response:
+  body_kind: json
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 200
+replayable: true
+mutating: false
+synthetic: true
+tags: [sharing, ocs, public, phase2]

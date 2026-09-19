@@ -1,7 +1,7 @@
 HTTP/1.1 200 OK
 Server: nginx
 Content-Type: application/xml; charset=utf-8
-Etag: "56e5fd904ca173c95a1d4e2b1df8a873"
+Etag: "1de8dd8b19aaeef37c0efcf0acbe7612"
 Feature-Policy: autoplay 'self';camera 'none';fullscreen 'self';geolocation 'none';microphone 'none';payment 'none'
 Referrer-Policy: no-referrer
 X-Content-Type-Options: nosniff
@@ -44,6 +44,20 @@ X-Xss-Protection: 1; mode=block
     <undelete>1</undelete>
     <versioning>1</versioning>
    </files>
+   <files_sharing>
+    <api_enabled>1</api_enabled>
+    <public>
+     <enabled>1</enabled>
+     <password>
+      <enforced></enforced>
+     </password>
+     <upload>1</upload>
+    </public>
+    <user></user>
+    <group_sharing></group_sharing>
+    <resharing></resharing>
+    <federation></federation>
+   </files_sharing>
   </capabilities>
  </data>
 </ocs>

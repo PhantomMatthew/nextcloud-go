@@ -41,6 +41,20 @@ func capabilitiesPayload() ocs.OrderedMap {
 				ocs.K("undelete", true),
 				ocs.K("versioning", true),
 			)),
+			ocs.K("files_sharing", ocs.Obj(
+				ocs.K("api_enabled", true),
+				ocs.K("public", ocs.Obj(
+					ocs.K("enabled", true),
+					ocs.K("password", ocs.Obj(
+						ocs.K("enforced", false),
+					)),
+					ocs.K("upload", true),
+				)),
+				ocs.K("user", false),
+				ocs.K("group_sharing", false),
+				ocs.K("resharing", false),
+				ocs.K("federation", false),
+			)),
 		)),
 	)
 }

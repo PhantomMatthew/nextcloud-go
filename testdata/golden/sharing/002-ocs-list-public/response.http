@@ -1,0 +1,12 @@
+HTTP/1.1 200 OK
+Server: nginx
+Content-Type: application/json; charset=utf-8
+Feature-Policy: autoplay 'self';camera 'none';fullscreen 'self';geolocation 'none';microphone 'none';payment 'none'
+Referrer-Policy: no-referrer
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Permitted-Cross-Domain-Policies: none
+X-Robots-Tag: noindex, nofollow
+X-Xss-Protection: 1; mode=block
+
+{"ocs":{"meta":{"status":"ok","statuscode":200,"message":"OK"},"data":[{"id":"1","share_type":3,"uid_owner":"admin","displayname_owner":"admin","permissions":1,"stime":1746100800,"expiration":"","token":"ncgopublic00001","path":"\/hello.txt","item_type":"file","mimetype":"application\/octet-stream","item_source":2,"file_source":2,"url":"https:\/\/cloud.example.com\/s\/ncgopublic00001","share_with":"","mail_send":0,"hide_download":false,"label":""}]}}
