@@ -153,6 +153,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		Users:  a.Users,
 		Hasher: a.hasher,
 	}
+	dav.Incoming = a.shares
 	a.publicFS = &files.PublicDAV{Files: dav, Resolve: a.shares.LookupValid}
 	a.uploadsFS = files.NewUploads(st, files.NewSQLUploadStore(db), dav, a.Users)
 	tr := files.NewTrash(st, files.NewSQLTrashStore(db), dav, a.Users)

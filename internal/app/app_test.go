@@ -18,6 +18,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/config"
 	"github.com/PhantomMatthew/nextcloud-go/internal/files"
 	"github.com/PhantomMatthew/nextcloud-go/internal/goldentest"
+	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 )
 
 func repoRoot(t *testing.T) string {
@@ -105,6 +106,32 @@ func seedPhase1DAV(t *testing.T, a *App) {
 	}
 	mt := freeze
 	if _, _, err := a.davFS.Write(context.Background(), "admin", "/hello.txt", strings.NewReader("hello world\n"), &mt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Users.GetByUID(context.Background(), "bob"); err != nil {
+		hash, herr := a.hasher.Hash("bob")
+		if herr != nil {
+			t.Fatal(herr)
+		}
+		if err := a.Users.Create(context.Background(), &users.User{
+			UID: "bob", DisplayName: "Bob", PasswordHash: hash, Enabled: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := a.davFS.Stat(context.Background(), "bob", "/"); err != nil {
+		t.Fatal(err)
+	}
+	bobU, err := a.Users.GetByUID(context.Background(), "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := a.fileMeta.GetByPath(context.Background(), bobU.ID, "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.Mtime = freeze
+	if err := a.fileMeta.UpdateMeta(context.Background(), root); err != nil {
 		t.Fatal(err)
 	}
 }

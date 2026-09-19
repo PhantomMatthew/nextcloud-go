@@ -19,6 +19,8 @@ func DefaultSharingProvider() SharingProvider {
 		APIEnabled:   true,
 		Public:       true,
 		PublicUpload: true,
+		UserSharing:  true,
+		GroupSharing: true,
 	}
 }
 

@@ -41,8 +41,8 @@
      </password>
      <upload>1</upload>
     </public>
-    <user></user>
-    <group_sharing></group_sharing>
+    <user>1</user>
+    <group_sharing>1</group_sharing>
     <resharing></resharing>
     <federation></federation>
    </files_sharing>
