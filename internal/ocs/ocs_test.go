@@ -53,7 +53,16 @@ func capabilitiesPayload() ocs.OrderedMap {
 				ocs.K("user", true),
 				ocs.K("group_sharing", true),
 				ocs.K("resharing", false),
-				ocs.K("federation", false),
+				ocs.K("federation", ocs.Obj(
+					ocs.K("outgoing", true),
+					ocs.K("incoming", true),
+					ocs.K("expire_date", ocs.Obj(
+						ocs.K("enabled", false),
+					)),
+					ocs.K("expire_date_supported", ocs.Obj(
+						ocs.K("enabled", false),
+					)),
+				)),
 			)),
 		)),
 	)

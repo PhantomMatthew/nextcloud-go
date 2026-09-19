@@ -21,6 +21,7 @@ func DefaultSharingProvider() SharingProvider {
 		PublicUpload: true,
 		UserSharing:  true,
 		GroupSharing: true,
+		Federation:   true,
 	}
 }
 
@@ -38,7 +39,16 @@ func (s SharingProvider) GetCapabilities() ocs.OrderedMap {
 			ocs.K("user", s.UserSharing),
 			ocs.K("group_sharing", s.GroupSharing),
 			ocs.K("resharing", s.Resharing),
-			ocs.K("federation", s.Federation),
+			ocs.K("federation", ocs.Obj(
+				ocs.K("outgoing", s.Federation),
+				ocs.K("incoming", s.Federation),
+				ocs.K("expire_date", ocs.Obj(
+					ocs.K("enabled", false),
+				)),
+				ocs.K("expire_date_supported", ocs.Obj(
+					ocs.K("enabled", false),
+				)),
+			)),
 		)),
 	)
 }

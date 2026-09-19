@@ -2,6 +2,7 @@ package capabilities
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"net/http"
 	"net/http/httptest"
@@ -109,5 +110,25 @@ func TestETagDeterministic(t *testing.T) {
 	v1 := etag(ocs.V1, "json")
 	if a != v1 {
 		t.Errorf("ETag depends on version: v2=%q v1=%q", a, v1)
+	}
+}
+
+func TestFederationOutgoingIncoming(t *testing.T) {
+	h := newHandler()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/ocs/v2.php/cloud/capabilities?format=json", nil)
+	h.ServeOCS(ocs.V2).ServeHTTP(rr, req)
+	var env map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	fed, _ := env["ocs"].(map[string]any)["data"].(map[string]any)["capabilities"].(map[string]any)["files_sharing"].(map[string]any)["federation"].(map[string]any)
+	if fed["outgoing"] != true || fed["incoming"] != true {
+		t.Fatalf("federation = %v", fed)
+	}
+	expire, _ := fed["expire_date"].(map[string]any)
+	supported, _ := fed["expire_date_supported"].(map[string]any)
+	if expire["enabled"] != false || supported["enabled"] != false {
+		t.Fatalf("expire = %v supported = %v", expire, supported)
 	}
 }

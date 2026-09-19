@@ -189,6 +189,10 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-20** — Phase 3d4: `files_sharing.federation` is an object with
+  `outgoing`/`incoming` true so desktop can discover federated share
+  (see ADR-0025). Federated search, folder/write proxy, and unshare remain
+  later.
 - **2026-09-20** — Phase 3d3: inbound federated file DAV GET/HEAD proxies
   `{origin}/public.php/webdav/` with Basic token (see ADR-0024). Federation
   capability, folder tree, and write proxy remain later.

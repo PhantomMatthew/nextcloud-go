@@ -44,7 +44,16 @@
     <user>1</user>
     <group_sharing>1</group_sharing>
     <resharing></resharing>
-    <federation></federation>
+    <federation>
+     <outgoing>1</outgoing>
+     <incoming>1</incoming>
+     <expire_date>
+      <enabled></enabled>
+     </expire_date>
+     <expire_date_supported>
+      <enabled></enabled>
+     </expire_date_supported>
+    </federation>
    </files_sharing>
   </capabilities>
  </data>
