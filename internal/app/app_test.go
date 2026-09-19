@@ -90,6 +90,10 @@ func seedPhase1DAV(t *testing.T, a *App) {
 	freeze := time.Date(2025, 5, 1, 12, 0, 0, 0, time.UTC)
 	d.Clock = func() time.Time { return freeze }
 	d.NewToken = func() string { return "opaquelocktoken:ncgo0000000000000000000000000001" }
+	if a.shares != nil {
+		a.shares.Clock = func() time.Time { return freeze }
+		a.shares.NewToken = func() string { return "ncgopublic00001" }
+	}
 	if up, ok := a.uploadsFS.(*files.Uploads); ok {
 		up.Clock = func() time.Time { return freeze }
 	}
@@ -111,26 +115,28 @@ func TestCaptureWebDAVGoldens(t *testing.T) {
 	}
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	cfg := DevConfig()
-	cfg.Storage.Backends = map[string]config.BackendConfig{
-		"local": {Type: "localfs", Root: t.TempDir()},
-	}
-	a, err := New(ctx, cfg, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = a.Close(ctx) })
-	seedPhase1DAV(t, a)
-	h := a.Handler()
-	for _, area := range []string{"webdav", "capabilities"} {
+	for _, area := range []string{"sharing", "capabilities", "webdav"} {
+		areaCfg := DevConfig()
+		areaCfg.Database.DSN = "file:ncgo-golden-" + area + "?mode=memory&cache=shared"
+		areaCfg.Storage.Backends = map[string]config.BackendConfig{
+			"local": {Type: "localfs", Root: t.TempDir()},
+		}
+		a, err := New(ctx, areaCfg, logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seedPhase1DAV(t, a)
+		h := a.Handler()
 		root := filepath.Join(repoRoot(t), "testdata", "golden", area)
 		dirs, err := goldentest.Discover(root)
 		if err != nil {
+			_ = a.Close(ctx)
 			t.Fatal(err)
 		}
 		for _, dir := range dirs {
 			c, err := goldentest.Load(dir)
 			if err != nil {
+				_ = a.Close(ctx)
 				t.Fatal(err)
 			}
 			got, err := goldentest.Execute(ctx, c, func(req *http.Request) (*http.Response, error) {
@@ -163,9 +169,13 @@ func TestCaptureWebDAVGoldens(t *testing.T) {
 			}
 			buf.WriteByte('\n')
 			buf.Write(got.Body)
-			if err := os.WriteFile(filepath.Join(dir, "response.http"), buf.Bytes(), 0o644); err != nil {
+			out := filepath.Join(dir, "response.http")
+			if err := os.WriteFile(out, buf.Bytes(), 0o644); err != nil {
 				t.Fatal(err)
 			}
+		}
+		if err := a.Close(ctx); err != nil {
+			t.Fatal(err)
 		}
 	}
 }

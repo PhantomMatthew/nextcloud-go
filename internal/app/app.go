@@ -21,6 +21,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/migrations"
 	"github.com/PhantomMatthew/nextcloud-go/internal/plugins"
 	"github.com/PhantomMatthew/nextcloud-go/internal/session"
+	"github.com/PhantomMatthew/nextcloud-go/internal/sharing"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage/localfs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
@@ -50,6 +51,8 @@ type App struct {
 	uploadsFS  webdav.FS
 	trashFS    *files.Trash
 	versionsFS *files.Versions
+	publicFS   webdav.FS
+	shares     *sharing.Service
 }
 
 // New opens dependencies and mounts routes.
@@ -139,7 +142,15 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	dav := files.NewDAV(st, meta, a.Users)
 	dav.Props = files.NewSQLPropertyStore(db)
 	dav.Locks = files.NewSQLLockStore(db)
+	dav.Shares = sharing.NewSQLShareStore(db)
 	a.davFS = dav
+	a.shares = &sharing.Service{
+		Store:  dav.Shares,
+		Files:  dav,
+		Users:  a.Users,
+		Hasher: a.hasher,
+	}
+	a.publicFS = &files.PublicDAV{Files: dav, Resolve: a.shares.LookupValid}
 	a.uploadsFS = files.NewUploads(st, files.NewSQLUploadStore(db), dav, a.Users)
 	tr := files.NewTrash(st, files.NewSQLTrashStore(db), dav, a.Users)
 	dav.Trash = tr

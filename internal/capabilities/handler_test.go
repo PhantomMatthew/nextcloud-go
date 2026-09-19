@@ -19,6 +19,7 @@ func newHandler() Handler {
 	m.Register(DefaultCoreProvider())
 	m.Register(DefaultDAVProvider())
 	m.Register(DefaultFilesProvider())
+	m.Register(DefaultSharingProvider())
 	return Handler{Manager: m}
 }
 

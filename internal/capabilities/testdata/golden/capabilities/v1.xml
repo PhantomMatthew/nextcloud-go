@@ -32,6 +32,20 @@
     <undelete>1</undelete>
     <versioning>1</versioning>
    </files>
+   <files_sharing>
+    <api_enabled>1</api_enabled>
+    <public>
+     <enabled>1</enabled>
+     <password>
+      <enforced></enforced>
+     </password>
+     <upload>1</upload>
+    </public>
+    <user></user>
+    <group_sharing></group_sharing>
+    <resharing></resharing>
+    <federation></federation>
+   </files_sharing>
   </capabilities>
  </data>
 </ocs>

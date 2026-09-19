@@ -13,6 +13,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/login"
 	"github.com/PhantomMatthew/nextcloud-go/internal/ocs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/session"
+	"github.com/PhantomMatthew/nextcloud-go/internal/sharing"
 	"github.com/PhantomMatthew/nextcloud-go/internal/status"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 	"github.com/PhantomMatthew/nextcloud-go/internal/web"
@@ -56,6 +57,8 @@ func (a *App) mountRoutes() error {
 			"/index.php/login/v2/grant",
 			"/remote.php/dav/",
 			"/remote.php/webdav/",
+			"/public.php/webdav",
+			"/public.php/webdav/",
 		},
 	}
 	baseChain := []httpx.Middleware{
@@ -81,6 +84,7 @@ func (a *App) mountRoutes() error {
 	capManager.Register(capabilities.DefaultCoreProvider())
 	capManager.Register(capabilities.DefaultDAVProvider())
 	capManager.Register(capabilities.DefaultFilesProvider())
+	capManager.Register(capabilities.DefaultSharingProvider())
 	capHandler := capabilities.Handler{Manager: capManager}
 	for _, m := range []string{"GET", "HEAD"} {
 		router.Handle(m, "/ocs/v1.php/cloud/capabilities", capHandler.ServeOCS(ocs.V1))
@@ -110,6 +114,15 @@ func (a *App) mountRoutes() error {
 	}
 	router.Handle("DELETE", "/ocs/v1.php/core/apppassword", ocs.DeleteAppPasswordHandler(ocs.V1, issuer), httpx.Middleware(ocs.Auth(ocs.V1, authCfg)))
 	router.Handle("DELETE", "/ocs/v2.php/core/apppassword", ocs.DeleteAppPasswordHandler(ocs.V2, issuer), httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
+
+	if a.shares != nil {
+		sharesV1 := sharing.Handler{Service: a.shares, Version: ocs.V1}
+		sharesV2 := sharing.Handler{Service: a.shares, Version: ocs.V2}
+		router.HandlePrefix(httpx.MethodAny, "/ocs/v1.php/apps/files_sharing/api/v1/shares", sharesV1, httpx.Middleware(ocs.Auth(ocs.V1, authCfg)))
+		router.HandlePrefix(httpx.MethodAny, "/ocs/v2.php/apps/files_sharing/api/v1/shares", sharesV2, httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
+		router.HandlePrefix(http.MethodGet, "/s/", a.shares.PublicLinkHandler())
+		router.HandlePrefix(http.MethodHead, "/s/", a.shares.PublicLinkHandler())
+	}
 
 	loginSvc := login.NewService(a.loginStore)
 	lv2 := web.NewLoginV2(loginSvc, verifier, issuer)
@@ -164,6 +177,20 @@ func (a *App) mountRoutes() error {
 		versionsHandler.RestoreVersion = a.versionsFS.RestoreVersion
 		a.configureDAV(versionsHandler, false)
 		router.HandlePrefix(httpx.MethodAny, "/remote.php/dav/versions/", webdav.Auth(authCfg)(versionsHandler))
+	}
+
+	if a.publicFS != nil && a.shares != nil {
+		pubHandler, err := webdav.NewHandler("/public.php/webdav/", a.publicFS, a.instanceID)
+		if err != nil {
+			return fmt.Errorf("app: public-webdav: %w", err)
+		}
+		a.configureDAV(pubHandler, true)
+		pubAuth := auth.MiddlewareConfig{
+			Verifier: &sharing.TokenVerifier{Service: a.shares},
+			Throttle: authCfg.Throttle,
+		}
+		pub := sharing.RewritePublicDAVPath(webdav.Auth(pubAuth)(pubHandler))
+		router.HandlePrefix(httpx.MethodAny, "/public.php/webdav", pub)
 	}
 
 	a.Router = router
