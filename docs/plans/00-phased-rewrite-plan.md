@@ -189,6 +189,9 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-19** — Phase 2i: OCS unified-search `files` provider, basename
+  `SearchByName` over filecache (see ADR-0016). User/group shares and lock
+  leftovers remain later.
 - **2026-09-19** — Phase 2g: S3-compatible `storage.Storage` via minio-go,
   `openStorage` `type == "s3"` (see ADR-0015). Search and user/group shares
   remain later.
