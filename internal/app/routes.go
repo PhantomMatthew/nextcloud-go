@@ -6,11 +6,13 @@ import (
 	"net/http"
 	"time"
 
+	actpkg "github.com/PhantomMatthew/nextcloud-go/internal/activity"
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
 	"github.com/PhantomMatthew/nextcloud-go/internal/capabilities"
 	"github.com/PhantomMatthew/nextcloud-go/internal/files"
 	"github.com/PhantomMatthew/nextcloud-go/internal/httpx"
 	"github.com/PhantomMatthew/nextcloud-go/internal/login"
+	notifpkg "github.com/PhantomMatthew/nextcloud-go/internal/notifications"
 	"github.com/PhantomMatthew/nextcloud-go/internal/ocs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/search"
 	"github.com/PhantomMatthew/nextcloud-go/internal/session"
@@ -138,6 +140,19 @@ func (a *App) mountRoutes() error {
 		router.HandlePrefix(httpx.MethodAny, "/ocs/v2.php/apps/files_sharing/api/v1/shares", sharesV2, httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
 		router.HandlePrefix(http.MethodGet, "/s/", a.shares.PublicLinkHandler())
 		router.HandlePrefix(http.MethodHead, "/s/", a.shares.PublicLinkHandler())
+	}
+
+	if a.notifStore != nil {
+		notifV1 := notifpkg.Handler{Store: a.notifStore, Users: a.Users, Version: ocs.V1}
+		notifV2 := notifpkg.Handler{Store: a.notifStore, Users: a.Users, Version: ocs.V2}
+		router.HandlePrefix(httpx.MethodAny, "/ocs/v1.php/apps/notifications/api/v2/notifications", notifV1, httpx.Middleware(ocs.Auth(ocs.V1, authCfg)))
+		router.HandlePrefix(httpx.MethodAny, "/ocs/v2.php/apps/notifications/api/v2/notifications", notifV2, httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
+	}
+	if a.activityStore != nil {
+		actV1 := actpkg.Handler{Store: a.activityStore, Users: a.Users, Version: ocs.V1}
+		actV2 := actpkg.Handler{Store: a.activityStore, Users: a.Users, Version: ocs.V2}
+		router.HandlePrefix(httpx.MethodAny, "/ocs/v1.php/apps/activity/api/v2/activity", actV1, httpx.Middleware(ocs.Auth(ocs.V1, authCfg)))
+		router.HandlePrefix(httpx.MethodAny, "/ocs/v2.php/apps/activity/api/v2/activity", actV2, httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
 	}
 
 	loginSvc := login.NewService(a.loginStore)

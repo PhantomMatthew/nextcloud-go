@@ -29,14 +29,15 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("up: %v", err)
 	}
-	if n != 11 {
-		t.Errorf("applied = %d, want 11", n)
+	if n != 12 {
+		t.Errorf("applied = %d, want 12", n)
 	}
 
 	want := []string{
 		"users", "groups", "group_members", "sessions",
 		"app_passwords", "login_flows", "jobs", "module_config", "files", "uploads", "trash_items", "file_versions", "file_properties", "file_locks", "shares",
 		"calendars", "calendar_objects", "addressbooks", "addressbook_objects",
+		"notifications", "activities",
 	}
 	for _, table := range want {
 		var name string
@@ -50,7 +51,7 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version: %v", err)
 	}
-	if v != 11 || dirty {
+	if v != 12 || dirty {
 		t.Errorf("version=%d dirty=%v", v, dirty)
 	}
 
@@ -69,17 +70,17 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version after down: %v", err)
 	}
-	if v != 10 || dirty {
+	if v != 11 || dirty {
 		t.Errorf("after down version=%d dirty=%v", v, dirty)
 	}
-	var bookName string
-	err = db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "addressbooks").Scan(&bookName)
+	var notifName string
+	err = db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "notifications").Scan(&notifName)
 	if err == nil {
-		t.Error("table addressbooks still present after down to v10")
+		t.Error("table notifications still present after down to v11")
 	}
-	var calName string
-	if err := db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "calendars").Scan(&calName); err != nil {
-		t.Errorf("table calendars missing after down to v10: %v", err)
+	var bookName string
+	if err := db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "addressbooks").Scan(&bookName); err != nil {
+		t.Errorf("table addressbooks missing after down to v11: %v", err)
 	}
 
 	n, err = Up(ctx, std, database.DialectSQLite, logger)
@@ -93,7 +94,7 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version after re-up: %v", err)
 	}
-	if v != 11 || dirty {
+	if v != 12 || dirty {
 		t.Errorf("after re-up version=%d dirty=%v", v, dirty)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/PhantomMatthew/nextcloud-go/internal/activity"
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
 	"github.com/PhantomMatthew/nextcloud-go/internal/cache"
 	caldav "github.com/PhantomMatthew/nextcloud-go/internal/calendar"
@@ -22,6 +23,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/jobs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/login"
 	"github.com/PhantomMatthew/nextcloud-go/internal/migrations"
+	"github.com/PhantomMatthew/nextcloud-go/internal/notifications"
 	"github.com/PhantomMatthew/nextcloud-go/internal/plugins"
 	"github.com/PhantomMatthew/nextcloud-go/internal/session"
 	"github.com/PhantomMatthew/nextcloud-go/internal/sharing"
@@ -62,6 +64,8 @@ type App struct {
 	calendarFS    *caldav.DAV
 	contactsStore *carddav.SQLStore
 	contactsFS    *carddav.DAV
+	notifStore    *notifications.SQLStore
+	activityStore *activity.SQLStore
 	principalFS   *caldav.PrincipalDAV
 	davRootFS     *caldav.RootDAV
 }
@@ -189,6 +193,8 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	cardStore := carddav.NewSQLStore(db)
 	a.contactsStore = cardStore
 	a.contactsFS = &carddav.DAV{Store: cardStore, Users: a.Users}
+	a.notifStore = notifications.NewSQLStore(db)
+	a.activityStore = activity.NewSQLStore(db)
 	a.principalFS = &caldav.PrincipalDAV{Users: a.Users}
 	a.davRootFS = &caldav.RootDAV{Users: a.Users}
 

@@ -1,0 +1,7 @@
+GET /ocs/v2.php/apps/notifications/api/v2/notifications?format=json HTTP/1.1
+Host: cloud.example.com
+User-Agent: ncgo-goldentest/0.0
+Accept: application/json
+Authorization: Basic YWRtaW46YWRtaW4=
+OCS-APIRequest: true
+

@@ -15,9 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PhantomMatthew/nextcloud-go/internal/activity"
 	"github.com/PhantomMatthew/nextcloud-go/internal/config"
 	"github.com/PhantomMatthew/nextcloud-go/internal/files"
 	"github.com/PhantomMatthew/nextcloud-go/internal/goldentest"
+	"github.com/PhantomMatthew/nextcloud-go/internal/notifications"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 )
 
@@ -116,6 +118,12 @@ func seedPhase1DAV(t *testing.T, a *App) {
 	if a.contactsFS != nil {
 		a.contactsFS.Clock = func() time.Time { return freeze }
 	}
+	if a.notifStore != nil {
+		a.notifStore.Clock = func() time.Time { return freeze }
+	}
+	if a.activityStore != nil {
+		a.activityStore.Clock = func() time.Time { return freeze }
+	}
 	if a.principalFS != nil {
 		a.principalFS.Clock = func() time.Time { return freeze }
 	}
@@ -152,6 +160,41 @@ func seedPhase1DAV(t *testing.T, a *App) {
 	if err := a.fileMeta.UpdateMeta(context.Background(), root); err != nil {
 		t.Fatal(err)
 	}
+	adminU, err := a.Users.GetByUID(context.Background(), "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.notifStore != nil {
+		if err := a.notifStore.Insert(context.Background(), &notifications.Notification{
+			UserID:                adminU.ID,
+			App:                   "files_sharing",
+			UserUID:               "admin",
+			ObjectType:            "share",
+			ObjectID:              "1",
+			Subject:               "You received a share of hello.txt",
+			SubjectRich:           "You received a share of {file}",
+			SubjectRichParameters: `{"file":{"type":"file","id":"2","name":"hello.txt"}}`,
+			ShouldNotify:          true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if a.activityStore != nil {
+		if err := a.activityStore.Insert(context.Background(), &activity.Event{
+			UserID:                adminU.ID,
+			ActorUID:              "admin",
+			App:                   "files",
+			Type:                  "file_created",
+			Subject:               "admin created hello.txt",
+			SubjectRich:           "{user} created {file}",
+			SubjectRichParameters: `{"user":{"type":"user","id":"admin","name":"admin"},"file":{"type":"file","id":"2","name":"hello.txt","path":"/hello.txt"}}`,
+			ObjectType:            "files",
+			ObjectID:              2,
+			ObjectName:            "/hello.txt",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestCaptureWebDAVGoldens(t *testing.T) {
@@ -160,7 +203,7 @@ func TestCaptureWebDAVGoldens(t *testing.T) {
 	}
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	for _, area := range []string{"search", "sharing", "capabilities", "webdav", "caldav", "carddav"} {
+	for _, area := range []string{"activity", "search", "sharing", "capabilities", "webdav", "caldav", "carddav", "notifications"} {
 		if want := os.Getenv("GOLDEN_AREA"); want != "" && want != area {
 			continue
 		}

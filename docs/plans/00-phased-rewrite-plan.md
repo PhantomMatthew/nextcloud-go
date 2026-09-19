@@ -189,6 +189,10 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-19** — Phase 3c: Notifications and Activity OCS list/get/delete
+  on `/ocs/v{1,2}.php/apps/notifications/api/v2/notifications` and
+  `/ocs/v{1,2}.php/apps/activity/api/v2/activity`, SQL seed rows, no push
+  (see ADR-0021). OCM remains later.
 - **2026-09-19** — Phase 3b: CardDAV address books (RFC 6352) on
   `/remote.php/dav/addressbooks/users/`, default `contacts` book,
   `REPORT` addressbook-query/multiget, principals `addressbook-home-set`

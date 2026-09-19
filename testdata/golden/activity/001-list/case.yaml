@@ -1,0 +1,24 @@
+schema_version: 1
+id: activity/001-list
+description: |
+  List seeded file_created activity.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 3c
+  captured_at: "2026-09-19T00:00:00Z"
+request:
+  body_kind: empty
+response:
+  body_kind: json
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 200
+replayable: true
+mutating: false
+synthetic: true
+tags: [activity, ocs, phase3c]

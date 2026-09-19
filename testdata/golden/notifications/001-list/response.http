@@ -1,0 +1,13 @@
+HTTP/1.1 200 OK
+Server: nginx
+Content-Type: application/json; charset=utf-8
+Etag: "b24be85372e6a6029e615f41d1b775e5606406c2"
+Feature-Policy: autoplay 'self';camera 'none';fullscreen 'self';geolocation 'none';microphone 'none';payment 'none'
+Referrer-Policy: no-referrer
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Permitted-Cross-Domain-Policies: none
+X-Robots-Tag: noindex, nofollow
+X-Xss-Protection: 1; mode=block
+
+{"ocs":{"meta":{"status":"ok","statuscode":200,"message":"OK"},"data":[{"notification_id":1,"app":"files_sharing","user":"admin","datetime":"2025-05-01T12:00:00+00:00","object_type":"share","object_id":"1","subject":"You received a share of hello.txt","subjectRich":"You received a share of {file}","subjectRichParameters":{"file":{"type":"file","id":"2","name":"hello.txt"}},"message":"","messageRich":"","messageRichParameters":[],"link":"","icon":"","shouldNotify":true,"actions":[]}]}}

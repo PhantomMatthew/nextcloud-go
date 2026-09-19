@@ -1,0 +1,13 @@
+HTTP/1.1 200 OK
+Server: nginx
+Content-Type: application/json; charset=utf-8
+Feature-Policy: autoplay 'self';camera 'none';fullscreen 'self';geolocation 'none';microphone 'none';payment 'none'
+Referrer-Policy: no-referrer
+X-Activity-Last-Given: 1
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Permitted-Cross-Domain-Policies: none
+X-Robots-Tag: noindex, nofollow
+X-Xss-Protection: 1; mode=block
+
+{"ocs":{"meta":{"status":"ok","statuscode":200,"message":"OK"},"data":[{"activity_id":1,"datetime":"2025-05-01T12:00:00+00:00","app":"files","type":"file_created","user":"admin","subject":"admin created hello.txt","subject_rich":["{user} created {file}",{"user":{"type":"user","id":"admin","name":"admin"},"file":{"type":"file","id":"2","name":"hello.txt","path":"\/hello.txt"}}],"message":"","message_rich":[],"icon":"","link":"","object_type":"files","object_id":2,"object_name":"\/hello.txt","previews":[]}]}}
