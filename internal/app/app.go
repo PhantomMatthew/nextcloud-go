@@ -25,6 +25,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/sharing"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage/localfs"
+	s3store "github.com/PhantomMatthew/nextcloud-go/internal/storage/s3"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
 )
@@ -287,6 +288,8 @@ func openStorage(cfg *config.Config) (storage.Storage, error) {
 	switch b.Type {
 	case "localfs":
 		return localfs.New(b.Root)
+	case "s3":
+		return s3store.New(b)
 	default:
 		return nil, fmt.Errorf("app: storage backend %q type %q unsupported", name, b.Type)
 	}

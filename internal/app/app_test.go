@@ -179,3 +179,33 @@ func TestCaptureWebDAVGoldens(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenStorageS3(t *testing.T) {
+	cfg := DevConfig()
+	cfg.Storage.DefaultBackend = "s3_primary"
+	cfg.Storage.Backends = map[string]config.BackendConfig{
+		"s3_primary": {
+			Type:            "s3",
+			Endpoint:        "http://127.0.0.1:9",
+			Bucket:          "ncgo",
+			AccessKeyID:     "ak",
+			SecretAccessKey: "sk",
+			Region:          "us-east-1",
+		},
+	}
+	st, err := openStorage(cfg)
+	if err != nil || st == nil {
+		t.Fatalf("openStorage s3 = %v %v", st, err)
+	}
+}
+
+func TestOpenStorageUnknown(t *testing.T) {
+	cfg := DevConfig()
+	cfg.Storage.DefaultBackend = "mystery"
+	cfg.Storage.Backends = map[string]config.BackendConfig{
+		"mystery": {Type: "mystery"},
+	}
+	if _, err := openStorage(cfg); err == nil {
+		t.Fatal("expected unsupported type")
+	}
+}
