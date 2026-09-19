@@ -1,4 +1,4 @@
-GET /remote.php/dav/versions/admin/versions/6/1746100800 HTTP/1.1
+GET /remote.php/dav/versions/admin/versions/7/1746100800 HTTP/1.1
 Host: cloud.example.com
 User-Agent: ncgo-goldentest/0.0
 Accept: */*

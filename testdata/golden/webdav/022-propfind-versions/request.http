@@ -1,4 +1,4 @@
-PROPFIND /remote.php/dav/versions/admin/versions/6 HTTP/1.1
+PROPFIND /remote.php/dav/versions/admin/versions/7 HTTP/1.1
 Host: cloud.example.com
 User-Agent: ncgo-goldentest/0.0
 Accept: */*

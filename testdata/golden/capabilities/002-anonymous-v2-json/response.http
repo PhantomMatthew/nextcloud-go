@@ -1,7 +1,7 @@
 HTTP/1.1 200 OK
 Server: nginx
 Content-Type: application/json; charset=utf-8
-Etag: "1de8dd8b19aaeef37c0efcf0acbe7612"
+Etag: "7f497413755d5e05f493a32de1a69a66"
 Feature-Policy: autoplay 'self';camera 'none';fullscreen 'self';geolocation 'none';microphone 'none';payment 'none'
 Referrer-Policy: no-referrer
 X-Content-Type-Options: nosniff
@@ -10,4 +10,4 @@ X-Permitted-Cross-Domain-Policies: none
 X-Robots-Tag: noindex, nofollow
 X-Xss-Protection: 1; mode=block
 
-{"ocs":{"meta":{"status":"ok","statuscode":200,"message":"OK"},"data":{"version":{"major":26,"minor":0,"micro":0,"string":"26.0.0 beta 4","edition":"","extendedSupport":false},"capabilities":{"core":{"pollinterval":60,"webdav-root":"remote.php\/webdav","reference-api":true,"reference-regex":"(\\s|\\n|^)(https?:\\\/\\\/)((?:[-A-Z0-9+_]+\\.)+[-A-Z]+(?:\\\/[-A-Z0-9+&@#%?=~_|!:,.;()]*)*)(\\s|\\n|$)"},"dav":{"chunking":"1.0"},"files":{"chunked_upload":{"max_size":5368709120,"max_parallel_count":20},"undelete":true,"versioning":true},"files_sharing":{"api_enabled":true,"public":{"enabled":true,"password":{"enforced":false},"upload":true},"user":false,"group_sharing":false,"resharing":false,"federation":false}}}}}
+{"ocs":{"meta":{"status":"ok","statuscode":200,"message":"OK"},"data":{"version":{"major":26,"minor":0,"micro":0,"string":"26.0.0 beta 4","edition":"","extendedSupport":false},"capabilities":{"core":{"pollinterval":60,"webdav-root":"remote.php\/webdav","reference-api":true,"reference-regex":"(\\s|\\n|^)(https?:\\\/\\\/)((?:[-A-Z0-9+_]+\\.)+[-A-Z]+(?:\\\/[-A-Z0-9+&@#%?=~_|!:,.;()]*)*)(\\s|\\n|$)"},"dav":{"chunking":"1.0"},"files":{"chunked_upload":{"max_size":5368709120,"max_parallel_count":20},"undelete":true,"versioning":true},"files_sharing":{"api_enabled":true,"public":{"enabled":true,"password":{"enforced":false},"upload":true},"user":true,"group_sharing":true,"resharing":false,"federation":false}}}}}

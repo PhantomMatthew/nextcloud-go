@@ -1,0 +1,24 @@
+schema_version: 1
+id: sharing/009-ocs-delete-user
+description: |
+  Owner deletes the user share created in 007 (id 2 after public 001/005).
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 2k
+  captured_at: "2026-09-19T00:00:00Z"
+request:
+  body_kind: empty
+response:
+  body_kind: json
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 200
+replayable: true
+mutating: true
+synthetic: true
+tags: [sharing, ocs, user, phase2]
