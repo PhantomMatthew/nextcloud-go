@@ -189,6 +189,9 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-19** — Phase 2h: `jobs.SQLStore` / `SQLRunner`, `shares.expire` and
+  `locks.expire`, App Start/Stop (see ADR-0014). S3, search, and user/group
+  shares remain later.
 - **2026-09-19** — Phase 2f: public-link sharing (`shareType=3`), `0008_shares`,
   OCS files_sharing CRUD, `/public.php/webdav`, and `GET /s/{token}`
   (see ADR-0013). User/group shares, S3, jobs, and search remain later.
