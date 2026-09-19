@@ -25,22 +25,33 @@ type PropfindContext struct {
 	EmitFavorite     bool
 	EmitLocks        bool
 	CalDAV           bool
+	CardDAV          bool
 }
 
 func WriteMultistatus(buf *bytes.Buffer, ctx PropfindContext, entries []*Entry) {
 	buf.WriteString(xmlHeader)
-	buf.WriteString(multistatusOpen(ctx.CalDAV))
+	buf.WriteString(multistatusOpen(ctx.CalDAV, ctx.CardDAV))
 	for _, e := range entries {
 		writeResponse(buf, ctx, e)
 	}
 	buf.WriteString(`</d:multistatus>` + "\n")
 }
 
-func multistatusOpen(caldav bool) string {
-	if caldav {
-		return `<d:multistatus xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns" xmlns:cal="urn:ietf:params:xml:ns:caldav" xmlns:cs="http://calendarserver.org/ns/" xmlns:apple="http://apple.com/ns/ical/">`
+func multistatusOpen(caldav, carddav bool) string {
+	if !caldav && !carddav {
+		return multistatusNS
 	}
-	return multistatusNS
+	ns := `<d:multistatus xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns"`
+	if caldav {
+		ns += ` xmlns:cal="urn:ietf:params:xml:ns:caldav" xmlns:cs="http://calendarserver.org/ns/" xmlns:apple="http://apple.com/ns/ical/"`
+	}
+	if carddav {
+		ns += ` xmlns:card="urn:ietf:params:xml:ns:carddav"`
+		if !caldav {
+			ns += ` xmlns:cs="http://calendarserver.org/ns/"`
+		}
+	}
+	return ns + `>`
 }
 
 func writeResponse(buf *bytes.Buffer, ctx PropfindContext, e *Entry) {
@@ -63,6 +74,8 @@ func writeProps(buf *bytes.Buffer, ctx PropfindContext, e *Entry) {
 		buf.WriteString(`<d:resourcetype><d:principal/><d:collection/></d:resourcetype>`)
 	case e.IsCalendar:
 		buf.WriteString(`<d:resourcetype><d:collection/><cal:calendar/></d:resourcetype>`)
+	case e.IsAddressbook:
+		buf.WriteString(`<d:resourcetype><d:collection/><card:addressbook/></d:resourcetype>`)
 	case e.IsDir:
 		buf.WriteString(`<d:resourcetype><d:collection/></d:resourcetype>`)
 	default:
@@ -137,6 +150,9 @@ func writeProps(buf *bytes.Buffer, ctx PropfindContext, e *Entry) {
 	if e.CalendarHomeSet != "" {
 		fmt.Fprintf(buf, `<cal:calendar-home-set><d:href>%s</d:href></cal:calendar-home-set>`, xmlEscape(e.CalendarHomeSet))
 	}
+	if e.AddressbookHomeSet != "" {
+		fmt.Fprintf(buf, `<card:addressbook-home-set><d:href>%s</d:href></card:addressbook-home-set>`, xmlEscape(e.AddressbookHomeSet))
+	}
 	if e.IsCalendar {
 		if e.CTag != "" {
 			fmt.Fprintf(buf, `<cs:getctag>&quot;%s&quot;</cs:getctag>`, xmlEscape(e.CTag))
@@ -155,6 +171,10 @@ func writeProps(buf *bytes.Buffer, ctx PropfindContext, e *Entry) {
 		if e.CalendarDescription != "" {
 			fmt.Fprintf(buf, `<cal:calendar-description>%s</cal:calendar-description>`, xmlEscape(e.CalendarDescription))
 		}
+	}
+	if e.IsAddressbook && e.CTag != "" {
+		fmt.Fprintf(buf, `<cs:getctag>&quot;%s&quot;</cs:getctag>`, xmlEscape(e.CTag))
+		fmt.Fprintf(buf, `<d:sync-token>https://nextcloud-go/sync/%s</d:sync-token>`, xmlEscape(e.CTag))
 	}
 }
 

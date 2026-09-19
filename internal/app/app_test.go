@@ -110,6 +110,12 @@ func seedPhase1DAV(t *testing.T, a *App) {
 	if a.calendarFS != nil {
 		a.calendarFS.Clock = func() time.Time { return freeze }
 	}
+	if a.contactsStore != nil {
+		a.contactsStore.Clock = func() time.Time { return freeze }
+	}
+	if a.contactsFS != nil {
+		a.contactsFS.Clock = func() time.Time { return freeze }
+	}
 	if a.principalFS != nil {
 		a.principalFS.Clock = func() time.Time { return freeze }
 	}
@@ -154,7 +160,7 @@ func TestCaptureWebDAVGoldens(t *testing.T) {
 	}
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	for _, area := range []string{"search", "sharing", "capabilities", "webdav", "caldav"} {
+	for _, area := range []string{"search", "sharing", "capabilities", "webdav", "caldav", "carddav"} {
 		if want := os.Getenv("GOLDEN_AREA"); want != "" && want != area {
 			continue
 		}

@@ -1,0 +1,13 @@
+HTTP/1.1 207 Multi-Status
+Server: nginx
+Content-Type: application/xml; charset=utf-8
+Feature-Policy: autoplay 'self';camera 'none';fullscreen 'self';geolocation 'none';microphone 'none';payment 'none'
+Referrer-Policy: no-referrer
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Permitted-Cross-Domain-Policies: none
+X-Robots-Tag: noindex, nofollow
+X-Xss-Protection: 1; mode=block
+
+<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns" xmlns:card="urn:ietf:params:xml:ns:carddav" xmlns:cs="http://calendarserver.org/ns/"><d:response><d:href>/remote.php/dav/addressbooks/users/admin/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype><d:getetag>&quot;1&quot;</d:getetag><d:getlastmodified>Thu, 01 May 2025 12:00:00 GMT</d:getlastmodified><oc:id>00000001ocdev00001</oc:id><oc:fileid>00000001ocdev00001</oc:fileid><oc:permissions>GDNVCK</oc:permissions><oc:size>0</oc:size><oc:owner-id>admin</oc:owner-id><oc:owner-display-name>admin</oc:owner-display-name><nc:is-encrypted>false</nc:is-encrypted><nc:mount-type></nc:mount-type><d:displayname>admin</d:displayname></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response><d:response><d:href>/remote.php/dav/addressbooks/users/admin/contacts/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/><card:addressbook/></d:resourcetype><d:getetag>&quot;1&quot;</d:getetag><d:getlastmodified>Thu, 01 May 2025 12:00:00 GMT</d:getlastmodified><oc:id>00000001ocdev00001</oc:id><oc:fileid>00000001ocdev00001</oc:fileid><oc:permissions>GDNVCK</oc:permissions><oc:size>0</oc:size><oc:owner-id>admin</oc:owner-id><oc:owner-display-name>admin</oc:owner-display-name><nc:is-encrypted>false</nc:is-encrypted><nc:mount-type></nc:mount-type><d:displayname>Contacts</d:displayname><cs:getctag>&quot;1&quot;</cs:getctag><d:sync-token>https://nextcloud-go/sync/1</d:sync-token></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>

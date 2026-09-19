@@ -61,6 +61,7 @@ func (a *App) mountRoutes() error {
 			"/public.php/webdav",
 			"/public.php/webdav/",
 			"/.well-known/caldav",
+			"/.well-known/carddav",
 		},
 	}
 	baseChain := []httpx.Middleware{
@@ -186,6 +187,8 @@ func (a *App) mountRoutes() error {
 
 	router.Handle(http.MethodGet, "/.well-known/caldav", http.HandlerFunc(wellKnownCalDAV))
 	router.Handle(http.MethodHead, "/.well-known/caldav", http.HandlerFunc(wellKnownCalDAV))
+	router.Handle(http.MethodGet, "/.well-known/carddav", http.HandlerFunc(wellKnownCalDAV))
+	router.Handle(http.MethodHead, "/.well-known/carddav", http.HandlerFunc(wellKnownCalDAV))
 
 	if a.calendarFS != nil {
 		calHandler, err := webdav.NewHandler("/remote.php/dav/calendars/", a.calendarFS, a.instanceID)
@@ -196,6 +199,16 @@ func (a *App) mountRoutes() error {
 		calHandler.Allow = "OPTIONS, GET, HEAD, PROPFIND, PUT, DELETE, MKCOL, MKCALENDAR, REPORT, PROPPATCH"
 		a.configureDAV(calHandler, false)
 		router.HandlePrefix(httpx.MethodAny, "/remote.php/dav/calendars/", webdav.Auth(authCfg)(calHandler))
+	}
+	if a.contactsFS != nil {
+		cardHandler, err := webdav.NewHandler("/remote.php/dav/addressbooks/users/", a.contactsFS, a.instanceID)
+		if err != nil {
+			return fmt.Errorf("app: addressbooks: %w", err)
+		}
+		cardHandler.DAVHeader = "1, 3, addressbook, extended-mkcol"
+		cardHandler.Allow = "OPTIONS, GET, HEAD, PROPFIND, PUT, DELETE, MKCOL, REPORT, PROPPATCH"
+		a.configureDAV(cardHandler, false)
+		router.HandlePrefix(httpx.MethodAny, "/remote.php/dav/addressbooks/users/", webdav.Auth(authCfg)(cardHandler))
 	}
 	if a.principalFS != nil {
 		prinHandler, err := webdav.NewHandler("/remote.php/dav/principals/users/", a.principalFS, a.instanceID)
@@ -212,7 +225,7 @@ func (a *App) mountRoutes() error {
 		if err != nil {
 			return fmt.Errorf("app: dav-root: %w", err)
 		}
-		rootHandler.DAVHeader = "1, 3, calendar-access, extended-mkcol"
+		rootHandler.DAVHeader = "1, 3, calendar-access, addressbook, extended-mkcol"
 		rootHandler.Allow = "OPTIONS, PROPFIND"
 		a.configureDAV(rootHandler, true)
 		router.HandlePrefix(httpx.MethodAny, "/remote.php/dav", webdav.Auth(authCfg)(rootHandler))

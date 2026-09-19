@@ -44,7 +44,8 @@ func (h *Handler) report(w http.ResponseWriter, r *http.Request) {
 		InstanceID:       h.InstanceID,
 		OwnerID:          user,
 		OwnerDisplayName: h.ownerDisplayName(user),
-		CalDAV:           true,
+		CalDAV:           h.emitCalDAV(),
+		CardDAV:          h.emitCardDAV(),
 	}
 	var buf bytes.Buffer
 	WriteReportMultistatus(&buf, pctx, entries)
@@ -91,7 +92,7 @@ func reportName(body []byte) string {
 			continue
 		}
 		switch se.Name.Local {
-		case "calendar-query", "calendar-multiget":
+		case "calendar-query", "calendar-multiget", "addressbook-query", "addressbook-multiget":
 			return se.Name.Local
 		}
 	}
@@ -141,10 +142,10 @@ func parseMKCalendar(r io.Reader) (map[string]string, error) {
 	}
 }
 
-// WriteReportMultistatus writes a CalDAV REPORT 207 body.
+// WriteReportMultistatus writes a CalDAV/CardDAV REPORT 207 body.
 func WriteReportMultistatus(buf *bytes.Buffer, ctx PropfindContext, entries []*Entry) {
 	buf.WriteString(xmlHeader)
-	buf.WriteString(multistatusOpen(true))
+	buf.WriteString(multistatusOpen(ctx.CalDAV, ctx.CardDAV))
 	for _, e := range entries {
 		writeReportResponse(buf, ctx, e)
 	}
@@ -165,6 +166,9 @@ func writeReportResponse(buf *bytes.Buffer, ctx PropfindContext, e *Entry) {
 	fmt.Fprintf(buf, `<d:getetag>&quot;%s&quot;</d:getetag>`, xmlEscape(e.ETag))
 	if e.CalendarData != "" {
 		fmt.Fprintf(buf, `<cal:calendar-data>%s</cal:calendar-data>`, xmlEscape(e.CalendarData))
+	}
+	if e.AddressData != "" {
+		fmt.Fprintf(buf, `<card:address-data>%s</card:address-data>`, xmlEscape(e.AddressData))
 	}
 	buf.WriteString(`</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>`)
 	buf.WriteString(`</d:response>`)

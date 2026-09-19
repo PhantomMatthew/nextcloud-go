@@ -63,6 +63,9 @@ func TestWriteMultistatus_EmptyHomeRoot(t *testing.T) {
 	if strings.Contains(out, `<d:getcontenttype>`) {
 		t.Errorf("collection should NOT emit getcontenttype")
 	}
+	if strings.Contains(out, `xmlns:card=`) || strings.Contains(out, `addressbook-home-set`) {
+		t.Errorf("files PROPFIND must not emit CardDAV xmlns")
+	}
 }
 
 func TestWriteMultistatus_File(t *testing.T) {

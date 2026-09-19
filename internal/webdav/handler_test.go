@@ -71,6 +71,18 @@ func TestHandler_REPORT_NotSupported(t *testing.T) {
 	}
 }
 
+func TestHandler_REPORT_Addressbook_NotSupported(t *testing.T) {
+	h, err := NewHandler("/remote.php/dav/addressbooks/users/", NewInMemoryFS(), "oc123abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &auth.Principal{UID: "admin", DisplayName: "admin", Enabled: true, AuthMethod: auth.AuthMethodBasic}
+	rr := doRequestBody(h, "REPORT", "/remote.php/dav/addressbooks/users/admin/", p, nil, `<c:addressbook-query xmlns:c="urn:ietf:params:xml:ns:carddav"/>`)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rr.Code)
+	}
+}
+
 func TestHandler_MKCALENDAR_NotSupported(t *testing.T) {
 	h := newTestHandler()
 	p := &auth.Principal{UID: "admin", DisplayName: "admin", Enabled: true, AuthMethod: auth.AuthMethodBasic}

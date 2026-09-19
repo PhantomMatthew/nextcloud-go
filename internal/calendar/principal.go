@@ -82,6 +82,7 @@ func (d *PrincipalDAV) entry(u *users.User) *webdav.Entry {
 		DisplayName:          name,
 		CurrentUserPrincipal: "/remote.php/dav/principals/users/" + u.UID + "/",
 		CalendarHomeSet:      "/remote.php/dav/calendars/" + u.UID + "/",
+		AddressbookHomeSet:   "/remote.php/dav/addressbooks/users/" + u.UID + "/",
 	}
 }
 

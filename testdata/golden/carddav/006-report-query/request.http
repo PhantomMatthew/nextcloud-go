@@ -1,0 +1,15 @@
+REPORT /remote.php/dav/addressbooks/users/admin/contacts/ HTTP/1.1
+Host: cloud.example.com
+User-Agent: ncgo-goldentest/0.0
+Accept: */*
+Authorization: Basic YWRtaW46YWRtaW4=
+Content-Type: application/xml; charset=utf-8
+Content-Length: 205
+
+<?xml version="1.0" encoding="utf-8" ?>
+<c:addressbook-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:carddav">
+  <d:prop>
+    <d:getetag />
+    <c:address-data />
+  </d:prop>
+</c:addressbook-query>

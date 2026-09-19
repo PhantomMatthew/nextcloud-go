@@ -166,11 +166,12 @@ func (h *Handler) propfind(w http.ResponseWriter, r *http.Request) {
 		InstanceID:       h.InstanceID,
 		OwnerID:          user,
 		OwnerDisplayName: h.ownerDisplayName(user),
-		EmitQuota:        sub == "/" && root.IsDir && !h.emitCalDAV(),
+		EmitQuota:        sub == "/" && root.IsDir && !h.emitCalDAV() && !h.emitCardDAV(),
 		QuotaAvailable:   -3,
-		EmitFavorite:     h.emitFavorite() && !h.emitCalDAV(),
-		EmitLocks:        h.emitLocks() && !h.emitCalDAV(),
+		EmitFavorite:     h.emitFavorite() && !h.emitCalDAV() && !h.emitCardDAV(),
+		EmitLocks:        h.emitLocks() && !h.emitCalDAV() && !h.emitCardDAV(),
 		CalDAV:           h.emitCalDAV(),
+		CardDAV:          h.emitCardDAV(),
 	}
 	if pctx.EmitQuota && h.Quota != nil {
 		used, available, unlimited := h.Quota(r.Context(), user)
@@ -673,6 +674,13 @@ func (h *Handler) emitLocks() bool {
 func (h *Handler) emitCalDAV() bool {
 	p := strings.ToLower(h.Prefix)
 	return strings.Contains(p, "/dav/calendars/") ||
+		strings.Contains(p, "/dav/principals/") ||
+		p == "/remote.php/dav/"
+}
+
+func (h *Handler) emitCardDAV() bool {
+	p := strings.ToLower(h.Prefix)
+	return strings.Contains(p, "/dav/addressbooks/") ||
 		strings.Contains(p, "/dav/principals/") ||
 		p == "/remote.php/dav/"
 }

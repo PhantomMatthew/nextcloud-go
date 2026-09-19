@@ -15,6 +15,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/cache"
 	caldav "github.com/PhantomMatthew/nextcloud-go/internal/calendar"
 	"github.com/PhantomMatthew/nextcloud-go/internal/config"
+	carddav "github.com/PhantomMatthew/nextcloud-go/internal/contacts"
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
 	"github.com/PhantomMatthew/nextcloud-go/internal/files"
 	"github.com/PhantomMatthew/nextcloud-go/internal/httpx"
@@ -59,6 +60,8 @@ type App struct {
 	jobs          jobs.Runner
 	calendarStore *caldav.SQLStore
 	calendarFS    *caldav.DAV
+	contactsStore *carddav.SQLStore
+	contactsFS    *carddav.DAV
 	principalFS   *caldav.PrincipalDAV
 	davRootFS     *caldav.RootDAV
 }
@@ -183,6 +186,9 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	calStore := caldav.NewSQLStore(db)
 	a.calendarStore = calStore
 	a.calendarFS = &caldav.DAV{Store: calStore, Users: a.Users}
+	cardStore := carddav.NewSQLStore(db)
+	a.contactsStore = cardStore
+	a.contactsFS = &carddav.DAV{Store: cardStore, Users: a.Users}
 	a.principalFS = &caldav.PrincipalDAV{Users: a.Users}
 	a.davRootFS = &caldav.RootDAV{Users: a.Users}
 

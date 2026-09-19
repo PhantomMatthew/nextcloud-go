@@ -33,7 +33,7 @@ func (d *RootDAV) Stat(ctx context.Context, user, p string) (*webdav.Entry, erro
 	switch np {
 	case "/", ".":
 		return d.rootEntry(u), nil
-	case "/calendars", "/principals", "/files":
+	case "/calendars", "/principals", "/files", "/addressbooks":
 		return &webdav.Entry{
 			Path:        np,
 			IsDir:       true,
@@ -61,7 +61,7 @@ func (d *RootDAV) List(ctx context.Context, user, p string) ([]*webdav.Entry, er
 		}
 		return nil, nil
 	}
-	kids := []string{"/calendars", "/principals", "/files"}
+	kids := []string{"/calendars", "/principals", "/files", "/addressbooks"}
 	out := make([]*webdav.Entry, 0, len(kids))
 	for _, k := range kids {
 		e, err := d.Stat(ctx, u.UID, k)
@@ -109,5 +109,6 @@ func (d *RootDAV) rootEntry(u *users.User) *webdav.Entry {
 		DisplayName:          u.UID,
 		CurrentUserPrincipal: "/remote.php/dav/principals/users/" + u.UID + "/",
 		CalendarHomeSet:      "/remote.php/dav/calendars/" + u.UID + "/",
+		AddressbookHomeSet:   "/remote.php/dav/addressbooks/users/" + u.UID + "/",
 	}
 }

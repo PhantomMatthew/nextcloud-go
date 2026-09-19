@@ -110,16 +110,16 @@ func TestPrincipalAndRoot(t *testing.T) {
 	freeze := time.Date(2025, 5, 1, 12, 0, 0, 0, time.UTC)
 	p := &PrincipalDAV{Users: us, Clock: func() time.Time { return freeze }}
 	e, err := p.Stat(ctx, "alice", "/")
-	if err != nil || !e.IsPrincipal || e.CalendarHomeSet == "" {
+	if err != nil || !e.IsPrincipal || e.CalendarHomeSet == "" || e.AddressbookHomeSet == "" {
 		t.Fatalf("principal = %+v %v", e, err)
 	}
 	root := &RootDAV{Users: us, Clock: func() time.Time { return freeze }}
 	re, err := root.Stat(ctx, "alice", "/")
-	if err != nil || re.CurrentUserPrincipal == "" {
+	if err != nil || re.CurrentUserPrincipal == "" || re.AddressbookHomeSet == "" {
 		t.Fatalf("root = %+v %v", re, err)
 	}
 	kids, err := root.List(ctx, "alice", "/")
-	if err != nil || len(kids) != 3 {
+	if err != nil || len(kids) != 4 {
 		t.Fatalf("root list = %v %v", kids, err)
 	}
 	if _, err := root.Stat(ctx, "alice", "/unknown"); !errors.Is(err, webdav.ErrNotFound) {

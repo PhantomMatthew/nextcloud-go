@@ -57,6 +57,9 @@ type Entry struct {
 	CalendarData         string
 	CurrentUserPrincipal string
 	CalendarHomeSet      string
+	IsAddressbook        bool
+	AddressbookHomeSet   string
+	AddressData          string
 	Status               int
 }
 

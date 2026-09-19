@@ -1,0 +1,15 @@
+PUT /remote.php/dav/addressbooks/users/admin/contacts/ncgo-contact-001.vcf HTTP/1.1
+Host: cloud.example.com
+User-Agent: ncgo-goldentest/0.0
+Accept: */*
+Authorization: Basic YWRtaW46YWRtaW4=
+Content-Type: text/vcard; charset=utf-8
+Content-Length: 111
+
+BEGIN:VCARD
+VERSION:3.0
+UID:ncgo-contact-001
+FN:Ada Lovelace
+N:Lovelace;Ada;;;
+EMAIL:ada@example.com
+END:VCARD

@@ -189,6 +189,10 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-19** — Phase 3b: CardDAV address books (RFC 6352) on
+  `/remote.php/dav/addressbooks/users/`, default `contacts` book,
+  `REPORT` addressbook-query/multiget, principals `addressbook-home-set`
+  (see ADR-0020). Notifications and OCM remain later.
 - **2026-09-19** — Phase 3a: CalDAV events (RFC 4791) on
   `/remote.php/dav/calendars/`, principals, `REPORT` calendar-query/multiget,
   default `personal` calendar (see ADR-0019). CardDAV, notifications, and OCM
