@@ -122,6 +122,13 @@ func (a *App) mountRoutes() error {
 	router.HandlePrefix(httpx.MethodAny, "/ocs/v1.php/search/providers", searchV1, httpx.Middleware(ocs.Auth(ocs.V1, authCfg)))
 	router.HandlePrefix(httpx.MethodAny, "/ocs/v2.php/search/providers", searchV2, httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
 
+	if dav, ok := a.davFS.(*files.DAV); ok {
+		lockV1 := files.LockHandler{DAV: dav, Version: ocs.V1}
+		lockV2 := files.LockHandler{DAV: dav, Version: ocs.V2}
+		router.HandlePrefix(httpx.MethodAny, "/ocs/v1.php/apps/files_lock", lockV1, httpx.Middleware(ocs.Auth(ocs.V1, authCfg)))
+		router.HandlePrefix(httpx.MethodAny, "/ocs/v2.php/apps/files_lock", lockV2, httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
+	}
+
 	if a.shares != nil {
 		sharesV1 := sharing.Handler{Service: a.shares, Version: ocs.V1}
 		sharesV2 := sharing.Handler{Service: a.shares, Version: ocs.V2}
