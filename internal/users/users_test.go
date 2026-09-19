@@ -81,6 +81,37 @@ func TestSQLStoreUsers(t *testing.T) {
 	}
 }
 
+func TestSQLStoreGroups(t *testing.T) {
+	ctx := context.Background()
+	store := NewSQLStore(testDB(t))
+	alice := &User{UID: "alice", DisplayName: "Alice", PasswordHash: "x", Enabled: true}
+	bob := &User{UID: "bob", DisplayName: "Bob", PasswordHash: "x", Enabled: true}
+	if err := store.Create(ctx, alice); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Create(ctx, bob); err != nil {
+		t.Fatal(err)
+	}
+	g := &Group{GID: "team", DisplayName: "Team"}
+	if err := store.CreateGroup(ctx, g); err != nil {
+		t.Fatal(err)
+	}
+	if g.ID == 0 {
+		t.Fatal("group id")
+	}
+	if err := store.AddGroupMember(ctx, "team", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	gids, err := store.UserGroupGIDs(ctx, "alice")
+	if err != nil || len(gids) != 1 || gids[0] != "team" {
+		t.Fatalf("alice gids = %v %v", gids, err)
+	}
+	bobGIDs, err := store.UserGroupGIDs(ctx, "bob")
+	if err != nil || len(bobGIDs) != 0 {
+		t.Fatalf("bob gids = %v %v", bobGIDs, err)
+	}
+}
+
 func TestPasswordVerifier(t *testing.T) {
 	ctx := context.Background()
 	store := NewSQLStore(testDB(t))

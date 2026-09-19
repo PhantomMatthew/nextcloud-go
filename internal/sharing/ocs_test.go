@@ -32,6 +32,9 @@ func testService(t *testing.T) *Service {
 	if err := us.Create(ctx, u); err != nil {
 		t.Fatal(err)
 	}
+	if err := us.Create(ctx, &users.User{UID: "bob", DisplayName: "Bob", PasswordHash: "x", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
 	st, err := localfs.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -64,11 +67,11 @@ func TestOCSCreateLinkAndRejectOtherTypes(t *testing.T) {
 	h := Handler{Service: svc, Version: ocs.V2}
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/ocs/v2.php/apps/files_sharing/api/v1/shares?format=json", strings.NewReader("path=/a.txt&shareType=0"))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/ocs/v2.php/apps/files_sharing/api/v1/shares?format=json", strings.NewReader("path=/a.txt&shareType=6"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	h.ServeHTTP(rr, withUser(req))
 	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("shareType 0 status = %d body=%s", rr.Code, rr.Body.String())
+		t.Fatalf("shareType 6 status = %d body=%s", rr.Code, rr.Body.String())
 	}
 	if !strings.Contains(rr.Body.String(), "unknown share type") {
 		t.Fatalf("body = %s", rr.Body.String())
@@ -113,6 +116,35 @@ func TestOCSCreateLinkAndRejectOtherTypes(t *testing.T) {
 	}
 }
 
+func TestOCSCreateUserShare(t *testing.T) {
+	svc := testService(t)
+	svc.Files.Incoming = svc
+	h := Handler{Service: svc, Version: ocs.V2}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/ocs/v2.php/apps/files_sharing/api/v1/shares?format=json", strings.NewReader("path=/a.txt&shareType=0&shareWith=bob"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Host = "cloud.example.com"
+	h.ServeHTTP(rr, withUser(req))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var env map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	data := env["ocs"].(map[string]any)["data"].(map[string]any)
+	if data["share_type"] != float64(0) || data["share_with"] != "bob" {
+		t.Fatalf("payload = %v", data)
+	}
+	if data["url"] != "" {
+		t.Fatalf("url = %v", data["url"])
+	}
+	e, err := svc.Files.Stat(t.Context(), "bob", "/a.txt")
+	if err != nil || !e.Shared {
+		t.Fatalf("bob stat = %+v %v", e, err)
+	}
+}
+
 func TestOCSMissingPath404(t *testing.T) {
 	svc := testService(t)
 	h := Handler{Service: svc, Version: ocs.V2}
@@ -128,7 +160,7 @@ func TestOCSMissingPath404(t *testing.T) {
 func TestServiceExpireDeletes(t *testing.T) {
 	svc := testService(t)
 	ctx := t.Context()
-	sh, err := svc.Create(ctx, "alice", "/a.txt", files.ShareTypeLink, 0, "", "2020-01-01", "")
+	sh, err := svc.Create(ctx, "alice", "/a.txt", files.ShareTypeLink, 0, "", "", "2020-01-01", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +172,7 @@ func TestServiceExpireDeletes(t *testing.T) {
 func TestResolvePublicPassword(t *testing.T) {
 	svc := testService(t)
 	ctx := t.Context()
-	if _, err := svc.Create(ctx, "alice", "/a.txt", files.ShareTypeLink, 0, "secret", "", ""); err != nil {
+	if _, err := svc.Create(ctx, "alice", "/a.txt", files.ShareTypeLink, 0, "", "secret", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := svc.ResolvePublic(ctx, "ncgopublic00001", ""); err == nil {
@@ -154,7 +186,7 @@ func TestResolvePublicPassword(t *testing.T) {
 func TestPublicLinkGET(t *testing.T) {
 	svc := testService(t)
 	ctx := context.Background()
-	if _, err := svc.Create(ctx, "alice", "/a.txt", files.ShareTypeLink, 0, "", "", ""); err != nil {
+	if _, err := svc.Create(ctx, "alice", "/a.txt", files.ShareTypeLink, 0, "", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	h := svc.PublicLinkHandler()
@@ -173,7 +205,7 @@ func TestPublicLinkGET(t *testing.T) {
 func TestTokenVerifier(t *testing.T) {
 	svc := testService(t)
 	ctx := t.Context()
-	if _, err := svc.Create(ctx, "alice", "/a.txt", files.ShareTypeLink, 0, "", "", ""); err != nil {
+	if _, err := svc.Create(ctx, "alice", "/a.txt", files.ShareTypeLink, 0, "", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	v := &TokenVerifier{Service: svc}

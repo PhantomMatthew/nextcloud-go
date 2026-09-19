@@ -30,13 +30,13 @@ func (s *SQLShareStore) Insert(ctx context.Context, sh *files.Share) error {
 		return err
 	}
 	sh.Path = np
-	if sh.ShareType == 0 {
-		sh.ShareType = files.ShareTypeLink
+	if sh.Accepted == 0 {
+		sh.Accepted = 1
 	}
 	_, err = s.db.Exec(ctx, `
-INSERT INTO shares (share_type, owner_user_id, file_path, item_type, token, password_hash, permissions, label, expire_ms, stime_ms)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sh.ShareType, sh.OwnerUserID, sh.Path, sh.ItemType, sh.Token, sh.PasswordHash, sh.Permissions, sh.Label, sh.ExpireMs, sh.StimeMs)
+INSERT INTO shares (share_type, owner_user_id, file_path, item_type, token, password_hash, permissions, label, expire_ms, stime_ms, share_with, accepted)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sh.ShareType, sh.OwnerUserID, sh.Path, sh.ItemType, sh.Token, sh.PasswordHash, sh.Permissions, sh.Label, sh.ExpireMs, sh.StimeMs, sh.ShareWith, sh.Accepted)
 	if err != nil {
 		if database.IsUniqueViolation(s.db.Dialect(), err) {
 			return files.ErrExists
@@ -56,7 +56,7 @@ func (s *SQLShareStore) GetByID(ctx context.Context, id int64) (*files.Share, er
 		return nil, files.ErrNotFound
 	}
 	row := s.db.QueryRow(ctx, `
-SELECT id, share_type, owner_user_id, file_path, item_type, token, password_hash, permissions, label, expire_ms, stime_ms
+SELECT id, share_type, owner_user_id, file_path, item_type, token, password_hash, permissions, label, expire_ms, stime_ms, share_with, accepted
 FROM shares WHERE id = ?`, id)
 	return scanShare(row)
 }
@@ -66,7 +66,7 @@ func (s *SQLShareStore) GetByToken(ctx context.Context, token string) (*files.Sh
 		return nil, files.ErrNotFound
 	}
 	row := s.db.QueryRow(ctx, `
-SELECT id, share_type, owner_user_id, file_path, item_type, token, password_hash, permissions, label, expire_ms, stime_ms
+SELECT id, share_type, owner_user_id, file_path, item_type, token, password_hash, permissions, label, expire_ms, stime_ms, share_with, accepted
 FROM shares WHERE token = ?`, token)
 	return scanShare(row)
 }
@@ -83,15 +83,45 @@ func (s *SQLShareStore) ListByOwner(ctx context.Context, ownerUserID int64, path
 			return nil, nerr
 		}
 		rows, err = s.db.Query(ctx, `
-SELECT id, share_type, owner_user_id, file_path, item_type, token, password_hash, permissions, label, expire_ms, stime_ms
+SELECT id, share_type, owner_user_id, file_path, item_type, token, password_hash, permissions, label, expire_ms, stime_ms, share_with, accepted
 FROM shares WHERE owner_user_id = ? AND file_path = ? ORDER BY id`, ownerUserID, np)
 	} else {
 		rows, err = s.db.Query(ctx, `
-SELECT id, share_type, owner_user_id, file_path, item_type, token, password_hash, permissions, label, expire_ms, stime_ms
+SELECT id, share_type, owner_user_id, file_path, item_type, token, password_hash, permissions, label, expire_ms, stime_ms, share_with, accepted
 FROM shares WHERE owner_user_id = ? ORDER BY id`, ownerUserID)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("sharing: list: %w", err)
+	}
+	defer rows.Close()
+	return scanShares(rows)
+}
+
+func (s *SQLShareStore) ListBySharee(ctx context.Context, shareWith string, groupGIDs []string) ([]files.Share, error) {
+	if shareWith == "" && len(groupGIDs) == 0 {
+		return nil, nil
+	}
+	var parts []string
+	var args []any
+	if shareWith != "" {
+		parts = append(parts, `(share_type = ? AND share_with = ?)`)
+		args = append(args, files.ShareTypeUser, shareWith)
+	}
+	if len(groupGIDs) > 0 {
+		ph := make([]string, len(groupGIDs))
+		args = append(args, files.ShareTypeGroup)
+		for i, gid := range groupGIDs {
+			ph[i] = "?"
+			args = append(args, gid)
+		}
+		parts = append(parts, `(share_type = ? AND share_with IN (`+strings.Join(ph, ", ")+`))`)
+	}
+	q := `
+SELECT id, share_type, owner_user_id, file_path, item_type, token, password_hash, permissions, label, expire_ms, stime_ms, share_with, accepted
+FROM shares WHERE accepted = 1 AND (` + strings.Join(parts, " OR ") + `) ORDER BY id`
+	rows, err := s.db.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sharing: list sharee: %w", err)
 	}
 	defer rows.Close()
 	return scanShares(rows)
@@ -131,7 +161,7 @@ func (s *SQLShareStore) listByPrefix(ctx context.Context, ownerUserID int64, fil
 		like = "/%"
 	}
 	rows, err := s.db.Query(ctx, `
-SELECT id, share_type, owner_user_id, file_path, item_type, token, password_hash, permissions, label, expire_ms, stime_ms
+SELECT id, share_type, owner_user_id, file_path, item_type, token, password_hash, permissions, label, expire_ms, stime_ms, share_with, accepted
 FROM shares WHERE owner_user_id = ? AND (file_path = ? OR file_path LIKE ?) ORDER BY file_path`, ownerUserID, np, like)
 	if err != nil {
 		return nil, fmt.Errorf("sharing: list prefix: %w", err)
@@ -214,7 +244,7 @@ func scanShares(rows database.Rows) ([]files.Share, error) {
 
 func scanShare(row rowScanner) (*files.Share, error) {
 	var sh files.Share
-	err := row.Scan(&sh.ID, &sh.ShareType, &sh.OwnerUserID, &sh.Path, &sh.ItemType, &sh.Token, &sh.PasswordHash, &sh.Permissions, &sh.Label, &sh.ExpireMs, &sh.StimeMs)
+	err := row.Scan(&sh.ID, &sh.ShareType, &sh.OwnerUserID, &sh.Path, &sh.ItemType, &sh.Token, &sh.PasswordHash, &sh.Permissions, &sh.Label, &sh.ExpireMs, &sh.StimeMs, &sh.ShareWith, &sh.Accepted)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, database.ErrNoRows) {
 			return nil, files.ErrNotFound

@@ -94,6 +94,38 @@ func TestSQLShareStoreCRUD(t *testing.T) {
 	}
 }
 
+func TestSQLShareStoreListBySharee(t *testing.T) {
+	ctx := t.Context()
+	db := testDB(t)
+	uid := seedUser(t, db)
+	store := NewSQLShareStore(db)
+	userShare := &files.Share{
+		OwnerUserID: uid, ShareType: files.ShareTypeUser, Path: "/a.txt",
+		ItemType: "file", Token: "user00000000001", Permissions: 1, ShareWith: "bob", StimeMs: 1746100800000,
+	}
+	groupShare := &files.Share{
+		OwnerUserID: uid, ShareType: files.ShareTypeGroup, Path: "/pub",
+		ItemType: "folder", Token: "group0000000001", Permissions: 1, ShareWith: "team", StimeMs: 1746100800000,
+	}
+	link := &files.Share{
+		OwnerUserID: uid, ShareType: files.ShareTypeLink, Path: "/a.txt",
+		ItemType: "file", Token: "link00000000001", Permissions: 1, StimeMs: 1746100800000,
+	}
+	for _, s := range []*files.Share{userShare, groupShare, link} {
+		if err := store.Insert(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := store.ListBySharee(ctx, "bob", nil)
+	if err != nil || len(got) != 1 || got[0].ShareWith != "bob" {
+		t.Fatalf("user sharee = %+v %v", got, err)
+	}
+	got, err = store.ListBySharee(ctx, "carol", []string{"team"})
+	if err != nil || len(got) != 1 || got[0].ShareWith != "team" {
+		t.Fatalf("group sharee = %+v %v", got, err)
+	}
+}
+
 func TestSQLShareStoreDeleteExpired(t *testing.T) {
 	ctx := t.Context()
 	db := testDB(t)

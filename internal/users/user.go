@@ -25,6 +25,13 @@ type User struct {
 	UpdatedAt    time.Time
 }
 
+// Group is a local group.
+type Group struct {
+	ID          int64
+	GID         string
+	DisplayName string
+}
+
 // Store persists users.
 type Store interface {
 	Create(ctx context.Context, u *User) error
@@ -32,4 +39,8 @@ type Store interface {
 	GetByID(ctx context.Context, id int64) (*User, error)
 	UpdatePasswordHash(ctx context.Context, id int64, hash string) error
 	Count(ctx context.Context) (int64, error)
+	CreateGroup(ctx context.Context, g *Group) error
+	GetGroupByGID(ctx context.Context, gid string) (*Group, error)
+	AddGroupMember(ctx context.Context, gid, uid string) error
+	UserGroupGIDs(ctx context.Context, uid string) ([]string, error)
 }

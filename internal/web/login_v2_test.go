@@ -324,6 +324,14 @@ func (s stubUserStore) GetByID(_ context.Context, id int64) (*users.User, error)
 }
 func (stubUserStore) UpdatePasswordHash(context.Context, int64, string) error { return nil }
 func (stubUserStore) Count(context.Context) (int64, error)                    { return 1, nil }
+func (stubUserStore) CreateGroup(context.Context, *users.Group) error         { return nil }
+func (stubUserStore) GetGroupByGID(context.Context, string) (*users.Group, error) {
+	return nil, users.ErrNotFound
+}
+func (stubUserStore) AddGroupMember(context.Context, string, string) error { return nil }
+func (stubUserStore) UserGroupGIDs(context.Context, string) ([]string, error) {
+	return nil, nil
+}
 
 type stubSessionStore struct {
 	created *session.Session

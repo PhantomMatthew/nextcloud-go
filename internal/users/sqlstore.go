@@ -114,6 +114,91 @@ func (s *SQLStore) Count(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
+func (s *SQLStore) CreateGroup(ctx context.Context, g *Group) error {
+	if g == nil || g.GID == "" {
+		return fmt.Errorf("users: invalid group")
+	}
+	display := g.DisplayName
+	if display == "" {
+		display = g.GID
+	}
+	now := time.Now().UTC().UnixMilli()
+	_, err := s.db.Exec(ctx, `INSERT INTO groups (gid, display_name, created_at) VALUES (?, ?, ?)`, g.GID, display, now)
+	if err != nil {
+		if database.IsUniqueViolation(s.db.Dialect(), err) {
+			return ErrExists
+		}
+		return fmt.Errorf("users: create group: %w", err)
+	}
+	got, err := s.GetGroupByGID(ctx, g.GID)
+	if err != nil {
+		return err
+	}
+	*g = *got
+	return nil
+}
+
+func (s *SQLStore) GetGroupByGID(ctx context.Context, gid string) (*Group, error) {
+	if gid == "" {
+		return nil, ErrNotFound
+	}
+	row := s.db.QueryRow(ctx, `SELECT id, gid, display_name FROM groups WHERE gid = ?`, gid)
+	var g Group
+	if err := row.Scan(&g.ID, &g.GID, &g.DisplayName); err != nil {
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, database.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("users: get group: %w", err)
+	}
+	return &g, nil
+}
+
+func (s *SQLStore) AddGroupMember(ctx context.Context, gid, uid string) error {
+	g, err := s.GetGroupByGID(ctx, gid)
+	if err != nil {
+		return err
+	}
+	u, err := s.GetByUID(ctx, uid)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx, `INSERT INTO group_members (group_id, user_id) VALUES (?, ?)`, g.ID, u.ID)
+	if err != nil {
+		if database.IsUniqueViolation(s.db.Dialect(), err) {
+			return nil
+		}
+		return fmt.Errorf("users: add member: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLStore) UserGroupGIDs(ctx context.Context, uid string) ([]string, error) {
+	u, err := s.GetByUID(ctx, uid)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT g.gid FROM groups g
+INNER JOIN group_members m ON m.group_id = g.id
+WHERE m.user_id = ? ORDER BY g.gid`, u.ID)
+	if err != nil {
+		return nil, fmt.Errorf("users: group gids: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var gid string
+		if err := rows.Scan(&gid); err != nil {
+			return nil, err
+		}
+		out = append(out, gid)
+	}
+	return out, rows.Err()
+}
+
 func nullEmail(s string) any {
 	if s == "" {
 		return nil

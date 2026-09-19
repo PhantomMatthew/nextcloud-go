@@ -99,7 +99,7 @@ func (h Handler) create(w http.ResponseWriter, r *http.Request, uid string) {
 		}
 		perms = n
 	}
-	sh, err := h.Service.Create(r.Context(), uid, path, shareType, perms, form.Get("password"), form.Get("expireDate"), form.Get("label"))
+	sh, err := h.Service.Create(r.Context(), uid, path, shareType, perms, form.Get("shareWith"), form.Get("password"), form.Get("expireDate"), form.Get("label"))
 	if err != nil {
 		writeShareErr(w, r, h.Version, err)
 		return
@@ -232,6 +232,8 @@ func writeShareErr(w http.ResponseWriter, r *http.Request, version ocs.Version, 
 	switch {
 	case errors.Is(err, errBadShareType):
 		writeOCS(w, r, version, 400, "unknown share type", nil)
+	case errors.Is(err, errBadShareWith):
+		writeOCS(w, r, version, 400, "unknown sharee", nil)
 	case errors.Is(err, errBadPermissions), errors.Is(err, errBadExpire):
 		writeOCS(w, r, version, 400, err.Error(), nil)
 	case errors.Is(err, files.ErrNotFound), errors.Is(err, webdav.ErrNotFound):
@@ -266,7 +268,7 @@ func writeOCS(w http.ResponseWriter, r *http.Request, version ocs.Version, code 
 	_, _ = w.Write(body)
 }
 
-func shareMap(sh *files.Share, uid, display, mime string, fileID int64, url, expiration string) any {
+func shareMap(sh *files.Share, uid, display, mime string, fileID int64, url, expiration, shareWithDisplay string) any {
 	return ocs.Obj(
 		ocs.K("id", strconv.FormatInt(sh.ID, 10)),
 		ocs.K("share_type", sh.ShareType),
@@ -282,7 +284,9 @@ func shareMap(sh *files.Share, uid, display, mime string, fileID int64, url, exp
 		ocs.K("item_source", fileID),
 		ocs.K("file_source", fileID),
 		ocs.K("url", url),
-		ocs.K("share_with", ""),
+		ocs.K("share_with", sh.ShareWith),
+		ocs.K("share_with_displayname", shareWithDisplay),
+		ocs.K("uid_file_owner", uid),
 		ocs.K("mail_send", 0),
 		ocs.K("hide_download", false),
 		ocs.K("label", sh.Label),

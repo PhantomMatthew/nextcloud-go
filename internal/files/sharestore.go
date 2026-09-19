@@ -2,10 +2,16 @@ package files
 
 import "context"
 
-// ShareTypeLink is Nextcloud shareType 3 (public link).
-const ShareTypeLink = 3
+const (
+	// ShareTypeUser is Nextcloud shareType 0 (user).
+	ShareTypeUser = 0
+	// ShareTypeGroup is Nextcloud shareType 1 (group).
+	ShareTypeGroup = 1
+	// ShareTypeLink is Nextcloud shareType 3 (public link).
+	ShareTypeLink = 3
+)
 
-// Share is one path-keyed public link.
+// Share is one path-keyed share (link, user, or group).
 type Share struct {
 	ID           int64
 	OwnerUserID  int64
@@ -18,14 +24,31 @@ type Share struct {
 	Label        string
 	ExpireMs     int64
 	StimeMs      int64
+	ShareWith    string
+	Accepted     int
 }
 
-// ShareStore persists public-link shares.
+// IncomingMount is a share visible inside a sharee's files jail.
+type IncomingMount struct {
+	OwnerUID    string
+	OwnerPath   string
+	Mount       string
+	Permissions int
+	ItemType    string
+}
+
+// IncomingLookup lists accepted user/group shares for a sharee.
+type IncomingLookup interface {
+	ListIncoming(ctx context.Context, shareeUID string) ([]IncomingMount, error)
+}
+
+// ShareStore persists shares.
 type ShareStore interface {
 	Insert(ctx context.Context, s *Share) error
 	GetByID(ctx context.Context, id int64) (*Share, error)
 	GetByToken(ctx context.Context, token string) (*Share, error)
 	ListByOwner(ctx context.Context, ownerUserID int64, pathFilter string) ([]Share, error)
+	ListBySharee(ctx context.Context, shareWith string, groupGIDs []string) ([]Share, error)
 	Update(ctx context.Context, s *Share) error
 	Delete(ctx context.Context, id int64) error
 	DeleteByPath(ctx context.Context, ownerUserID int64, filePath string) error

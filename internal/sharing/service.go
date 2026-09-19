@@ -21,6 +21,7 @@ var (
 	errBadShareType   = errors.New("sharing: unsupported share type")
 	errBadPermissions = errors.New("sharing: invalid permissions")
 	errBadExpire      = errors.New("sharing: invalid expire date")
+	errBadShareWith   = errors.New("sharing: unknown sharee")
 	errUnauthorized   = errors.New("sharing: unauthorized")
 )
 
@@ -81,13 +82,34 @@ func (s *Service) ownerOf(ctx context.Context, uid string) (*users.User, error) 
 	return u, nil
 }
 
-func (s *Service) Create(ctx context.Context, uid, path string, shareType, permissions int, password, expireDate, label string) (*files.Share, error) {
-	if shareType != files.ShareTypeLink {
+func (s *Service) Create(ctx context.Context, uid, path string, shareType, permissions int, shareWith, password, expireDate, label string) (*files.Share, error) {
+	switch shareType {
+	case files.ShareTypeLink, files.ShareTypeUser, files.ShareTypeGroup:
+	default:
 		return nil, errBadShareType
 	}
 	u, err := s.ownerOf(ctx, uid)
 	if err != nil {
 		return nil, err
+	}
+	if shareType == files.ShareTypeUser {
+		if shareWith == "" || shareWith == uid {
+			return nil, errBadShareWith
+		}
+		if _, err := s.Users.GetByUID(ctx, shareWith); err != nil {
+			return nil, errBadShareWith
+		}
+	}
+	if shareType == files.ShareTypeGroup {
+		if shareWith == "" {
+			return nil, errBadShareWith
+		}
+		if _, err := s.Users.GetGroupByGID(ctx, shareWith); err != nil {
+			return nil, errBadShareWith
+		}
+	}
+	if shareType == files.ShareTypeLink {
+		shareWith = ""
 	}
 	np, err := files.NormalizePath(path)
 	if err != nil {
@@ -129,9 +151,12 @@ func (s *Service) Create(ctx context.Context, uid, path string, shareType, permi
 	if err != nil {
 		return nil, err
 	}
+	if shareType != files.ShareTypeLink {
+		hash = ""
+	}
 	sh := &files.Share{
 		OwnerUserID:  u.ID,
-		ShareType:    files.ShareTypeLink,
+		ShareType:    shareType,
 		Path:         np,
 		ItemType:     itemType,
 		Token:        tok,
@@ -140,6 +165,8 @@ func (s *Service) Create(ctx context.Context, uid, path string, shareType, permi
 		Label:        label,
 		ExpireMs:     expireMs,
 		StimeMs:      s.now().UnixMilli(),
+		ShareWith:    shareWith,
+		Accepted:     1,
 	}
 	if err := s.Store.Insert(ctx, sh); err != nil {
 		return nil, err
@@ -255,7 +282,7 @@ func (s *Service) LookupValid(ctx context.Context, token string) (*files.Share, 
 	if err != nil {
 		return nil, nil, err
 	}
-	if expired {
+	if expired || sh.ShareType != files.ShareTypeLink {
 		return nil, nil, files.ErrNotFound
 	}
 	owner, err := s.Users.GetByID(ctx, sh.OwnerUserID)
@@ -308,7 +335,84 @@ func (s *Service) SharePayload(ctx context.Context, r *http.Request, sh *files.S
 	if sh.ExpireMs > 0 {
 		expiration = time.UnixMilli(sh.ExpireMs).UTC().Format("2006-01-02 15:04:05")
 	}
-	return shareMap(sh, owner.UID, display, mime, fileID, shareURL(r, sh.Token), expiration), nil
+	url := ""
+	if sh.ShareType == files.ShareTypeLink {
+		url = shareURL(r, sh.Token)
+	}
+	shareWithDisplay := ""
+	switch sh.ShareType {
+	case files.ShareTypeUser:
+		if rec, err := s.Users.GetByUID(ctx, sh.ShareWith); err == nil {
+			shareWithDisplay = rec.DisplayName
+			if shareWithDisplay == "" {
+				shareWithDisplay = rec.UID
+			}
+		} else {
+			shareWithDisplay = sh.ShareWith
+		}
+	case files.ShareTypeGroup:
+		if g, err := s.Users.GetGroupByGID(ctx, sh.ShareWith); err == nil {
+			shareWithDisplay = g.DisplayName
+			if shareWithDisplay == "" {
+				shareWithDisplay = g.GID
+			}
+		} else {
+			shareWithDisplay = sh.ShareWith
+		}
+	}
+	return shareMap(sh, owner.UID, display, mime, fileID, url, expiration, shareWithDisplay), nil
+}
+
+// ListIncoming implements files.IncomingLookup.
+func (s *Service) ListIncoming(ctx context.Context, shareeUID string) ([]files.IncomingMount, error) {
+	if s == nil || s.Store == nil || shareeUID == "" {
+		return nil, nil
+	}
+	if _, err := s.Users.GetByUID(ctx, shareeUID); err != nil {
+		if errors.Is(err, users.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	gids, err := s.Users.UserGroupGIDs(ctx, shareeUID)
+	if err != nil {
+		return nil, err
+	}
+	items, err := s.Store.ListBySharee(ctx, shareeUID, gids)
+	if err != nil {
+		return nil, err
+	}
+	var out []files.IncomingMount
+	for i := range items {
+		expired, err := s.expireIfNeeded(ctx, &items[i])
+		if err != nil {
+			return nil, err
+		}
+		if expired || items[i].Path == "/" {
+			continue
+		}
+		owner, err := s.Users.GetByID(ctx, items[i].OwnerUserID)
+		if err != nil {
+			continue
+		}
+		mount := "/" + pathBase(items[i].Path)
+		out = append(out, files.IncomingMount{
+			OwnerUID:    owner.UID,
+			OwnerPath:   items[i].Path,
+			Mount:       mount,
+			Permissions: items[i].Permissions,
+			ItemType:    items[i].ItemType,
+		})
+	}
+	return out, nil
+}
+
+func pathBase(p string) string {
+	p = strings.TrimSuffix(p, "/")
+	if i := strings.LastIndex(p, "/"); i >= 0 {
+		return p[i+1:]
+	}
+	return p
 }
 
 func shareURL(r *http.Request, token string) string {
