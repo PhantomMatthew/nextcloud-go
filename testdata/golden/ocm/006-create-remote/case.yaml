@@ -1,0 +1,24 @@
+schema_version: 1
+id: ocm/006-create-remote
+description: |
+  Owner creates an outbound federated share (shareType=6) on /hello.txt.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 3d2
+  captured_at: "2026-09-19T00:00:00Z"
+request:
+  body_kind: form
+response:
+  body_kind: json
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 200
+replayable: true
+mutating: true
+synthetic: true
+tags: [ocm, ocs, phase3d2]

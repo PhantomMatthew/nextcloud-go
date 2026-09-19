@@ -36,7 +36,7 @@ func Discovery(w http.ResponseWriter, r *http.Request) {
 	doc := discoveryDoc{
 		Enabled:    true,
 		APIVersion: "1.0-proposal1",
-		EndPoint:   requestBaseURL(r) + "/ocm",
+		EndPoint:   RequestBaseURL(r) + "/ocm",
 		ResourceTypes: []discoveryResource{{
 			Name:       "file",
 			ShareTypes: []string{"user"},
@@ -56,7 +56,8 @@ func Discovery(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
-func requestBaseURL(r *http.Request) string {
+// RequestBaseURL is the scheme://host of this request (X-Forwarded-* honored).
+func RequestBaseURL(r *http.Request) string {
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"

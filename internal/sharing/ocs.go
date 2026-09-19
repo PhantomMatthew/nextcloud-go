@@ -10,6 +10,7 @@ import (
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
 	"github.com/PhantomMatthew/nextcloud-go/internal/files"
+	"github.com/PhantomMatthew/nextcloud-go/internal/ocm"
 	"github.com/PhantomMatthew/nextcloud-go/internal/ocs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
 )
@@ -99,7 +100,7 @@ func (h Handler) create(w http.ResponseWriter, r *http.Request, uid string) {
 		}
 		perms = n
 	}
-	sh, err := h.Service.Create(r.Context(), uid, path, shareType, perms, form.Get("shareWith"), form.Get("password"), form.Get("expireDate"), form.Get("label"))
+	sh, err := h.Service.Create(r.Context(), uid, path, shareType, perms, form.Get("shareWith"), form.Get("password"), form.Get("expireDate"), form.Get("label"), ocm.RequestBaseURL(r))
 	if err != nil {
 		writeShareErr(w, r, h.Version, err)
 		return
@@ -234,6 +235,8 @@ func writeShareErr(w http.ResponseWriter, r *http.Request, version ocs.Version, 
 		writeOCS(w, r, version, 400, "unknown share type", nil)
 	case errors.Is(err, errBadShareWith):
 		writeOCS(w, r, version, 400, "unknown sharee", nil)
+	case errors.Is(err, errFederate):
+		writeOCS(w, r, version, 400, "cannot federate share", nil)
 	case errors.Is(err, errBadPermissions), errors.Is(err, errBadExpire):
 		writeOCS(w, r, version, 400, err.Error(), nil)
 	case errors.Is(err, files.ErrNotFound), errors.Is(err, webdav.ErrNotFound):

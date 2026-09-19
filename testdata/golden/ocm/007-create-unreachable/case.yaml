@@ -1,0 +1,24 @@
+schema_version: 1
+id: ocm/007-create-unreachable
+description: |
+  Outbound federated share to an unreachable origin returns 400 and rolls back.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 3d2
+  captured_at: "2026-09-19T00:00:00Z"
+request:
+  body_kind: form
+response:
+  body_kind: json
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 400
+replayable: true
+mutating: false
+synthetic: true
+tags: [ocm, ocs, phase3d2]

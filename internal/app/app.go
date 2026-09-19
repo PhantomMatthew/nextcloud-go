@@ -166,6 +166,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		Files:  dav,
 		Users:  a.Users,
 		Hasher: a.hasher,
+		OCM:    ocm.NewClient(),
 	}
 	a.ocmStore = ocm.NewSQLStore(db)
 	dav.Incoming = files.MultiIncoming{a.shares, a.ocmStore}
@@ -246,6 +247,17 @@ func randomHex(logger *slog.Logger, n int, what string) string {
 	}
 	logger.Warn("generated ephemeral secret material", slog.String("what", what))
 	return hex.EncodeToString(buf)
+}
+
+// UseHTTPClient replaces the outbound OCM HTTP client (tests).
+func (a *App) UseHTTPClient(c *http.Client) {
+	if a == nil || a.shares == nil {
+		return
+	}
+	if a.shares.OCM == nil {
+		a.shares.OCM = &ocm.Client{}
+	}
+	a.shares.OCM.HTTP = c
 }
 
 // Handler returns the HTTP handler.

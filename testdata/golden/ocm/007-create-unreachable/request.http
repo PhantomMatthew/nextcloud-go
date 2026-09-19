@@ -1,0 +1,10 @@
+POST /ocs/v2.php/apps/files_sharing/api/v1/shares?format=json HTTP/1.1
+Host: cloud.example.com
+User-Agent: ncgo-goldentest/0.0
+Accept: application/json
+Authorization: Basic YWRtaW46YWRtaW4=
+OCS-APIRequest: true
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 69
+
+path=/hello.txt&shareType=6&shareWith=bob@https://no-such-ocm.invalid

@@ -6,11 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"path"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
 	"github.com/PhantomMatthew/nextcloud-go/internal/files"
+	"github.com/PhantomMatthew/nextcloud-go/internal/ocm"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
 )
@@ -23,6 +27,7 @@ var (
 	errBadExpire      = errors.New("sharing: invalid expire date")
 	errBadShareWith   = errors.New("sharing: unknown sharee")
 	errUnauthorized   = errors.New("sharing: unauthorized")
+	errFederate       = errors.New("sharing: cannot federate share")
 )
 
 // Service creates and serves public-link shares.
@@ -33,6 +38,7 @@ type Service struct {
 	Hasher   auth.PasswordHasher
 	Clock    func() time.Time
 	NewToken func() string
+	OCM      *ocm.Client
 }
 
 func (s *Service) now() time.Time {
@@ -82,9 +88,9 @@ func (s *Service) ownerOf(ctx context.Context, uid string) (*users.User, error) 
 	return u, nil
 }
 
-func (s *Service) Create(ctx context.Context, uid, path string, shareType, permissions int, shareWith, password, expireDate, label string) (*files.Share, error) {
+func (s *Service) Create(ctx context.Context, uid, pathName string, shareType, permissions int, shareWith, password, expireDate, label, origin string) (*files.Share, error) {
 	switch shareType {
-	case files.ShareTypeLink, files.ShareTypeUser, files.ShareTypeGroup:
+	case files.ShareTypeLink, files.ShareTypeUser, files.ShareTypeGroup, files.ShareTypeRemote:
 	default:
 		return nil, errBadShareType
 	}
@@ -108,10 +114,20 @@ func (s *Service) Create(ctx context.Context, uid, path string, shareType, permi
 			return nil, errBadShareWith
 		}
 	}
+	if shareType == files.ShareTypeRemote {
+		remoteUID, remoteHost := ocm.SplitCloudID(shareWith)
+		if remoteUID == "" || remoteHost == "" {
+			return nil, errBadShareWith
+		}
+		remoteOrigin := ocm.NormalizeOrigin(remoteHost)
+		if origin != "" && sameHTTPHost(origin, remoteOrigin) {
+			return nil, errBadShareWith
+		}
+	}
 	if shareType == files.ShareTypeLink {
 		shareWith = ""
 	}
-	np, err := files.NormalizePath(path)
+	np, err := files.NormalizePath(pathName)
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +187,55 @@ func (s *Service) Create(ctx context.Context, uid, path string, shareType, permi
 	if err := s.Store.Insert(ctx, sh); err != nil {
 		return nil, err
 	}
+	if shareType == files.ShareTypeRemote {
+		if err := s.notifyRemote(ctx, u, sh, origin); err != nil {
+			if delErr := s.Store.Delete(ctx, sh.ID); delErr != nil {
+				return nil, errors.Join(err, delErr)
+			}
+			return nil, err
+		}
+	}
 	return sh, nil
+}
+
+func (s *Service) notifyRemote(ctx context.Context, owner *users.User, sh *files.Share, origin string) error {
+	if s.OCM == nil {
+		return errFederate
+	}
+	_, remoteHost := ocm.SplitCloudID(sh.ShareWith)
+	endPoint, err := s.OCM.Discover(ctx, ocm.NormalizeOrigin(remoteHost))
+	if err != nil {
+		return errFederate
+	}
+	ownerCloud := owner.UID
+	if origin != "" {
+		ownerCloud = owner.UID + "@" + origin
+	}
+	resType := sh.ItemType
+	if resType == "" {
+		resType = "file"
+	}
+	if err := s.OCM.NotifyOutgoing(ctx, endPoint, ocm.OutgoingNotice{
+		ShareWith:    sh.ShareWith,
+		Name:         path.Base(sh.Path),
+		ProviderID:   strconv.FormatInt(sh.ID, 10),
+		Owner:        ownerCloud,
+		Sender:       ownerCloud,
+		ResourceType: resType,
+		Token:        sh.Token,
+	}); err != nil {
+		return errFederate
+	}
+	return nil
+}
+
+func sameHTTPHost(a, b string) bool {
+	ua, errA := url.Parse(a)
+	ub, errB := url.Parse(b)
+	if errA != nil || errB != nil || ua.Host == "" || ub.Host == "" {
+		return false
+	}
+	return strings.EqualFold(ua.Host, ub.Host)
 }
 
 func validSharePerms(itemType string, perms int) bool {
@@ -359,6 +423,8 @@ func (s *Service) SharePayload(ctx context.Context, r *http.Request, sh *files.S
 		} else {
 			shareWithDisplay = sh.ShareWith
 		}
+	case files.ShareTypeRemote:
+		shareWithDisplay = sh.ShareWith
 	}
 	return shareMap(sh, owner.UID, display, mime, fileID, url, expiration, shareWithDisplay), nil
 }

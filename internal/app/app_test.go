@@ -3,7 +3,9 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -75,7 +77,11 @@ func TestGoldenReplay(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = a.Close(ctx) })
+			a.UseHTTPClient(&http.Client{Timeout: 15 * time.Second, Transport: remoteOCMRoundTripper{}})
 			seedPhase1DAV(t, a)
+			if area == "ocm" {
+				freezeOCMShareTokens(a)
+			}
 			dirs, err := goldentest.Discover(filepath.Join(root, area))
 			if err != nil {
 				t.Fatal(err)
@@ -232,7 +238,11 @@ func TestCaptureWebDAVGoldens(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		a.UseHTTPClient(&http.Client{Timeout: 15 * time.Second, Transport: remoteOCMRoundTripper{}})
 		seedPhase1DAV(t, a)
+		if area == "ocm" {
+			freezeOCMShareTokens(a)
+		}
 		h := a.Handler()
 		root := filepath.Join(repoRoot(t), "testdata", "golden", area)
 		dirs, err := goldentest.Discover(root)
@@ -315,4 +325,40 @@ func TestOpenStorageUnknown(t *testing.T) {
 	if _, err := openStorage(cfg); err == nil {
 		t.Fatal("expected unsupported type")
 	}
+}
+
+func freezeOCMShareTokens(a *App) {
+	if a == nil || a.shares == nil {
+		return
+	}
+	n := 0
+	a.shares.NewToken = func() string {
+		n++
+		return fmt.Sprintf("ncgopublic%05d", n)
+	}
+}
+
+type remoteOCMRoundTripper struct{}
+
+func (remoteOCMRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Hostname() != "remote.example.com" {
+		return nil, errors.New("connection refused")
+	}
+	hdr := make(http.Header)
+	hdr.Set("Content-Type", "application/json")
+	switch {
+	case req.Method == http.MethodGet && (req.URL.Path == "/.well-known/ocm" || req.URL.Path == "/ocm-provider"):
+		body := `{"enabled":true,"apiVersion":"1.0-proposal1","endPoint":"https://remote.example.com/ocm"}`
+		return &http.Response{StatusCode: http.StatusOK, Header: hdr, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	case req.Method == http.MethodPost && req.URL.Path == "/ocm/shares":
+		return &http.Response{StatusCode: http.StatusCreated, Header: hdr, Body: io.NopCloser(strings.NewReader(`{"recipientDisplayName":"bob"}`)), Request: req}, nil
+	default:
+		return &http.Response{StatusCode: http.StatusNotFound, Header: hdr, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+	}
+}
+
+func TestUseHTTPClientNil(t *testing.T) {
+	var a *App
+	a.UseHTTPClient(&http.Client{})
+	(&App{}).UseHTTPClient(&http.Client{})
 }

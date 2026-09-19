@@ -1,2 +1,2 @@
-// Package ocm implements Phase 3d inbound Open Cloud Mesh discovery and incoming shares.
+// Package ocm implements Open Cloud Mesh discovery, incoming shares, and outbound notify.
 package ocm

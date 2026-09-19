@@ -189,6 +189,10 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-19** — Phase 3d2: outbound OCS `shareType=6` federated shares,
+  remote OCM discovery and `POST {endPoint}/shares`, rollback on notify
+  failure (see ADR-0023). Federation capability and inbound DAV proxy remain
+  later.
 - **2026-09-19** — Phase 3d: inbound OCM discovery (`/.well-known/ocm`,
   `/ocm-provider`), `POST /ocm/shares`, OCS `remote_shares`, DAV metadata
   mount with GET 501 (see ADR-0022). Outbound federation remains later.

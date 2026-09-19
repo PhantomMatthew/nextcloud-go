@@ -9,6 +9,8 @@ const (
 	ShareTypeGroup = 1
 	// ShareTypeLink is Nextcloud shareType 3 (public link).
 	ShareTypeLink = 3
+	// ShareTypeRemote is Nextcloud shareType 6 (federated / OCM).
+	ShareTypeRemote = 6
 )
 
 // Share is one path-keyed share (link, user, or group).

@@ -1,8 +1,10 @@
 package sharing
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
 	"github.com/PhantomMatthew/nextcloud-go/internal/files"
+	"github.com/PhantomMatthew/nextcloud-go/internal/ocm"
 	"github.com/PhantomMatthew/nextcloud-go/internal/ocs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage/localfs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
@@ -73,7 +76,7 @@ func TestOCSCreateLinkAndRejectOtherTypes(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("shareType 6 status = %d body=%s", rr.Code, rr.Body.String())
 	}
-	if !strings.Contains(rr.Body.String(), "unknown share type") {
+	if !strings.Contains(rr.Body.String(), "unknown sharee") {
 		t.Fatalf("body = %s", rr.Body.String())
 	}
 
@@ -160,7 +163,7 @@ func TestOCSMissingPath404(t *testing.T) {
 func TestServiceExpireDeletes(t *testing.T) {
 	svc := testService(t)
 	ctx := t.Context()
-	sh, err := svc.Create(ctx, "alice", "/a.txt", files.ShareTypeLink, 0, "", "", "2020-01-01", "")
+	sh, err := svc.Create(ctx, "alice", "/a.txt", files.ShareTypeLink, 0, "", "", "2020-01-01", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +175,7 @@ func TestServiceExpireDeletes(t *testing.T) {
 func TestResolvePublicPassword(t *testing.T) {
 	svc := testService(t)
 	ctx := t.Context()
-	if _, err := svc.Create(ctx, "alice", "/a.txt", files.ShareTypeLink, 0, "", "secret", "", ""); err != nil {
+	if _, err := svc.Create(ctx, "alice", "/a.txt", files.ShareTypeLink, 0, "", "secret", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := svc.ResolvePublic(ctx, "ncgopublic00001", ""); err == nil {
@@ -186,7 +189,7 @@ func TestResolvePublicPassword(t *testing.T) {
 func TestPublicLinkGET(t *testing.T) {
 	svc := testService(t)
 	ctx := context.Background()
-	if _, err := svc.Create(ctx, "alice", "/a.txt", files.ShareTypeLink, 0, "", "", "", ""); err != nil {
+	if _, err := svc.Create(ctx, "alice", "/a.txt", files.ShareTypeLink, 0, "", "", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	h := svc.PublicLinkHandler()
@@ -205,7 +208,7 @@ func TestPublicLinkGET(t *testing.T) {
 func TestTokenVerifier(t *testing.T) {
 	svc := testService(t)
 	ctx := t.Context()
-	if _, err := svc.Create(ctx, "alice", "/a.txt", files.ShareTypeLink, 0, "", "", "", ""); err != nil {
+	if _, err := svc.Create(ctx, "alice", "/a.txt", files.ShareTypeLink, 0, "", "", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	v := &TokenVerifier{Service: svc}
@@ -215,5 +218,153 @@ func TestTokenVerifier(t *testing.T) {
 	}
 	if _, err := v.Verify(ctx, "missing", ""); err == nil {
 		t.Fatal("expected fail")
+	}
+}
+
+func TestOCSCreateUnknownShareType(t *testing.T) {
+	svc := testService(t)
+	h := Handler{Service: svc, Version: ocs.V2}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/ocs/v2.php/apps/files_sharing/api/v1/shares?format=json", strings.NewReader("path=/a.txt&shareType=4"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	h.ServeHTTP(rr, withUser(req))
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "unknown share type") {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+type remoteOCMTransport struct{}
+
+func (remoteOCMTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Hostname() != "remote.example.com" {
+		return nil, errors.New("connection refused")
+	}
+	hdr := make(http.Header)
+	hdr.Set("Content-Type", "application/json")
+	switch {
+	case req.Method == http.MethodGet && (req.URL.Path == "/.well-known/ocm" || req.URL.Path == "/ocm-provider"):
+		body := `{"enabled":true,"apiVersion":"1.0-proposal1","endPoint":"https://remote.example.com/ocm"}`
+		return &http.Response{StatusCode: http.StatusOK, Header: hdr, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	case req.Method == http.MethodPost && req.URL.Path == "/ocm/shares":
+		return &http.Response{StatusCode: http.StatusCreated, Header: hdr, Body: io.NopCloser(bytes.NewReader([]byte(`{"recipientDisplayName":"bob"}`))), Request: req}, nil
+	default:
+		return &http.Response{StatusCode: http.StatusNotFound, Header: hdr, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+	}
+}
+
+func TestOCSCreateRemoteShare(t *testing.T) {
+	svc := testService(t)
+	svc.OCM = &ocm.Client{HTTP: &http.Client{Transport: remoteOCMTransport{}}}
+	h := Handler{Service: svc, Version: ocs.V2}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/ocs/v2.php/apps/files_sharing/api/v1/shares?format=json", strings.NewReader("path=/a.txt&shareType=6&shareWith=bob@https://remote.example.com"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Host = "cloud.example.com"
+	h.ServeHTTP(rr, withUser(req))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var env map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	data := env["ocs"].(map[string]any)["data"].(map[string]any)
+	if data["share_type"] != float64(6) || data["share_with"] != "bob@https://remote.example.com" {
+		t.Fatalf("payload = %v", data)
+	}
+	if data["url"] != "" {
+		t.Fatalf("url = %v", data["url"])
+	}
+}
+
+func TestOCSCreateRemoteUnreachableRollsBack(t *testing.T) {
+	svc := testService(t)
+	svc.OCM = &ocm.Client{HTTP: &http.Client{Transport: remoteOCMTransport{}}}
+	h := Handler{Service: svc, Version: ocs.V2}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/ocs/v2.php/apps/files_sharing/api/v1/shares?format=json", strings.NewReader("path=/a.txt&shareType=6&shareWith=bob@https://no-such-ocm.invalid"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Host = "cloud.example.com"
+	h.ServeHTTP(rr, withUser(req))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "cannot federate share") {
+		t.Fatalf("body = %s", rr.Body.String())
+	}
+	u, err := svc.Users.GetByUID(t.Context(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := svc.Store.ListByOwner(t.Context(), u.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 0 {
+		t.Fatalf("leftover shares = %+v", listed)
+	}
+}
+
+func TestOCSCreateRemoteSelfHostRejected(t *testing.T) {
+	svc := testService(t)
+	svc.OCM = &ocm.Client{HTTP: &http.Client{Transport: remoteOCMTransport{}}}
+	h := Handler{Service: svc, Version: ocs.V2}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/ocs/v2.php/apps/files_sharing/api/v1/shares?format=json", strings.NewReader("path=/a.txt&shareType=6&shareWith=bob@http://cloud.example.com"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Host = "cloud.example.com"
+	h.ServeHTTP(rr, withUser(req))
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "unknown sharee") {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestCreateRemoteWithoutOCMClient(t *testing.T) {
+	svc := testService(t)
+	_, err := svc.Create(t.Context(), "alice", "/a.txt", files.ShareTypeRemote, 0, "bob@https://remote.example.com", "", "", "", "http://cloud.example.com")
+	if !errors.Is(err, errFederate) {
+		t.Fatalf("err = %v", err)
+	}
+	u, err := svc.Users.GetByUID(t.Context(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := svc.Store.ListByOwner(t.Context(), u.ID, "")
+	if err != nil || len(listed) != 0 {
+		t.Fatalf("leftover = %+v %v", listed, err)
+	}
+}
+
+type notifyFailTransport struct{}
+
+func (notifyFailTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	hdr := make(http.Header)
+	hdr.Set("Content-Type", "application/json")
+	if req.Method == http.MethodGet {
+		body := `{"enabled":true,"endPoint":"https://remote.example.com/ocm"}`
+		return &http.Response{StatusCode: http.StatusOK, Header: hdr, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	}
+	return &http.Response{StatusCode: http.StatusBadGateway, Header: hdr, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+}
+
+func TestOCSCreateRemoteNotifyFailRollsBack(t *testing.T) {
+	svc := testService(t)
+	svc.OCM = &ocm.Client{HTTP: &http.Client{Transport: notifyFailTransport{}}}
+	h := Handler{Service: svc, Version: ocs.V2}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/ocs/v2.php/apps/files_sharing/api/v1/shares?format=json", strings.NewReader("path=/a.txt&shareType=6&shareWith=bob@https://remote.example.com"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Host = "cloud.example.com"
+	h.ServeHTTP(rr, withUser(req))
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "cannot federate share") {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	u, err := svc.Users.GetByUID(t.Context(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := svc.Store.ListByOwner(t.Context(), u.ID, "")
+	if err != nil || len(listed) != 0 {
+		t.Fatalf("leftover = %+v %v", listed, err)
 	}
 }
