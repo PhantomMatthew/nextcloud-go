@@ -189,6 +189,9 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-19** — Phase 2f: public-link sharing (`shareType=3`), `0008_shares`,
+  OCS files_sharing CRUD, `/public.php/webdav`, and `GET /s/{token}`
+  (see ADR-0013). User/group shares, S3, jobs, and search remain later.
 - **2026-09-19** — Phase 2e: RFC 4918 exclusive write LOCK/UNLOCK on files DAV,
   `0007_file_locks`, 423 on unlocked writes, DAV class 2 (see ADR-0012).
   Sharing, S3, jobs, and search remain later.
