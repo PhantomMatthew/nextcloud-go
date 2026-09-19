@@ -28,6 +28,7 @@ type DAV struct {
 	Props    PropertyStore
 	Locks    LockStore
 	Shares   ShareStore
+	Incoming IncomingLookup
 	NewToken func() string
 }
 
@@ -194,50 +195,86 @@ func (d *DAV) PatchProps(ctx context.Context, user, p string, ops []webdav.PropP
 }
 
 func (d *DAV) Stat(ctx context.Context, user, p string) (*webdav.Entry, error) {
-	u, err := d.resolveUser(ctx, user)
+	e, err := d.statOwned(ctx, user, p)
+	if err == nil || !errors.Is(err, webdav.ErrNotFound) {
+		return e, err
+	}
+	np, nerr := NormalizePath(p)
+	if nerr != nil {
+		return nil, mapMeta(nerr)
+	}
+	m, ownerPath, ierr := d.lookupIncoming(ctx, user, np)
+	if ierr != nil {
+		return nil, ierr
+	}
+	e, err = d.statOwned(ctx, m.OwnerUID, ownerPath)
 	if err != nil {
 		return nil, err
 	}
-	f, err := d.Meta.GetByPath(ctx, u.ID, p)
-	if err != nil {
-		return nil, mapMeta(err)
-	}
-	return d.toEntry(ctx, u.ID, f), nil
+	return incomingEntry(e, np, m.Permissions), nil
 }
 
 func (d *DAV) List(ctx context.Context, user, p string) ([]*webdav.Entry, error) {
-	u, err := d.resolveUser(ctx, user)
-	if err != nil {
-		return nil, err
-	}
-	dir, err := d.Meta.GetByPath(ctx, u.ID, p)
+	np, err := NormalizePath(p)
 	if err != nil {
 		return nil, mapMeta(err)
 	}
-	if !dir.IsDir {
-		return nil, webdav.ErrNotDir
+	out, err := d.listOwned(ctx, user, np)
+	if err == nil {
+		if np == "/" {
+			return d.mergeIncomingRoot(ctx, user, out)
+		}
+		return out, nil
 	}
-	children, err := d.Meta.ListChildren(ctx, u.ID, dir.ID)
+	if !errors.Is(err, webdav.ErrNotFound) {
+		return nil, err
+	}
+	m, ownerPath, ierr := d.lookupIncoming(ctx, user, np)
+	if ierr != nil {
+		return nil, ierr
+	}
+	children, err := d.listOwned(ctx, m.OwnerUID, ownerPath)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]*webdav.Entry, 0, len(children))
-	for i := range children {
-		out = append(out, d.toEntry(ctx, u.ID, &children[i]))
+	rewritten := make([]*webdav.Entry, 0, len(children))
+	for _, c := range children {
+		rel := strings.TrimPrefix(c.Path, m.OwnerPath)
+		rewritten = append(rewritten, incomingEntry(c, path.Join(m.Mount, strings.TrimPrefix(rel, "/")), m.Permissions))
 	}
-	return out, nil
+	return rewritten, nil
 }
 
 func (d *DAV) Read(ctx context.Context, user, p string) (io.ReadCloser, *webdav.Entry, error) {
-	u, err := d.resolveUser(ctx, user)
-	if err != nil {
-		return nil, nil, err
-	}
-	f, err := d.Meta.GetByPath(ctx, u.ID, p)
+	np, err := NormalizePath(p)
 	if err != nil {
 		return nil, nil, mapMeta(err)
 	}
-	if f.IsDir {
+	if e, err := d.statOwned(ctx, user, np); err == nil {
+		return d.readOwned(ctx, user, np, e)
+	} else if err != nil && !errors.Is(err, webdav.ErrNotFound) {
+		return nil, nil, err
+	}
+	m, ownerPath, ierr := d.lookupIncoming(ctx, user, np)
+	if ierr != nil {
+		return nil, nil, ierr
+	}
+	if m.Permissions&webdav.PermRead == 0 {
+		return nil, nil, webdav.ErrForbidden
+	}
+	e, err := d.statOwned(ctx, m.OwnerUID, ownerPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	rc, _, err := d.readOwned(ctx, m.OwnerUID, ownerPath, e)
+	if err != nil {
+		return nil, nil, err
+	}
+	return rc, incomingEntry(e, np, m.Permissions), nil
+}
+
+func (d *DAV) readOwned(ctx context.Context, user, p string, e *webdav.Entry) (io.ReadCloser, *webdav.Entry, error) {
+	if e.IsDir {
 		return nil, nil, webdav.ErrIsDir
 	}
 	key, err := storageKey(user, p)
@@ -248,11 +285,11 @@ func (d *DAV) Read(ctx context.Context, user, p string) (io.ReadCloser, *webdav.
 	if err != nil {
 		return nil, nil, mapStorage(err)
 	}
-	return rc, d.toEntry(ctx, u.ID, f), nil
+	return rc, e, nil
 }
 
 func (d *DAV) Write(ctx context.Context, user, p string, r io.Reader, mtime *time.Time) (*webdav.Entry, bool, error) {
-	return d.write(ctx, user, p, r, mtime, true)
+	return d.writeMaybeIncoming(ctx, user, p, r, mtime, true)
 }
 
 func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *time.Time, snapshot bool) (*webdav.Entry, bool, error) {
@@ -355,6 +392,10 @@ func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *tim
 }
 
 func (d *DAV) Mkdir(ctx context.Context, user, p string) (*webdav.Entry, error) {
+	return d.mkdirMaybeIncoming(ctx, user, p)
+}
+
+func (d *DAV) mkdirOwned(ctx context.Context, user, p string) (*webdav.Entry, error) {
 	u, err := d.resolveUser(ctx, user)
 	if err != nil {
 		return nil, err
@@ -395,6 +436,10 @@ func (d *DAV) Mkdir(ctx context.Context, user, p string) (*webdav.Entry, error) 
 }
 
 func (d *DAV) Remove(ctx context.Context, user, p string) error {
+	return d.removeMaybeIncoming(ctx, user, p)
+}
+
+func (d *DAV) removeOwned(ctx context.Context, user, p string) error {
 	if d.Trash != nil {
 		return d.Trash.MoveToTrash(ctx, user, p, user)
 	}
@@ -481,6 +526,12 @@ func (d *DAV) collect(ctx context.Context, userID, parentID int64) ([]File, erro
 
 func (d *DAV) Move(ctx context.Context, srcUser, srcPath, dstUser, dstPath string, overwrite bool) (*webdav.Entry, bool, error) {
 	if srcUser != dstUser {
+		return nil, false, webdav.ErrForbidden
+	}
+	if _, _, err := d.lookupIncoming(ctx, srcUser, srcPath); err == nil {
+		return nil, false, webdav.ErrForbidden
+	}
+	if _, _, err := d.lookupIncoming(ctx, dstUser, dstPath); err == nil {
 		return nil, false, webdav.ErrForbidden
 	}
 	u, err := d.resolveUser(ctx, srcUser)

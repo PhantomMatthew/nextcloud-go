@@ -53,6 +53,30 @@ func (m *memShares) GetByToken(_ context.Context, token string) (*Share, error) 
 	return &cp, nil
 }
 
+func (m *memShares) ListBySharee(_ context.Context, shareWith string, groupGIDs []string) ([]Share, error) {
+	var out []Share
+	gset := map[string]struct{}{}
+	for _, g := range groupGIDs {
+		gset[g] = struct{}{}
+	}
+	for _, s := range m.byID {
+		if s.Accepted == 0 {
+			continue
+		}
+		switch s.ShareType {
+		case ShareTypeUser:
+			if s.ShareWith == shareWith {
+				out = append(out, *s)
+			}
+		case ShareTypeGroup:
+			if _, ok := gset[s.ShareWith]; ok {
+				out = append(out, *s)
+			}
+		}
+	}
+	return out, nil
+}
+
 func (m *memShares) ListByOwner(_ context.Context, ownerUserID int64, pathFilter string) ([]Share, error) {
 	var out []Share
 	for _, s := range m.byID {

@@ -127,8 +127,7 @@ func (d *DAV) Unlock(ctx context.Context, user, p, token string) error {
 	return d.Locks.Delete(ctx, existing.ID)
 }
 
-// CheckLock implements webdav.LockFS.
-func (d *DAV) CheckLock(ctx context.Context, user, p, ifHeader string) error {
+func (d *DAV) checkLockOwned(ctx context.Context, user, p, ifHeader string) error {
 	if d.Locks == nil {
 		return nil
 	}
