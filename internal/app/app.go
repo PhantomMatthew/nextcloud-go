@@ -17,6 +17,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
 	"github.com/PhantomMatthew/nextcloud-go/internal/files"
 	"github.com/PhantomMatthew/nextcloud-go/internal/httpx"
+	"github.com/PhantomMatthew/nextcloud-go/internal/jobs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/login"
 	"github.com/PhantomMatthew/nextcloud-go/internal/migrations"
 	"github.com/PhantomMatthew/nextcloud-go/internal/plugins"
@@ -53,6 +54,7 @@ type App struct {
 	versionsFS *files.Versions
 	publicFS   webdav.FS
 	shares     *sharing.Service
+	jobs       jobs.Runner
 }
 
 // New opens dependencies and mounts routes.
@@ -158,6 +160,26 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	ver := files.NewVersions(st, files.NewSQLVersionStore(db), dav, a.Users)
 	dav.Versions = ver
 	a.versionsFS = ver
+	jr := jobs.NewRunner(jobs.NewSQLStore(db), time.Now, cfg.Jobs.Workers, cfg.Jobs.PollInterval)
+	if err := jr.Register(sharing.NewExpireJob(dav.Shares, dav.Clock)); err != nil {
+		if cerr := a.closeResources(ctx); cerr != nil {
+			return nil, errors.Join(err, cerr)
+		}
+		return nil, err
+	}
+	if err := jr.Register(files.NewExpireLocksJob(dav.Locks, dav.Clock)); err != nil {
+		if cerr := a.closeResources(ctx); cerr != nil {
+			return nil, errors.Join(err, cerr)
+		}
+		return nil, err
+	}
+	if err := jr.Start(ctx); err != nil {
+		if cerr := a.closeResources(ctx); cerr != nil {
+			return nil, errors.Join(err, cerr)
+		}
+		return nil, err
+	}
+	a.jobs = jr
 	if cfg.Plugin.Enabled {
 		ph, err := plugins.NewHost(ctx, plugins.HostConfig{
 			DefaultMemoryLimitMB: cfg.Plugin.DefaultMemoryLimitMB,
@@ -220,6 +242,10 @@ func (a *App) Close(ctx context.Context) error {
 
 func (a *App) closeResources(ctx context.Context) error {
 	var err error
+	if a.jobs != nil {
+		err = joinErr(err, a.jobs.Stop(ctx))
+		a.jobs = nil
+	}
 	if a.PluginHost != nil {
 		err = a.PluginHost.Close(ctx)
 		a.PluginHost = nil
