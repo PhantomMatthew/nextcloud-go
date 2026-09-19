@@ -1,0 +1,13 @@
+HTTP/1.1 200 OK
+Server: nginx
+Allow: OPTIONS, PROPFIND
+Dav: 1, 3, calendar-access, extended-mkcol
+Feature-Policy: autoplay 'self';camera 'none';fullscreen 'self';geolocation 'none';microphone 'none';payment 'none'
+Ms-Author-Via: DAV
+Referrer-Policy: no-referrer
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Permitted-Cross-Domain-Policies: none
+X-Robots-Tag: noindex, nofollow
+X-Xss-Protection: 1; mode=block
+

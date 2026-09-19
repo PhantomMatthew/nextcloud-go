@@ -189,6 +189,10 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-19** — Phase 3a: CalDAV events (RFC 4791) on
+  `/remote.php/dav/calendars/`, principals, `REPORT` calendar-query/multiget,
+  default `personal` calendar (see ADR-0019). CardDAV, notifications, and OCM
+  remain later.
 - **2026-09-19** — Phase 2e2: files_lock OCS by fileid, Depth infinity
   ancestor CheckLock, shared lock remains 403 (see ADR-0018).
 - **2026-09-19** — Phase 2k: user/group shares (`shareType` 0/1),

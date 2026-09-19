@@ -1,0 +1,26 @@
+HTTP/1.1 200 OK
+Server: nginx
+Content-Type: text/calendar; charset=utf-8
+Etag: "920fa9d9748a487f8e30bb069bb4c2bd2b387812"
+Feature-Policy: autoplay 'self';camera 'none';fullscreen 'self';geolocation 'none';microphone 'none';payment 'none'
+Last-Modified: Thu, 01 May 2025 12:00:00 GMT
+Oc-Etag: "920fa9d9748a487f8e30bb069bb4c2bd2b387812"
+Oc-Fileid: 00000001ocdev00001
+Referrer-Policy: no-referrer
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Permitted-Cross-Domain-Policies: none
+X-Robots-Tag: noindex, nofollow
+X-Xss-Protection: 1; mode=block
+
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//nextcloud-go//EN
+BEGIN:VEVENT
+UID:ncgo-event-001
+DTSTAMP:20250501T120000Z
+DTSTART:20250501T140000Z
+DTEND:20250501T150000Z
+SUMMARY:Phase 3a
+END:VEVENT
+END:VCALENDAR

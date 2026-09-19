@@ -62,6 +62,37 @@ func TestHandler_OPTIONS(t *testing.T) {
 	}
 }
 
+func TestHandler_REPORT_NotSupported(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", DisplayName: "admin", Enabled: true, AuthMethod: auth.AuthMethodBasic}
+	rr := doRequestBody(h, "REPORT", "/remote.php/dav/files/admin/", p, nil, `<c:calendar-query xmlns:c="urn:ietf:params:xml:ns:caldav"/>`)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rr.Code)
+	}
+}
+
+func TestHandler_MKCALENDAR_NotSupported(t *testing.T) {
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", DisplayName: "admin", Enabled: true, AuthMethod: auth.AuthMethodBasic}
+	rr := doRequest(h, "MKCALENDAR", "/remote.php/dav/files/admin/cal", p, nil)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rr.Code)
+	}
+}
+
+func TestHandler_CustomDAVHeader(t *testing.T) {
+	h := newTestHandler()
+	h.DAVHeader = "1, 3, calendar-access, extended-mkcol"
+	h.Allow = "OPTIONS, PROPFIND"
+	rr := doRequest(h, "OPTIONS", "/remote.php/dav/files/admin/", nil, nil)
+	if got := rr.Header().Get("DAV"); got != h.DAVHeader {
+		t.Errorf("DAV header = %q", got)
+	}
+	if got := rr.Header().Get("Allow"); got != h.Allow {
+		t.Errorf("Allow = %q", got)
+	}
+}
+
 func TestHandler_PROPFIND_Depth0_Root(t *testing.T) {
 	h := newTestHandler()
 	p := &auth.Principal{UID: "admin", DisplayName: "admin", Enabled: true, AuthMethod: auth.AuthMethodBasic}

@@ -214,6 +214,52 @@ func TestGolden_PropfindHomeDepth1(t *testing.T) {
 	assertGolden(t, "home_depth1.xml", buf.Bytes())
 }
 
+func TestWriteMultistatus_CalDAVCalendar(t *testing.T) {
+	cal := &Entry{
+		Path:            "/personal",
+		IsDir:           true,
+		IsCalendar:      true,
+		ETag:            "1",
+		CTag:            "1",
+		DisplayName:     "Personal",
+		CalendarColor:   "#0082c9",
+		CalendarEnabled: true,
+		ModTime:         time.Date(2025, 5, 1, 12, 0, 0, 0, time.UTC),
+		NumericID:       1,
+		Permissions:     PermAll,
+	}
+	var buf bytes.Buffer
+	WriteMultistatus(&buf, PropfindContext{
+		BaseHref:   "/remote.php/dav/calendars/alice/",
+		InstanceID: "oc123abc",
+		OwnerID:    "alice",
+		CalDAV:     true,
+	}, []*Entry{cal})
+	out := buf.String()
+	for _, want := range []string{
+		`xmlns:cal="urn:ietf:params:xml:ns:caldav"`,
+		`<cal:calendar/>`,
+		`<cs:getctag>`,
+		`<d:displayname>Personal</d:displayname>`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in %s", want, out)
+		}
+	}
+}
+
+func TestWriteMultistatus_FilesUnchangedNS(t *testing.T) {
+	var buf bytes.Buffer
+	WriteMultistatus(&buf, PropfindContext{
+		BaseHref:   "/remote.php/dav/files/alice/",
+		InstanceID: "oc123abc",
+		OwnerID:    "alice",
+	}, []*Entry{emptyHomeRootEntry()})
+	if strings.Contains(buf.String(), `xmlns:cal=`) {
+		t.Fatal("files propfind must not emit CalDAV xmlns")
+	}
+}
+
 func emptyHomeRootEntry() *Entry {
 	return &Entry{
 		Path:        "/",

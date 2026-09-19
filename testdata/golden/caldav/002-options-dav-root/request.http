@@ -1,0 +1,6 @@
+OPTIONS /remote.php/dav/ HTTP/1.1
+Host: cloud.example.com
+User-Agent: ncgo-goldentest/0.0
+Accept: */*
+Authorization: Basic YWRtaW46YWRtaW4=
+

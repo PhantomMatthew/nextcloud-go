@@ -145,6 +145,10 @@ func emptyPropXML(space, name string) string {
 		return `<oc:` + local + `/>`
 	case "http://nextcloud.org/ns":
 		return `<nc:` + local + `/>`
+	case "http://apple.com/ns/ical/":
+		return `<apple:` + local + `/>`
+	case "urn:ietf:params:xml:ns:caldav":
+		return `<cal:` + local + `/>`
 	default:
 		return `<d:` + local + `/>`
 	}

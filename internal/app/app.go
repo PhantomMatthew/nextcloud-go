@@ -13,6 +13,7 @@ import (
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
 	"github.com/PhantomMatthew/nextcloud-go/internal/cache"
+	caldav "github.com/PhantomMatthew/nextcloud-go/internal/calendar"
 	"github.com/PhantomMatthew/nextcloud-go/internal/config"
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
 	"github.com/PhantomMatthew/nextcloud-go/internal/files"
@@ -40,22 +41,26 @@ type App struct {
 	Router     *httpx.Router
 	PluginHost *plugins.Host
 
-	hasher     auth.PasswordHasher
-	authStore  auth.Store
-	loginStore login.Store
-	sessions   session.Store
-	secret     string
-	instanceID string
-	memCache   *cache.Memory
-	redisCache *cache.Redis
-	fileMeta   files.Store
-	davFS      webdav.FS
-	uploadsFS  webdav.FS
-	trashFS    *files.Trash
-	versionsFS *files.Versions
-	publicFS   webdav.FS
-	shares     *sharing.Service
-	jobs       jobs.Runner
+	hasher        auth.PasswordHasher
+	authStore     auth.Store
+	loginStore    login.Store
+	sessions      session.Store
+	secret        string
+	instanceID    string
+	memCache      *cache.Memory
+	redisCache    *cache.Redis
+	fileMeta      files.Store
+	davFS         webdav.FS
+	uploadsFS     webdav.FS
+	trashFS       *files.Trash
+	versionsFS    *files.Versions
+	publicFS      webdav.FS
+	shares        *sharing.Service
+	jobs          jobs.Runner
+	calendarStore *caldav.SQLStore
+	calendarFS    *caldav.DAV
+	principalFS   *caldav.PrincipalDAV
+	davRootFS     *caldav.RootDAV
 }
 
 // New opens dependencies and mounts routes.
@@ -175,6 +180,12 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		}
 		return nil, err
 	}
+	calStore := caldav.NewSQLStore(db)
+	a.calendarStore = calStore
+	a.calendarFS = &caldav.DAV{Store: calStore, Users: a.Users}
+	a.principalFS = &caldav.PrincipalDAV{Users: a.Users}
+	a.davRootFS = &caldav.RootDAV{Users: a.Users}
+
 	if err := jr.Start(ctx); err != nil {
 		if cerr := a.closeResources(ctx); cerr != nil {
 			return nil, errors.Join(err, cerr)

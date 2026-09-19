@@ -23,6 +23,7 @@ var (
 	ErrPrecondition     = errors.New("webdav: precondition failed")
 	ErrConflict         = errors.New("webdav: conflict")
 	ErrMethodNotAllowed = errors.New("webdav: method not allowed")
+	ErrUnsupportedMedia = errors.New("webdav: unsupported media type")
 )
 
 type Entry struct {
@@ -44,6 +45,19 @@ type Entry struct {
 	LockToken     string
 	LockOwner     string
 	LockTimeout   time.Duration
+
+	DisplayName          string
+	IsCalendar           bool
+	IsPrincipal          bool
+	CTag                 string
+	CalendarColor        string
+	CalendarOrder        int
+	CalendarEnabled      bool
+	CalendarDescription  string
+	CalendarData         string
+	CurrentUserPrincipal string
+	CalendarHomeSet      string
+	Status               int
 }
 
 type FS interface {
@@ -111,6 +125,22 @@ type LockFS interface {
 	Lock(ctx context.Context, user, path string, req LockRequest) (*LockInfo, error)
 	Unlock(ctx context.Context, user, path, token string) error
 	CheckLock(ctx context.Context, user, path, ifHeader string) error
+}
+
+// ReportRequest is a WebDAV REPORT body (CalDAV calendar-query / calendar-multiget).
+type ReportRequest struct {
+	Name string
+	Body []byte
+}
+
+// ReportFS is implemented by filesystems that handle REPORT.
+type ReportFS interface {
+	Report(ctx context.Context, user, path string, req ReportRequest) ([]*Entry, error)
+}
+
+// CalendarMkdirFS is implemented by filesystems that accept MKCALENDAR.
+type CalendarMkdirFS interface {
+	MkCalendar(ctx context.Context, user, path string, props map[string]string) (*Entry, error)
 }
 
 type InMemoryFS struct {

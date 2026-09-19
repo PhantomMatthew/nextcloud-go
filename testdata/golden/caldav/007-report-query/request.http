@@ -1,0 +1,22 @@
+REPORT /remote.php/dav/calendars/admin/personal/ HTTP/1.1
+Host: cloud.example.com
+User-Agent: ncgo-goldentest/0.0
+Accept: */*
+Authorization: Basic YWRtaW46YWRtaW4=
+Content-Type: application/xml; charset=utf-8
+Content-Length: 415
+
+<?xml version="1.0" encoding="utf-8" ?>
+<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:prop>
+    <d:getetag />
+    <c:calendar-data />
+  </d:prop>
+  <c:filter>
+    <c:comp-filter name="VCALENDAR">
+      <c:comp-filter name="VEVENT">
+        <c:time-range start="20250501T000000Z" end="20250601T000000Z"/>
+      </c:comp-filter>
+    </c:comp-filter>
+  </c:filter>
+</c:calendar-query>

@@ -53,6 +53,8 @@ type Handler struct {
 	Assemble       func(ctx context.Context, srcUser, transferID, destUser, destPath string, overwrite bool, mtime *time.Time, checksum, ifHeader string) (*Entry, bool, error)
 	Restore        func(ctx context.Context, srcUser, locationID, destUser, destPath string, overwrite bool) (*Entry, bool, error)
 	RestoreVersion func(ctx context.Context, srcUser, fileID, revision, destUser string) (*Entry, bool, error)
+	DAVHeader      string
+	Allow          string
 }
 
 // ErrInvalidPrefix is returned by NewHandler when the mount prefix does not
@@ -97,14 +99,32 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.lock(w, r)
 	case "UNLOCK":
 		h.unlock(w, r)
+	case "REPORT":
+		h.report(w, r)
+	case "MKCALENDAR":
+		h.mkcalendar(w, r)
 	default:
 		h.methodNotAllowed(w, r)
 	}
 }
 
+func (h *Handler) davHeader() string {
+	if h.DAVHeader != "" {
+		return h.DAVHeader
+	}
+	return davCompliance
+}
+
+func (h *Handler) allowHeader() string {
+	if h.Allow != "" {
+		return h.Allow
+	}
+	return allowedMethods
+}
+
 func (h *Handler) options(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set(HeaderDAV, davCompliance)
-	w.Header().Set(HeaderAllow, allowedMethods)
+	w.Header().Set(HeaderDAV, h.davHeader())
+	w.Header().Set(HeaderAllow, h.allowHeader())
 	w.Header().Set(HeaderMSAuthor, "DAV")
 	w.WriteHeader(http.StatusOK)
 }
@@ -146,10 +166,11 @@ func (h *Handler) propfind(w http.ResponseWriter, r *http.Request) {
 		InstanceID:       h.InstanceID,
 		OwnerID:          user,
 		OwnerDisplayName: h.ownerDisplayName(user),
-		EmitQuota:        sub == "/" && root.IsDir,
+		EmitQuota:        sub == "/" && root.IsDir && !h.emitCalDAV(),
 		QuotaAvailable:   -3,
-		EmitFavorite:     h.emitFavorite(),
-		EmitLocks:        h.emitLocks(),
+		EmitFavorite:     h.emitFavorite() && !h.emitCalDAV(),
+		EmitLocks:        h.emitLocks() && !h.emitCalDAV(),
+		CalDAV:           h.emitCalDAV(),
 	}
 	if pctx.EmitQuota && h.Quota != nil {
 		used, available, unlimited := h.Quota(r.Context(), user)
@@ -275,7 +296,7 @@ func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) methodNotAllowed(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set(HeaderAllow, allowedMethods)
+	w.Header().Set(HeaderAllow, h.allowHeader())
 	http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 }
 
@@ -299,7 +320,12 @@ func (h *Handler) authorizePath(w http.ResponseWriter, r *http.Request) (user, s
 
 func (h *Handler) requestPath(r *http.Request) (user, sub string, ok bool) {
 	if h.OwnerUID != nil {
-		return h.parseOwnerPath(r.URL.Path, h.OwnerUID(r))
+		p := r.URL.Path
+		trimmed := strings.TrimSuffix(h.Prefix, "/")
+		if p == trimmed {
+			return h.OwnerUID(r), "/", true
+		}
+		return h.parseOwnerPath(p, h.OwnerUID(r))
 	}
 	return h.parsePath(r.URL.Path)
 }
@@ -381,6 +407,8 @@ func writeFSError(w http.ResponseWriter, err error) {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 	case errors.Is(err, ErrExists), errors.Is(err, ErrMethodNotAllowed):
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	case errors.Is(err, ErrUnsupportedMedia):
+		http.Error(w, "Unsupported Media Type", http.StatusUnsupportedMediaType)
 	case errors.Is(err, ErrConflict), errors.Is(err, ErrNotDir), errors.Is(err, ErrIsDir), errors.Is(err, ErrParentMissing):
 		http.Error(w, "Conflict", http.StatusConflict)
 	default:
@@ -640,6 +668,13 @@ func (h *Handler) emitFavorite() bool {
 
 func (h *Handler) emitLocks() bool {
 	return h.emitFavorite()
+}
+
+func (h *Handler) emitCalDAV() bool {
+	p := strings.ToLower(h.Prefix)
+	return strings.Contains(p, "/dav/calendars/") ||
+		strings.Contains(p, "/dav/principals/") ||
+		p == "/remote.php/dav/"
 }
 
 func (h *Handler) filesPrefix() string {

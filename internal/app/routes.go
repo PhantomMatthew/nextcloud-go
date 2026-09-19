@@ -60,6 +60,7 @@ func (a *App) mountRoutes() error {
 			"/remote.php/webdav/",
 			"/public.php/webdav",
 			"/public.php/webdav/",
+			"/.well-known/caldav",
 		},
 	}
 	baseChain := []httpx.Middleware{
@@ -183,6 +184,40 @@ func (a *App) mountRoutes() error {
 		router.HandlePrefix(httpx.MethodAny, "/remote.php/dav/trashbin/", webdav.Auth(authCfg)(trashHandler))
 	}
 
+	router.Handle(http.MethodGet, "/.well-known/caldav", http.HandlerFunc(wellKnownCalDAV))
+	router.Handle(http.MethodHead, "/.well-known/caldav", http.HandlerFunc(wellKnownCalDAV))
+
+	if a.calendarFS != nil {
+		calHandler, err := webdav.NewHandler("/remote.php/dav/calendars/", a.calendarFS, a.instanceID)
+		if err != nil {
+			return fmt.Errorf("app: calendars: %w", err)
+		}
+		calHandler.DAVHeader = "1, 3, calendar-access, extended-mkcol"
+		calHandler.Allow = "OPTIONS, GET, HEAD, PROPFIND, PUT, DELETE, MKCOL, MKCALENDAR, REPORT, PROPPATCH"
+		a.configureDAV(calHandler, false)
+		router.HandlePrefix(httpx.MethodAny, "/remote.php/dav/calendars/", webdav.Auth(authCfg)(calHandler))
+	}
+	if a.principalFS != nil {
+		prinHandler, err := webdav.NewHandler("/remote.php/dav/principals/users/", a.principalFS, a.instanceID)
+		if err != nil {
+			return fmt.Errorf("app: principals: %w", err)
+		}
+		prinHandler.DAVHeader = "1, 3"
+		prinHandler.Allow = "OPTIONS, PROPFIND"
+		a.configureDAV(prinHandler, false)
+		router.HandlePrefix(httpx.MethodAny, "/remote.php/dav/principals/users/", webdav.Auth(authCfg)(prinHandler))
+	}
+	if a.davRootFS != nil {
+		rootHandler, err := webdav.NewHandler("/remote.php/dav/", a.davRootFS, a.instanceID)
+		if err != nil {
+			return fmt.Errorf("app: dav-root: %w", err)
+		}
+		rootHandler.DAVHeader = "1, 3, calendar-access, extended-mkcol"
+		rootHandler.Allow = "OPTIONS, PROPFIND"
+		a.configureDAV(rootHandler, true)
+		router.HandlePrefix(httpx.MethodAny, "/remote.php/dav", webdav.Auth(authCfg)(rootHandler))
+	}
+
 	if a.versionsFS != nil {
 		versionsHandler, err := webdav.NewHandler("/remote.php/dav/versions/", a.versionsFS, a.instanceID)
 		if err != nil {
@@ -248,4 +283,9 @@ func (a *App) configureDAV(h *webdav.Handler, ownerFromPrincipal bool) {
 		}
 		return used, *u.QuotaBytes - used, false
 	}
+}
+
+func wellKnownCalDAV(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Location", "/remote.php/dav/")
+	w.WriteHeader(http.StatusMovedPermanently)
 }

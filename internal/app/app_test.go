@@ -104,6 +104,18 @@ func seedPhase1DAV(t *testing.T, a *App) {
 	if a.versionsFS != nil {
 		a.versionsFS.Clock = func() time.Time { return freeze }
 	}
+	if a.calendarStore != nil {
+		a.calendarStore.Clock = func() time.Time { return freeze }
+	}
+	if a.calendarFS != nil {
+		a.calendarFS.Clock = func() time.Time { return freeze }
+	}
+	if a.principalFS != nil {
+		a.principalFS.Clock = func() time.Time { return freeze }
+	}
+	if a.davRootFS != nil {
+		a.davRootFS.Clock = func() time.Time { return freeze }
+	}
 	mt := freeze
 	if _, _, err := a.davFS.Write(context.Background(), "admin", "/hello.txt", strings.NewReader("hello world\n"), &mt); err != nil {
 		t.Fatal(err)
@@ -142,7 +154,10 @@ func TestCaptureWebDAVGoldens(t *testing.T) {
 	}
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	for _, area := range []string{"search", "sharing", "capabilities", "webdav"} {
+	for _, area := range []string{"search", "sharing", "capabilities", "webdav", "caldav"} {
+		if want := os.Getenv("GOLDEN_AREA"); want != "" && want != area {
+			continue
+		}
 		areaCfg := DevConfig()
 		areaCfg.Database.DSN = "file:ncgo-golden-" + area + "?mode=memory&cache=shared"
 		areaCfg.Storage.Backends = map[string]config.BackendConfig{

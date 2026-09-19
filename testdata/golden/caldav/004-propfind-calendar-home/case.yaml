@@ -1,0 +1,24 @@
+schema_version: 1
+id: caldav/004-propfind-calendar-home
+description: |
+  PROPFIND calendar home auto-provisions personal.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 3a
+  captured_at: "2026-09-19T00:00:00Z"
+request:
+  body_kind: empty
+response:
+  body_kind: xml
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 207
+replayable: true
+mutating: false
+synthetic: true
+tags: [caldav, phase3a]

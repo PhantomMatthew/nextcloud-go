@@ -1,0 +1,24 @@
+schema_version: 1
+id: caldav/001-well-known
+description: |
+  well-known CalDAV redirects to the DAV root.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 3a
+  captured_at: "2026-09-19T00:00:00Z"
+request:
+  body_kind: empty
+response:
+  body_kind: empty
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 301
+replayable: true
+mutating: false
+synthetic: true
+tags: [caldav, phase3a]

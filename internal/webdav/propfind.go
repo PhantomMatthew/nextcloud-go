@@ -24,15 +24,23 @@ type PropfindContext struct {
 	QuotaAvailable   int64
 	EmitFavorite     bool
 	EmitLocks        bool
+	CalDAV           bool
 }
 
 func WriteMultistatus(buf *bytes.Buffer, ctx PropfindContext, entries []*Entry) {
 	buf.WriteString(xmlHeader)
-	buf.WriteString(multistatusNS)
+	buf.WriteString(multistatusOpen(ctx.CalDAV))
 	for _, e := range entries {
 		writeResponse(buf, ctx, e)
 	}
 	buf.WriteString(`</d:multistatus>` + "\n")
+}
+
+func multistatusOpen(caldav bool) string {
+	if caldav {
+		return `<d:multistatus xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns" xmlns:cal="urn:ietf:params:xml:ns:caldav" xmlns:cs="http://calendarserver.org/ns/" xmlns:apple="http://apple.com/ns/ical/">`
+	}
+	return multistatusNS
 }
 
 func writeResponse(buf *bytes.Buffer, ctx PropfindContext, e *Entry) {
@@ -50,9 +58,14 @@ func writeResponse(buf *bytes.Buffer, ctx PropfindContext, e *Entry) {
 }
 
 func writeProps(buf *bytes.Buffer, ctx PropfindContext, e *Entry) {
-	if e.IsDir {
+	switch {
+	case e.IsPrincipal:
+		buf.WriteString(`<d:resourcetype><d:principal/><d:collection/></d:resourcetype>`)
+	case e.IsCalendar:
+		buf.WriteString(`<d:resourcetype><d:collection/><cal:calendar/></d:resourcetype>`)
+	case e.IsDir:
 		buf.WriteString(`<d:resourcetype><d:collection/></d:resourcetype>`)
-	} else {
+	default:
 		buf.WriteString(`<d:resourcetype/>`)
 	}
 
@@ -114,6 +127,34 @@ func writeProps(buf *bytes.Buffer, ctx PropfindContext, e *Entry) {
 	if ctx.EmitQuota && (e.Path == "" || e.Path == "/") {
 		fmt.Fprintf(buf, `<d:quota-used-bytes>%d</d:quota-used-bytes>`, ctx.QuotaUsed)
 		fmt.Fprintf(buf, `<d:quota-available-bytes>%d</d:quota-available-bytes>`, ctx.QuotaAvailable)
+	}
+	if e.DisplayName != "" {
+		fmt.Fprintf(buf, `<d:displayname>%s</d:displayname>`, xmlEscape(e.DisplayName))
+	}
+	if e.CurrentUserPrincipal != "" {
+		fmt.Fprintf(buf, `<d:current-user-principal><d:href>%s</d:href></d:current-user-principal>`, xmlEscape(e.CurrentUserPrincipal))
+	}
+	if e.CalendarHomeSet != "" {
+		fmt.Fprintf(buf, `<cal:calendar-home-set><d:href>%s</d:href></cal:calendar-home-set>`, xmlEscape(e.CalendarHomeSet))
+	}
+	if e.IsCalendar {
+		if e.CTag != "" {
+			fmt.Fprintf(buf, `<cs:getctag>&quot;%s&quot;</cs:getctag>`, xmlEscape(e.CTag))
+			fmt.Fprintf(buf, `<d:sync-token>https://nextcloud-go/sync/%s</d:sync-token>`, xmlEscape(e.CTag))
+		}
+		buf.WriteString(`<cal:supported-calendar-component-set><cal:comp name="VEVENT"/></cal:supported-calendar-component-set>`)
+		if e.CalendarColor != "" {
+			fmt.Fprintf(buf, `<apple:calendar-color>%s</apple:calendar-color>`, xmlEscape(e.CalendarColor))
+		}
+		fmt.Fprintf(buf, `<apple:calendar-order>%d</apple:calendar-order>`, e.CalendarOrder)
+		enabled := 0
+		if e.CalendarEnabled {
+			enabled = 1
+		}
+		fmt.Fprintf(buf, `<oc:calendar-enabled>%d</oc:calendar-enabled>`, enabled)
+		if e.CalendarDescription != "" {
+			fmt.Fprintf(buf, `<cal:calendar-description>%s</cal:calendar-description>`, xmlEscape(e.CalendarDescription))
+		}
 	}
 }
 
