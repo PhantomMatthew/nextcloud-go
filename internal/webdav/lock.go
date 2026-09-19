@@ -31,7 +31,7 @@ func (h *Handler) lock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	depth := strings.TrimSpace(r.Header.Get(HeaderDepth))
-	if depth != "" && depth != "0" {
+	if depth != "" && depth != "0" && !strings.EqualFold(depth, "infinity") {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
@@ -42,8 +42,9 @@ func (h *Handler) lock(w http.ResponseWriter, r *http.Request) {
 	}
 	ifHeader := r.Header.Get(HeaderIf)
 	req := LockRequest{
-		Timeout: parseTimeoutHeader(r.Header.Get(HeaderTimeout)),
-		Token:   ifHeader,
+		Timeout:       parseTimeoutHeader(r.Header.Get(HeaderTimeout)),
+		Token:         ifHeader,
+		DepthInfinity: strings.EqualFold(depth, "infinity"),
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
 		if len(ExtractLockTokens(ifHeader)) == 0 {
@@ -251,7 +252,11 @@ func writeLockDiscovery(buf *bytes.Buffer, info *LockInfo, href string) {
 	buf.WriteString(`<d:lockdiscovery><d:activelock>`)
 	buf.WriteString(`<d:locktype><d:write/></d:locktype>`)
 	buf.WriteString(`<d:lockscope><d:exclusive/></d:lockscope>`)
-	buf.WriteString(`<d:depth>0</d:depth>`)
+	if info.DepthInfinity {
+		buf.WriteString(`<d:depth>infinity</d:depth>`)
+	} else {
+		buf.WriteString(`<d:depth>0</d:depth>`)
+	}
 	fmt.Fprintf(buf, `<d:owner>%s</d:owner>`, xmlEscape(info.Owner))
 	fmt.Fprintf(buf, `<d:timeout>%s</d:timeout>`, timeoutHeaderValue(info.Timeout))
 	fmt.Fprintf(buf, `<d:locktoken><d:href>%s</d:href></d:locktoken>`, xmlEscape(info.Token))
@@ -295,7 +300,7 @@ func (fs *InMemoryFS) Lock(ctx context.Context, user, p string, req LockRequest)
 	if err != nil {
 		return nil, err
 	}
-	lk := &memLock{Token: token, Owner: req.Owner, Timeout: now.Add(timeout), Created: now}
+	lk := &memLock{Token: token, Owner: req.Owner, Timeout: now.Add(timeout), Created: now, DepthInfinity: req.DepthInfinity}
 	if fs.locks[user] == nil {
 		fs.locks[user] = make(map[string]*memLock)
 	}
@@ -328,15 +333,19 @@ func (fs *InMemoryFS) CheckLock(_ context.Context, user, p, ifHeader string) err
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	now := fs.clock().UTC()
-	fs.expireMemLockLocked(user, np, now)
-	existing := fs.memLockLocked(user, np)
-	if existing == nil {
-		return nil
+	for cur := np; ; cur = parentPath(cur) {
+		fs.expireMemLockLocked(user, cur, now)
+		existing := fs.memLockLocked(user, cur)
+		if existing != nil && (cur == np || existing.DepthInfinity) {
+			if lockHeaderHasToken(ifHeader, existing.Token) {
+				return nil
+			}
+			return ErrLocked
+		}
+		if cur == "/" {
+			return nil
+		}
 	}
-	if lockHeaderHasToken(ifHeader, existing.Token) {
-		return nil
-	}
-	return ErrLocked
 }
 
 func (fs *InMemoryFS) memLockLocked(user, p string) *memLock {
@@ -439,7 +448,19 @@ func memLockInfo(path string, lk *memLock, now time.Time) *LockInfo {
 	if rem < 0 {
 		rem = 0
 	}
-	return &LockInfo{Token: lk.Token, Owner: lk.Owner, Timeout: rem, Path: path}
+	return &LockInfo{Token: lk.Token, Owner: lk.Owner, Timeout: rem, Path: path, DepthInfinity: lk.DepthInfinity}
+}
+
+func parentPath(p string) string {
+	p = strings.TrimSuffix(p, "/")
+	if p == "" || p == "/" {
+		return "/"
+	}
+	i := strings.LastIndex(p, "/")
+	if i <= 0 {
+		return "/"
+	}
+	return p[:i]
 }
 
 func randomLockToken() (string, error) {

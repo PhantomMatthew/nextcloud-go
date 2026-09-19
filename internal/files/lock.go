@@ -83,7 +83,9 @@ func (d *DAV) Lock(ctx context.Context, user, p string, req webdav.LockRequest) 
 		}
 		return nil, err
 	}
-	return lockInfoFromRow(row, now), nil
+	info := lockInfoFromRow(row, now)
+	info.DepthInfinity = req.DepthInfinity
+	return info, nil
 }
 
 // Unlock implements webdav.LockFS.
@@ -139,25 +141,76 @@ func (d *DAV) checkLockOwned(ctx context.Context, user, p, ifHeader string) erro
 	if err != nil {
 		return mapMeta(err)
 	}
-	existing, err := d.Locks.GetByPath(ctx, u.ID, np)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+	now := d.now()
+	for cur := np; ; cur = parentFilePath(cur) {
+		existing, err := d.Locks.GetByPath(ctx, u.ID, cur)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		if existing != nil {
+			expired, err := d.expireLock(ctx, existing, now)
+			if err != nil {
+				return err
+			}
+			if !expired {
+				if lockHeaderHasToken(ifHeader, existing.Token) {
+					return nil
+				}
+				return webdav.ErrLocked
+			}
+		}
+		if cur == "/" {
 			return nil
 		}
-		return err
 	}
-	now := d.now()
-	expired, err := d.expireLock(ctx, existing, now)
+}
+
+// LockByFileID locks the filecache row owned by uid.
+func (d *DAV) LockByFileID(ctx context.Context, uid string, fileID int64, req webdav.LockRequest) (*webdav.LockInfo, error) {
+	f, err := d.ownedFile(ctx, uid, fileID)
+	if err != nil {
+		return nil, err
+	}
+	return d.Lock(ctx, uid, f.Path, req)
+}
+
+// UnlockByFileID unlocks the filecache row owned by uid.
+func (d *DAV) UnlockByFileID(ctx context.Context, uid string, fileID int64, token string) error {
+	f, err := d.ownedFile(ctx, uid, fileID)
 	if err != nil {
 		return err
 	}
-	if expired {
-		return nil
+	return d.Unlock(ctx, uid, f.Path, token)
+}
+
+func (d *DAV) ownedFile(ctx context.Context, uid string, fileID int64) (*File, error) {
+	u, err := d.resolveUser(ctx, uid)
+	if err != nil {
+		return nil, err
 	}
-	if lockHeaderHasToken(ifHeader, existing.Token) {
-		return nil
+	if d.Meta == nil || fileID == 0 {
+		return nil, webdav.ErrNotFound
 	}
-	return webdav.ErrLocked
+	f, err := d.Meta.GetByID(ctx, fileID)
+	if err != nil {
+		return nil, mapMeta(err)
+	}
+	if f.UserID != u.ID {
+		return nil, webdav.ErrNotFound
+	}
+	return f, nil
+}
+
+func parentFilePath(p string) string {
+	p = strings.TrimSuffix(p, "/")
+	if p == "" || p == "/" {
+		return "/"
+	}
+	i := strings.LastIndex(p, "/")
+	if i <= 0 {
+		return "/"
+	}
+	return p[:i]
 }
 
 func (d *DAV) expireLock(ctx context.Context, l *FileLock, now time.Time) (bool, error) {
@@ -188,22 +241,26 @@ func (d *DAV) applyLock(ctx context.Context, userID int64, p string, e *webdav.E
 	if d == nil || d.Locks == nil || e == nil {
 		return
 	}
-	lk, err := d.Locks.GetByPath(ctx, userID, p)
-	if err != nil {
-		return
-	}
 	now := d.now()
-	expired, err := d.expireLock(ctx, lk, now)
-	if err != nil || expired {
-		return
+	for cur := p; ; cur = parentFilePath(cur) {
+		lk, err := d.Locks.GetByPath(ctx, userID, cur)
+		if err == nil {
+			expired, err := d.expireLock(ctx, lk, now)
+			if err == nil && !expired {
+				e.LockToken = lk.Token
+				e.LockOwner = lk.Owner
+				rem := time.UnixMilli(lk.TimeoutMs).UTC().Sub(now)
+				if rem < 0 {
+					rem = 0
+				}
+				e.LockTimeout = rem
+				return
+			}
+		}
+		if cur == "/" {
+			return
+		}
 	}
-	e.LockToken = lk.Token
-	e.LockOwner = lk.Owner
-	rem := time.UnixMilli(lk.TimeoutMs).UTC().Sub(now)
-	if rem < 0 {
-		rem = 0
-	}
-	e.LockTimeout = rem
 }
 
 func lockInfoFromRow(l *FileLock, now time.Time) *webdav.LockInfo {

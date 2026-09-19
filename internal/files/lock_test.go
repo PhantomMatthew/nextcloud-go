@@ -141,3 +141,30 @@ func TestDAVLockMissing(t *testing.T) {
 		t.Fatalf("missing lock = %v", err)
 	}
 }
+
+func TestDAVLockDepthInfinity(t *testing.T) {
+	ctx := t.Context()
+	dav := newLockDAV(t)
+	if _, err := dav.Mkdir(ctx, "alice", "/dir"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := dav.Write(ctx, "alice", "/dir/a.txt", strings.NewReader("hi"), nil); err != nil {
+		t.Fatal(err)
+	}
+	info, err := dav.Lock(ctx, "alice", "/dir", webdav.LockRequest{Owner: "alice", DepthInfinity: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dav.CheckLock(ctx, "alice", "/dir/a.txt", ""); !errors.Is(err, webdav.ErrLocked) {
+		t.Fatalf("child without token = %v", err)
+	}
+	if err := dav.CheckLock(ctx, "alice", "/dir/a.txt", "(<"+info.Token+">)"); err != nil {
+		t.Fatalf("child with token = %v", err)
+	}
+	if err := dav.Unlock(ctx, "alice", "/dir", info.Token); err != nil {
+		t.Fatal(err)
+	}
+	if err := dav.CheckLock(ctx, "alice", "/dir/a.txt", ""); err != nil {
+		t.Fatalf("after unlock = %v", err)
+	}
+}

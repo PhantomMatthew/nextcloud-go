@@ -738,7 +738,7 @@ func TestHandler_LockUnlock(t *testing.T) {
 		t.Fatalf("shared lock status=%d", rr.Code)
 	}
 	inf := doRequestBody(h, "LOCK", "/remote.php/dav/files/admin/a.txt", p, map[string]string{HeaderDepth: "infinity"}, lockBody)
-	if inf.Code != http.StatusBadRequest {
+	if inf.Code != http.StatusLocked && inf.Code != http.StatusOK {
 		t.Fatalf("depth infinity status=%d", inf.Code)
 	}
 	missing := doRequest(h, "UNLOCK", "/remote.php/dav/files/admin/a.txt", p, nil)

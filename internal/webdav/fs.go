@@ -90,18 +90,20 @@ type PropPatchFS interface {
 
 // LockRequest is an exclusive write LOCK or refresh.
 type LockRequest struct {
-	Refresh bool
-	Owner   string
-	Timeout time.Duration
-	Token   string
+	Refresh       bool
+	Owner         string
+	Timeout       time.Duration
+	Token         string
+	DepthInfinity bool
 }
 
 // LockInfo is the active exclusive write lock.
 type LockInfo struct {
-	Token   string
-	Owner   string
-	Timeout time.Duration
-	Path    string
+	Token         string
+	Owner         string
+	Timeout       time.Duration
+	Path          string
+	DepthInfinity bool
 }
 
 // LockFS is implemented by filesystems that support RFC 4918 LOCK/UNLOCK.
@@ -121,10 +123,11 @@ type InMemoryFS struct {
 }
 
 type memLock struct {
-	Token   string
-	Owner   string
-	Timeout time.Time
-	Created time.Time
+	Token         string
+	Owner         string
+	Timeout       time.Time
+	Created       time.Time
+	DepthInfinity bool
 }
 
 type fileNode struct {
