@@ -189,6 +189,9 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-19** — Phase 3d: inbound OCM discovery (`/.well-known/ocm`,
+  `/ocm-provider`), `POST /ocm/shares`, OCS `remote_shares`, DAV metadata
+  mount with GET 501 (see ADR-0022). Outbound federation remains later.
 - **2026-09-19** — Phase 3c: Notifications and Activity OCS list/get/delete
   on `/ocs/v{1,2}.php/apps/notifications/api/v2/notifications` and
   `/ocs/v{1,2}.php/apps/activity/api/v2/activity`, SQL seed rows, no push

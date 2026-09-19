@@ -35,16 +35,6 @@ func repoRoot(t *testing.T) string {
 func TestGoldenReplay(t *testing.T) {
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	cfg := DevConfig()
-	cfg.Storage.Backends = map[string]config.BackendConfig{
-		"local": {Type: "localfs", Root: t.TempDir()},
-	}
-	a, err := New(ctx, cfg, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = a.Close(ctx) })
-	seedPhase1DAV(t, a)
 
 	maintCfg := DevConfig()
 	maintCfg.Database.DSN = "file:ncgo-dev-maint?mode=memory&cache=shared"
@@ -59,27 +49,53 @@ func TestGoldenReplay(t *testing.T) {
 	t.Cleanup(func() { _ = ma.Close(ctx) })
 
 	root := filepath.Join(repoRoot(t), "testdata", "golden")
-	dirs, err := goldentest.Discover(root)
+	entries, err := os.ReadDir(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(dirs) == 0 {
-		t.Fatal("no golden cases")
+	var areas []string
+	for _, ent := range entries {
+		if ent.IsDir() {
+			areas = append(areas, ent.Name())
+		}
 	}
-	for _, dir := range dirs {
-		c, err := goldentest.Load(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		h := a.Handler()
-		for _, tag := range c.Tags {
-			if tag == "maintenance" {
-				h = ma.Handler()
-				break
+	sort.Strings(areas)
+	if len(areas) == 0 {
+		t.Fatal("no golden areas")
+	}
+	for _, area := range areas {
+		t.Run(area, func(t *testing.T) {
+			areaCfg := DevConfig()
+			areaCfg.Database.DSN = "file:ncgo-replay-" + area + "?mode=memory&cache=shared"
+			areaCfg.Storage.Backends = map[string]config.BackendConfig{
+				"local": {Type: "localfs", Root: t.TempDir()},
 			}
-		}
-		t.Run(c.ID, func(t *testing.T) {
-			goldentest.RunHandler(t, c, h)
+			a, err := New(ctx, areaCfg, logger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = a.Close(ctx) })
+			seedPhase1DAV(t, a)
+			dirs, err := goldentest.Discover(filepath.Join(root, area))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, dir := range dirs {
+				c, err := goldentest.Load(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				h := a.Handler()
+				for _, tag := range c.Tags {
+					if tag == "maintenance" {
+						h = ma.Handler()
+						break
+					}
+				}
+				t.Run(c.ID, func(t *testing.T) {
+					goldentest.RunHandler(t, c, h)
+				})
+			}
 		})
 	}
 }
@@ -203,7 +219,7 @@ func TestCaptureWebDAVGoldens(t *testing.T) {
 	}
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	for _, area := range []string{"activity", "search", "sharing", "capabilities", "webdav", "caldav", "carddav", "notifications"} {
+	for _, area := range []string{"activity", "search", "sharing", "capabilities", "webdav", "caldav", "carddav", "notifications", "ocm"} {
 		if want := os.Getenv("GOLDEN_AREA"); want != "" && want != area {
 			continue
 		}

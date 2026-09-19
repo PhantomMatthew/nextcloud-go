@@ -48,6 +48,22 @@ func incomingEntry(e *webdav.Entry, requestPath string, perms int) *webdav.Entry
 	return &cp
 }
 
+func remoteEntry(m *IncomingMount, requestPath string) *webdav.Entry {
+	if m == nil {
+		return nil
+	}
+	return &webdav.Entry{
+		Path:        requestPath,
+		IsDir:       m.ItemType == "folder",
+		Size:        0,
+		ETag:        `"ocm-remote"`,
+		Permissions: m.Permissions,
+		Shareable:   false,
+		Mounted:     true,
+		Shared:      true,
+	}
+}
+
 func (d *DAV) statOwned(ctx context.Context, user, p string) (*webdav.Entry, error) {
 	u, err := d.resolveUser(ctx, user)
 	if err != nil {
@@ -107,6 +123,11 @@ func (d *DAV) mergeIncomingRoot(ctx context.Context, user string, own []*webdav.
 		if _, ok := seen[name]; ok {
 			continue
 		}
+		if m.Remote {
+			out = append(out, remoteEntry(&m, m.Mount))
+			seen[name] = struct{}{}
+			continue
+		}
 		ent, err := d.statOwned(ctx, m.OwnerUID, m.OwnerPath)
 		if err != nil {
 			if errors.Is(err, webdav.ErrNotFound) {
@@ -122,6 +143,9 @@ func (d *DAV) mergeIncomingRoot(ctx context.Context, user string, own []*webdav.
 
 func (d *DAV) CheckLock(ctx context.Context, user, p, ifHeader string) error {
 	if m, ownerPath, err := d.lookupIncoming(ctx, user, p); err == nil {
+		if m.Remote {
+			return nil
+		}
 		return d.checkLockOwned(ctx, m.OwnerUID, ownerPath, ifHeader)
 	}
 	return d.checkLockOwned(ctx, user, p, ifHeader)
@@ -138,6 +162,9 @@ func (d *DAV) writeMaybeIncoming(ctx context.Context, user, p string, r io.Reade
 		return nil, false, err
 	}
 	if m, ownerPath, err := d.lookupIncoming(ctx, user, np); err == nil {
+		if m.Remote {
+			return nil, false, webdav.ErrNotImplemented
+		}
 		need := webdav.PermUpdate
 		if _, serr := d.statOwned(ctx, m.OwnerUID, ownerPath); errors.Is(serr, webdav.ErrNotFound) {
 			need = webdav.PermCreate
@@ -159,6 +186,9 @@ func (d *DAV) mkdirMaybeIncoming(ctx context.Context, user, p string) (*webdav.E
 		return nil, mapMeta(err)
 	}
 	if m, ownerPath, err := d.lookupIncoming(ctx, user, np); err == nil {
+		if m.Remote {
+			return nil, webdav.ErrNotImplemented
+		}
 		if m.Permissions&webdav.PermCreate == 0 {
 			return nil, webdav.ErrForbidden
 		}
@@ -179,6 +209,9 @@ func (d *DAV) removeMaybeIncoming(ctx context.Context, user, p string) error {
 		return err
 	}
 	if m, ownerPath, err := d.lookupIncoming(ctx, user, np); err == nil {
+		if m.Remote {
+			return webdav.ErrNotImplemented
+		}
 		if m.Permissions&webdav.PermDelete == 0 {
 			return webdav.ErrForbidden
 		}

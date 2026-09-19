@@ -35,11 +35,30 @@ type IncomingMount struct {
 	Mount       string
 	Permissions int
 	ItemType    string
+	Remote      bool
 }
 
 // IncomingLookup lists accepted user/group shares for a sharee.
 type IncomingLookup interface {
 	ListIncoming(ctx context.Context, shareeUID string) ([]IncomingMount, error)
+}
+
+// MultiIncoming concatenates several IncomingLookup sources in order.
+type MultiIncoming []IncomingLookup
+
+func (m MultiIncoming) ListIncoming(ctx context.Context, shareeUID string) ([]IncomingMount, error) {
+	var out []IncomingMount
+	for _, l := range m {
+		if l == nil {
+			continue
+		}
+		items, err := l.ListIncoming(ctx, shareeUID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, items...)
+	}
+	return out, nil
 }
 
 // ShareStore persists shares.

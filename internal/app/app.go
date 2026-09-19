@@ -24,6 +24,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/login"
 	"github.com/PhantomMatthew/nextcloud-go/internal/migrations"
 	"github.com/PhantomMatthew/nextcloud-go/internal/notifications"
+	"github.com/PhantomMatthew/nextcloud-go/internal/ocm"
 	"github.com/PhantomMatthew/nextcloud-go/internal/plugins"
 	"github.com/PhantomMatthew/nextcloud-go/internal/session"
 	"github.com/PhantomMatthew/nextcloud-go/internal/sharing"
@@ -66,6 +67,7 @@ type App struct {
 	contactsFS    *carddav.DAV
 	notifStore    *notifications.SQLStore
 	activityStore *activity.SQLStore
+	ocmStore      *ocm.SQLStore
 	principalFS   *caldav.PrincipalDAV
 	davRootFS     *caldav.RootDAV
 }
@@ -165,7 +167,8 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		Users:  a.Users,
 		Hasher: a.hasher,
 	}
-	dav.Incoming = a.shares
+	a.ocmStore = ocm.NewSQLStore(db)
+	dav.Incoming = files.MultiIncoming{a.shares, a.ocmStore}
 	a.publicFS = &files.PublicDAV{Files: dav, Resolve: a.shares.LookupValid}
 	a.uploadsFS = files.NewUploads(st, files.NewSQLUploadStore(db), dav, a.Users)
 	tr := files.NewTrash(st, files.NewSQLTrashStore(db), dav, a.Users)

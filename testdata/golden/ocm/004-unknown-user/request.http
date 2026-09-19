@@ -1,0 +1,8 @@
+POST /ocm/shares HTTP/1.1
+Host: cloud.example.com
+User-Agent: ncgo-goldentest/0.0
+Accept: application/json
+Content-Type: application/json
+Content-Length: 218
+
+{"shareWith":"nobody","name":"hello-remote.txt","providerId":"99","owner":"alice@https://remote.example.com","shareType":"user","resourceType":"file","protocol":{"name":"webdav","options":{"sharedSecret":"ocmtok002"}}}

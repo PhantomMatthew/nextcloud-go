@@ -1,0 +1,24 @@
+schema_version: 1
+id: ocm/004-unknown-user
+description: |
+  Incoming share for an unknown local user is 400.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 3d
+  captured_at: "2026-09-19T00:00:00Z"
+request:
+  body_kind: json
+response:
+  body_kind: json
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 400
+replayable: true
+mutating: false
+synthetic: true
+tags: [ocm, phase3d]

@@ -207,6 +207,9 @@ func (d *DAV) Stat(ctx context.Context, user, p string) (*webdav.Entry, error) {
 	if ierr != nil {
 		return nil, ierr
 	}
+	if m.Remote {
+		return remoteEntry(m, np), nil
+	}
 	e, err = d.statOwned(ctx, m.OwnerUID, ownerPath)
 	if err != nil {
 		return nil, err
@@ -233,6 +236,12 @@ func (d *DAV) List(ctx context.Context, user, p string) ([]*webdav.Entry, error)
 	if ierr != nil {
 		return nil, ierr
 	}
+	if m.Remote {
+		if m.ItemType != "folder" {
+			return nil, webdav.ErrNotDir
+		}
+		return []*webdav.Entry{}, nil
+	}
 	children, err := d.listOwned(ctx, m.OwnerUID, ownerPath)
 	if err != nil {
 		return nil, err
@@ -258,6 +267,9 @@ func (d *DAV) Read(ctx context.Context, user, p string) (io.ReadCloser, *webdav.
 	m, ownerPath, ierr := d.lookupIncoming(ctx, user, np)
 	if ierr != nil {
 		return nil, nil, ierr
+	}
+	if m.Remote {
+		return nil, nil, webdav.ErrNotImplemented
 	}
 	if m.Permissions&webdav.PermRead == 0 {
 		return nil, nil, webdav.ErrForbidden

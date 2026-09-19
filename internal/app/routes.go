@@ -13,6 +13,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/httpx"
 	"github.com/PhantomMatthew/nextcloud-go/internal/login"
 	notifpkg "github.com/PhantomMatthew/nextcloud-go/internal/notifications"
+	"github.com/PhantomMatthew/nextcloud-go/internal/ocm"
 	"github.com/PhantomMatthew/nextcloud-go/internal/ocs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/search"
 	"github.com/PhantomMatthew/nextcloud-go/internal/session"
@@ -62,6 +63,7 @@ func (a *App) mountRoutes() error {
 			"/remote.php/webdav/",
 			"/public.php/webdav",
 			"/public.php/webdav/",
+			"/ocm/",
 			"/.well-known/caldav",
 			"/.well-known/carddav",
 		},
@@ -140,6 +142,21 @@ func (a *App) mountRoutes() error {
 		router.HandlePrefix(httpx.MethodAny, "/ocs/v2.php/apps/files_sharing/api/v1/shares", sharesV2, httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
 		router.HandlePrefix(http.MethodGet, "/s/", a.shares.PublicLinkHandler())
 		router.HandlePrefix(http.MethodHead, "/s/", a.shares.PublicLinkHandler())
+	}
+
+	router.Handle(http.MethodGet, "/.well-known/ocm", http.HandlerFunc(ocm.Discovery))
+	router.Handle(http.MethodHead, "/.well-known/ocm", http.HandlerFunc(ocm.Discovery))
+	router.Handle(http.MethodGet, "/ocm-provider", http.HandlerFunc(ocm.Discovery))
+	router.Handle(http.MethodHead, "/ocm-provider", http.HandlerFunc(ocm.Discovery))
+	router.Handle(http.MethodGet, "/ocm-provider/", http.HandlerFunc(ocm.Discovery))
+	router.Handle(http.MethodHead, "/ocm-provider/", http.HandlerFunc(ocm.Discovery))
+	if a.ocmStore != nil {
+		inc := ocm.IncomingHandler{Store: a.ocmStore, Users: a.Users}
+		router.HandlePrefix(httpx.MethodAny, "/ocm/", inc)
+		remoteV1 := ocm.RemoteSharesHandler{Store: a.ocmStore, Users: a.Users, Version: ocs.V1}
+		remoteV2 := ocm.RemoteSharesHandler{Store: a.ocmStore, Users: a.Users, Version: ocs.V2}
+		router.HandlePrefix(httpx.MethodAny, "/ocs/v1.php/apps/files_sharing/api/v1/remote_shares", remoteV1, httpx.Middleware(ocs.Auth(ocs.V1, authCfg)))
+		router.HandlePrefix(httpx.MethodAny, "/ocs/v2.php/apps/files_sharing/api/v1/remote_shares", remoteV2, httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
 	}
 
 	if a.notifStore != nil {

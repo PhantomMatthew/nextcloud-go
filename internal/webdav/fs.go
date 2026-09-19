@@ -24,6 +24,7 @@ var (
 	ErrConflict         = errors.New("webdav: conflict")
 	ErrMethodNotAllowed = errors.New("webdav: method not allowed")
 	ErrUnsupportedMedia = errors.New("webdav: unsupported media type")
+	ErrNotImplemented   = errors.New("webdav: not implemented")
 )
 
 type Entry struct {

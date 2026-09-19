@@ -410,6 +410,8 @@ func writeFSError(w http.ResponseWriter, err error) {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 	case errors.Is(err, ErrUnsupportedMedia):
 		http.Error(w, "Unsupported Media Type", http.StatusUnsupportedMediaType)
+	case errors.Is(err, ErrNotImplemented):
+		http.Error(w, "Not Implemented", http.StatusNotImplemented)
 	case errors.Is(err, ErrConflict), errors.Is(err, ErrNotDir), errors.Is(err, ErrIsDir), errors.Is(err, ErrParentMissing):
 		http.Error(w, "Conflict", http.StatusConflict)
 	default:

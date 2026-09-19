@@ -1,0 +1,24 @@
+schema_version: 1
+id: ocm/001-well-known
+description: |
+  OCM discovery via /.well-known/ocm.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 3d
+  captured_at: "2026-09-19T00:00:00Z"
+request:
+  body_kind: empty
+response:
+  body_kind: json
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 200
+replayable: true
+mutating: false
+synthetic: true
+tags: [ocm, phase3d]

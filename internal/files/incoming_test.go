@@ -102,3 +102,44 @@ func TestIncomingWriteWithUpdate(t *testing.T) {
 		t.Fatalf("owner bytes = %q", buf[:n])
 	}
 }
+
+func TestIncomingRemotePlaceholder(t *testing.T) {
+	ctx := t.Context()
+	db := testDB(t)
+	us := users.NewSQLStore(db)
+	bob := &users.User{UID: "bob", DisplayName: "Bob", PasswordHash: "x", Enabled: true}
+	if err := us.Create(ctx, bob); err != nil {
+		t.Fatal(err)
+	}
+	st, err := localfs.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dav := NewDAV(st, NewSQLStore(db), us)
+	if _, err := dav.Stat(ctx, "bob", "/"); err != nil {
+		t.Fatal(err)
+	}
+	dav.Incoming = stubIncoming{mounts: []IncomingMount{{
+		Mount: "/hello-remote.txt", Permissions: webdav.PermRead, ItemType: "file", Remote: true,
+	}}}
+	e, err := dav.Stat(ctx, "bob", "/hello-remote.txt")
+	if err != nil || !e.Shared || !e.Mounted || e.Shareable {
+		t.Fatalf("stat remote = %+v %v", e, err)
+	}
+	listed, err := dav.List(ctx, "bob", "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range listed {
+		if item.Path == "/hello-remote.txt" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("list = %+v", listed)
+	}
+	if _, _, err := dav.Read(ctx, "bob", "/hello-remote.txt"); !errors.Is(err, webdav.ErrNotImplemented) {
+		t.Fatalf("read remote = %v", err)
+	}
+}
