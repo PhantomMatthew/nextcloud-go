@@ -29,8 +29,8 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("up: %v", err)
 	}
-	if n != 8 {
-		t.Errorf("applied = %d, want 8", n)
+	if n != 9 {
+		t.Errorf("applied = %d, want 9", n)
 	}
 
 	want := []string{
@@ -49,7 +49,7 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version: %v", err)
 	}
-	if v != 8 || dirty {
+	if v != 9 || dirty {
 		t.Errorf("version=%d dirty=%v", v, dirty)
 	}
 
@@ -68,13 +68,13 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version after down: %v", err)
 	}
-	if v != 7 || dirty {
+	if v != 8 || dirty {
 		t.Errorf("after down version=%d dirty=%v", v, dirty)
 	}
-	var sharesName string
-	err = db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "shares").Scan(&sharesName)
+	var col string
+	err = db.QueryRow(ctx, `SELECT name FROM pragma_table_info('shares') WHERE name=?`, "share_with").Scan(&col)
 	if err == nil {
-		t.Error("table shares still present after down to v7")
+		t.Error("column share_with still present after down to v8")
 	}
 	var locksName string
 	if err := db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "file_locks").Scan(&locksName); err != nil {
@@ -92,7 +92,7 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version after re-up: %v", err)
 	}
-	if v != 8 || dirty {
+	if v != 9 || dirty {
 		t.Errorf("after re-up version=%d dirty=%v", v, dirty)
 	}
 }
