@@ -12,6 +12,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/httpx"
 	"github.com/PhantomMatthew/nextcloud-go/internal/login"
 	"github.com/PhantomMatthew/nextcloud-go/internal/ocs"
+	"github.com/PhantomMatthew/nextcloud-go/internal/search"
 	"github.com/PhantomMatthew/nextcloud-go/internal/session"
 	"github.com/PhantomMatthew/nextcloud-go/internal/sharing"
 	"github.com/PhantomMatthew/nextcloud-go/internal/status"
@@ -114,6 +115,12 @@ func (a *App) mountRoutes() error {
 	}
 	router.Handle("DELETE", "/ocs/v1.php/core/apppassword", ocs.DeleteAppPasswordHandler(ocs.V1, issuer), httpx.Middleware(ocs.Auth(ocs.V1, authCfg)))
 	router.Handle("DELETE", "/ocs/v2.php/core/apppassword", ocs.DeleteAppPasswordHandler(ocs.V2, issuer), httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
+
+	searchFiles := search.NewFilesProvider(a.fileMeta, a.Users)
+	searchV1 := search.Handler{Providers: []search.Provider{searchFiles}, Version: ocs.V1}
+	searchV2 := search.Handler{Providers: []search.Provider{searchFiles}, Version: ocs.V2}
+	router.HandlePrefix(httpx.MethodAny, "/ocs/v1.php/search/providers", searchV1, httpx.Middleware(ocs.Auth(ocs.V1, authCfg)))
+	router.HandlePrefix(httpx.MethodAny, "/ocs/v2.php/search/providers", searchV2, httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
 
 	if a.shares != nil {
 		sharesV1 := sharing.Handler{Service: a.shares, Version: ocs.V1}

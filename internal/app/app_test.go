@@ -115,7 +115,7 @@ func TestCaptureWebDAVGoldens(t *testing.T) {
 	}
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	for _, area := range []string{"sharing", "capabilities", "webdav"} {
+	for _, area := range []string{"search", "sharing", "capabilities", "webdav"} {
 		areaCfg := DevConfig()
 		areaCfg.Database.DSN = "file:ncgo-golden-" + area + "?mode=memory&cache=shared"
 		areaCfg.Storage.Backends = map[string]config.BackendConfig{
