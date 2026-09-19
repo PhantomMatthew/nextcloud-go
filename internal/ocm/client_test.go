@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
 )
 
 func TestDiscoverFallsBackToProvider(t *testing.T) {
@@ -183,5 +185,76 @@ func TestNotifyUsesDefaultClient(t *testing.T) {
 	}
 	if strings.Contains(NormalizeOrigin("http://h"), "https://http") {
 		t.Fatal("scheme preserved")
+	}
+}
+
+func TestGetWebDAVBasicAuth(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/public.php/webdav/", func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != "ocmtok001" || pass != "" {
+			t.Errorf("basic = %v %q %q", ok, user, pass)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("ETag", `"abc"`)
+		_, _ = io.WriteString(w, "hello from remote\n")
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	rc, ent, err := (&Client{HTTP: srv.Client()}).Get(t.Context(), srv.URL, "ocmtok001", "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil || string(body) != "hello from remote\n" {
+		t.Fatalf("body = %q %v", body, err)
+	}
+	if ent == nil || ent.ETag != "abc" || !strings.HasPrefix(ent.ContentType, "text/plain") {
+		t.Fatalf("entry = %+v", ent)
+	}
+}
+
+func TestGetWebDAVNon2xx(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	_, _, err := (&Client{HTTP: srv.Client()}).Get(t.Context(), srv.URL, "tok", "/")
+	if !errors.Is(err, webdav.ErrNotFound) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestGetWebDAVForbidden(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+	_, _, err := (&Client{HTTP: srv.Client()}).Get(t.Context(), srv.URL, "tok", "/")
+	if !errors.Is(err, webdav.ErrForbidden) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestGetWebDAVRejectsScheme(t *testing.T) {
+	if _, _, err := NewClient().Get(t.Context(), "file:///tmp", "tok", "/"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err = %v", err)
+	}
+	if _, _, err := NewClient().Get(t.Context(), "", "tok", "/"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("empty origin = %v", err)
+	}
+}
+
+func TestGetWebDAVStatus500(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	t.Cleanup(srv.Close)
+	_, _, err := (&Client{HTTP: srv.Client()}).Get(t.Context(), srv.URL, "tok", "/")
+	if err == nil || errors.Is(err, webdav.ErrNotImplemented) {
+		t.Fatalf("err = %v", err)
 	}
 }

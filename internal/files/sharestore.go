@@ -1,6 +1,11 @@
 package files
 
-import "context"
+import (
+	"context"
+	"io"
+
+	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
+)
 
 const (
 	// ShareTypeUser is Nextcloud shareType 0 (user).
@@ -32,12 +37,19 @@ type Share struct {
 
 // IncomingMount is a share visible inside a sharee's files jail.
 type IncomingMount struct {
-	OwnerUID    string
-	OwnerPath   string
-	Mount       string
-	Permissions int
-	ItemType    string
-	Remote      bool
+	OwnerUID     string
+	OwnerPath    string
+	Mount        string
+	Permissions  int
+	ItemType     string
+	Remote       bool
+	RemoteOrigin string
+	RemoteToken  string
+}
+
+// RemoteFile fetches bytes from a federated share's public WebDAV.
+type RemoteFile interface {
+	Get(ctx context.Context, origin, token, rel string) (io.ReadCloser, *webdav.Entry, error)
 }
 
 // IncomingLookup lists accepted user/group shares for a sharee.

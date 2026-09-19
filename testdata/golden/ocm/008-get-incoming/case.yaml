@@ -1,0 +1,24 @@
+schema_version: 1
+id: ocm/008-get-incoming
+description: |
+  Recipient GET of an inbound federated file proxies remote public WebDAV.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 3d3
+  captured_at: "2026-09-20T00:00:00Z"
+request:
+  body_kind: empty
+response:
+  body_kind: bytes
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 200
+replayable: true
+mutating: false
+synthetic: true
+tags: [ocm, webdav, phase3d3]

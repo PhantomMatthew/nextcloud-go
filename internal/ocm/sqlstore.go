@@ -120,10 +120,12 @@ FROM ocm_incoming WHERE user_uid = ? AND accepted != 0 ORDER BY id DESC`, sharee
 			return nil, err
 		}
 		out = append(out, files.IncomingMount{
-			Mount:       "/" + in.Name,
-			Permissions: in.Permissions,
-			ItemType:    in.ItemType,
-			Remote:      true,
+			Mount:        "/" + in.Name,
+			Permissions:  in.Permissions,
+			ItemType:     in.ItemType,
+			Remote:       true,
+			RemoteOrigin: in.Remote,
+			RemoteToken:  in.Token,
 		})
 	}
 	return out, rows.Err()

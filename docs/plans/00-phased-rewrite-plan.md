@@ -189,6 +189,9 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-20** — Phase 3d3: inbound federated file DAV GET/HEAD proxies
+  `{origin}/public.php/webdav/` with Basic token (see ADR-0024). Federation
+  capability, folder tree, and write proxy remain later.
 - **2026-09-19** — Phase 3d2: outbound OCS `shareType=6` federated shares,
   remote OCM discovery and `POST {endPoint}/shares`, rollback on notify
   failure (see ADR-0023). Federation capability and inbound DAV proxy remain

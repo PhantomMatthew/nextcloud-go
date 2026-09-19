@@ -1,0 +1,24 @@
+schema_version: 1
+id: ocm/009-put-incoming-501
+description: |
+  PUT on an inbound federated file remains 501 (no write proxy).
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 3d3
+  captured_at: "2026-09-20T00:00:00Z"
+request:
+  body_kind: bytes
+response:
+  body_kind: bytes
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 501
+replayable: true
+mutating: false
+synthetic: true
+tags: [ocm, webdav, phase3d3]

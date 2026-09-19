@@ -352,6 +352,14 @@ func (remoteOCMRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 		return &http.Response{StatusCode: http.StatusOK, Header: hdr, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
 	case req.Method == http.MethodPost && req.URL.Path == "/ocm/shares":
 		return &http.Response{StatusCode: http.StatusCreated, Header: hdr, Body: io.NopCloser(strings.NewReader(`{"recipientDisplayName":"bob"}`)), Request: req}, nil
+	case req.Method == http.MethodGet && (req.URL.Path == "/public.php/webdav" || req.URL.Path == "/public.php/webdav/"):
+		body := "hello from remote\n"
+		hdr = make(http.Header)
+		hdr.Set("Content-Type", "text/plain")
+		hdr.Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		hdr.Set("ETag", `"ocm-remote"`)
+		hdr.Set("Last-Modified", "Thu, 01 May 2025 12:00:00 GMT")
+		return &http.Response{StatusCode: http.StatusOK, Header: hdr, Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: req}, nil
 	default:
 		return &http.Response{StatusCode: http.StatusNotFound, Header: hdr, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
 	}

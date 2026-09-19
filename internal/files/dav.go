@@ -30,6 +30,7 @@ type DAV struct {
 	Shares   ShareStore
 	Incoming IncomingLookup
 	NewToken func() string
+	Remote   RemoteFile
 }
 
 // NewDAV returns a DAV adapter.
@@ -269,7 +270,7 @@ func (d *DAV) Read(ctx context.Context, user, p string) (io.ReadCloser, *webdav.
 		return nil, nil, ierr
 	}
 	if m.Remote {
-		return nil, nil, webdav.ErrNotImplemented
+		return d.readRemote(ctx, np, m)
 	}
 	if m.Permissions&webdav.PermRead == 0 {
 		return nil, nil, webdav.ErrForbidden
@@ -298,6 +299,42 @@ func (d *DAV) readOwned(ctx context.Context, user, p string, e *webdav.Entry) (i
 		return nil, nil, mapStorage(err)
 	}
 	return rc, e, nil
+}
+
+func (d *DAV) readRemote(ctx context.Context, np string, m *IncomingMount) (io.ReadCloser, *webdav.Entry, error) {
+	if m == nil {
+		return nil, nil, webdav.ErrNotFound
+	}
+	if m.ItemType == "folder" && np == m.Mount {
+		return nil, nil, webdav.ErrIsDir
+	}
+	if d.Remote == nil || m.RemoteOrigin == "" || m.RemoteToken == "" {
+		return nil, nil, webdav.ErrNotImplemented
+	}
+	if m.ItemType != "file" || np != m.Mount {
+		return nil, nil, webdav.ErrNotImplemented
+	}
+	if m.Permissions&webdav.PermRead == 0 {
+		return nil, nil, webdav.ErrForbidden
+	}
+	rc, ent, err := d.Remote.Get(ctx, m.RemoteOrigin, m.RemoteToken, "/")
+	if err != nil {
+		return nil, nil, err
+	}
+	if ent == nil {
+		ent = &webdav.Entry{}
+	}
+	out := *ent
+	out.Path = np
+	out.IsDir = false
+	out.Permissions = m.Permissions
+	out.Shareable = false
+	out.Mounted = true
+	out.Shared = true
+	if out.ETag == "" {
+		out.ETag = "ocm-remote"
+	}
+	return rc, &out, nil
 }
 
 func (d *DAV) Write(ctx context.Context, user, p string, r io.Reader, mtime *time.Time) (*webdav.Entry, bool, error) {

@@ -170,6 +170,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	}
 	a.ocmStore = ocm.NewSQLStore(db)
 	dav.Incoming = files.MultiIncoming{a.shares, a.ocmStore}
+	dav.Remote = a.shares.OCM
 	a.publicFS = &files.PublicDAV{Files: dav, Resolve: a.shares.LookupValid}
 	a.uploadsFS = files.NewUploads(st, files.NewSQLUploadStore(db), dav, a.Users)
 	tr := files.NewTrash(st, files.NewSQLTrashStore(db), dav, a.Users)

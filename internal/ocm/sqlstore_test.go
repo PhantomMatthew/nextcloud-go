@@ -77,6 +77,9 @@ func TestSQLStore_CRUDAndIsolation(t *testing.T) {
 	if err != nil || len(mounts) != 1 || !mounts[0].Remote || mounts[0].Mount != "/hello-remote.txt" {
 		t.Fatalf("incoming = %+v %v", mounts, err)
 	}
+	if mounts[0].RemoteOrigin != "https://remote.example.com" || mounts[0].RemoteToken != "ocmtok001" {
+		t.Fatalf("incoming creds = %+v", mounts[0])
+	}
 	if err := store.Delete(ctx, alice.ID, in.ID); err != nil {
 		t.Fatal(err)
 	}

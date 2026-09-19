@@ -7,27 +7,53 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+
+	"github.com/PhantomMatthew/nextcloud-go/internal/files"
+	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
 )
 
-const maxOCMBody = 1 << 20
+const (
+	maxOCMBody    = 1 << 20
+	maxRemoteFile = 32 << 20
+)
 
 // Client talks to a remote OCM endpoint.
 type Client struct {
 	HTTP *http.Client
 }
 
-// NewClient returns a Client with a 15s timeout.
+var _ files.RemoteFile = (*Client)(nil)
+
+// NewClient returns a Client with a 15s timeout and same-host redirects.
 func NewClient() *Client {
-	return &Client{HTTP: &http.Client{Timeout: 15 * time.Second}}
+	return &Client{HTTP: newHTTPClient()}
+}
+
+func newHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout:       15 * time.Second,
+		CheckRedirect: sameHostRedirect,
+	}
+}
+
+func sameHostRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 5 {
+		return fmt.Errorf("%w: too many redirects", ErrInvalid)
+	}
+	if len(via) > 0 && !strings.EqualFold(via[0].URL.Host, req.URL.Host) {
+		return fmt.Errorf("%w: redirect host", ErrInvalid)
+	}
+	return nil
 }
 
 func (c *Client) httpc() *http.Client {
 	if c != nil && c.HTTP != nil {
 		return c.HTTP
 	}
-	return &http.Client{Timeout: 15 * time.Second}
+	return newHTTPClient()
 }
 
 // OutgoingNotice is the JSON posted to a remote POST /ocm/shares.
@@ -150,6 +176,71 @@ func NormalizeOrigin(remote string) string {
 		return remote
 	}
 	return "https://" + remote
+}
+
+// Get fetches a federated file from the sender's public WebDAV.
+func (c *Client) Get(ctx context.Context, origin, token, rel string) (io.ReadCloser, *webdav.Entry, error) {
+	origin = NormalizeOrigin(origin)
+	if origin == "" || token == "" {
+		return nil, nil, fmt.Errorf("%w: webdav", ErrInvalid)
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return nil, nil, fmt.Errorf("%w: origin scheme", ErrInvalid)
+	}
+	target := strings.TrimRight(origin, "/") + "/public.php/webdav/"
+	if rel != "" && rel != "/" {
+		target += strings.TrimPrefix(rel, "/")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	req.SetBasicAuth(token, "")
+	resp, err := c.httpc().Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxOCMBody))
+		_ = resp.Body.Close()
+		switch resp.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden:
+			return nil, nil, webdav.ErrForbidden
+		case http.StatusNotFound:
+			return nil, nil, webdav.ErrNotFound
+		default:
+			return nil, nil, fmt.Errorf("ocm: webdav status %d", resp.StatusCode)
+		}
+	}
+	etag := strings.Trim(resp.Header.Get("ETag"), `"`)
+	ct := resp.Header.Get("Content-Type")
+	var mod time.Time
+	if lm := resp.Header.Get("Last-Modified"); lm != "" {
+		if t, perr := http.ParseTime(lm); perr == nil {
+			mod = t
+		}
+	}
+	size := resp.ContentLength
+	body := resp.Body
+	if size < 0 {
+		buf, err := io.ReadAll(io.LimitReader(resp.Body, maxRemoteFile+1))
+		_ = resp.Body.Close()
+		if err != nil {
+			return nil, nil, err
+		}
+		if int64(len(buf)) > maxRemoteFile {
+			return nil, nil, fmt.Errorf("%w: file too large", ErrInvalid)
+		}
+		body = io.NopCloser(bytes.NewReader(buf))
+		size = int64(len(buf))
+	}
+	return body, &webdav.Entry{
+		Size:        size,
+		ETag:        etag,
+		ContentType: ct,
+		ModTime:     mod,
+	}, nil
 }
 
 type outgoingShareJSON struct {

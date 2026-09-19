@@ -1,8 +1,10 @@
 package files
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -141,5 +143,84 @@ func TestIncomingRemotePlaceholder(t *testing.T) {
 	}
 	if _, _, err := dav.Read(ctx, "bob", "/hello-remote.txt"); !errors.Is(err, webdav.ErrNotImplemented) {
 		t.Fatalf("read remote = %v", err)
+	}
+}
+
+type stubRemoteFile struct {
+	body   string
+	origin string
+	token  string
+	rel    string
+}
+
+func (s *stubRemoteFile) Get(_ context.Context, origin, token, rel string) (io.ReadCloser, *webdav.Entry, error) {
+	s.origin, s.token, s.rel = origin, token, rel
+	b := []byte(s.body)
+	return io.NopCloser(bytes.NewReader(b)), &webdav.Entry{
+		Size: int64(len(b)), ContentType: "text/plain", ETag: "remote-etag",
+	}, nil
+}
+
+func TestIncomingRemoteRead(t *testing.T) {
+	ctx := t.Context()
+	db := testDB(t)
+	us := users.NewSQLStore(db)
+	bob := &users.User{UID: "bob", DisplayName: "Bob", PasswordHash: "x", Enabled: true}
+	if err := us.Create(ctx, bob); err != nil {
+		t.Fatal(err)
+	}
+	st, err := localfs.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dav := NewDAV(st, NewSQLStore(db), us)
+	if _, err := dav.Stat(ctx, "bob", "/"); err != nil {
+		t.Fatal(err)
+	}
+	remote := &stubRemoteFile{body: "hello from remote\n"}
+	dav.Remote = remote
+	dav.Incoming = stubIncoming{mounts: []IncomingMount{{
+		Mount: "/hello-remote.txt", Permissions: webdav.PermRead, ItemType: "file", Remote: true,
+		RemoteOrigin: "https://remote.example.com", RemoteToken: "ocmtok001",
+	}}}
+	rc, ent, err := dav.Read(ctx, "bob", "/hello-remote.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil || string(body) != "hello from remote\n" {
+		t.Fatalf("body = %q %v", body, err)
+	}
+	if ent == nil || !ent.Mounted || !ent.Shared || ent.Size != 18 || ent.ETag != "remote-etag" {
+		t.Fatalf("entry = %+v", ent)
+	}
+	if remote.origin != "https://remote.example.com" || remote.token != "ocmtok001" || remote.rel != "/" {
+		t.Fatalf("get args = %q %q %q", remote.origin, remote.token, remote.rel)
+	}
+}
+
+func TestIncomingRemoteFolderGetIsDir(t *testing.T) {
+	ctx := t.Context()
+	db := testDB(t)
+	us := users.NewSQLStore(db)
+	bob := &users.User{UID: "bob", DisplayName: "Bob", PasswordHash: "x", Enabled: true}
+	if err := us.Create(ctx, bob); err != nil {
+		t.Fatal(err)
+	}
+	st, err := localfs.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dav := NewDAV(st, NewSQLStore(db), us)
+	if _, err := dav.Stat(ctx, "bob", "/"); err != nil {
+		t.Fatal(err)
+	}
+	dav.Incoming = stubIncoming{mounts: []IncomingMount{{
+		Mount: "/remote-dir", Permissions: webdav.PermRead, ItemType: "folder", Remote: true,
+		RemoteOrigin: "https://remote.example.com", RemoteToken: "ocmtok001",
+	}}}
+	if _, _, err := dav.Read(ctx, "bob", "/remote-dir"); !errors.Is(err, webdav.ErrIsDir) {
+		t.Fatalf("folder get = %v", err)
 	}
 }
