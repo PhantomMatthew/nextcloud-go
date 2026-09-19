@@ -146,6 +146,69 @@ func TestSQLStoreFilecache(t *testing.T) {
 	}
 }
 
+func TestSearchByName(t *testing.T) {
+	ctx := t.Context()
+	db := testDB(t)
+	store := NewSQLStore(db)
+	alice := seedUser(t, db)
+	bob := &users.User{UID: "bob", DisplayName: "Bob", PasswordHash: "x", Enabled: true}
+	if err := users.NewSQLStore(db).Create(ctx, bob); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.EnsureRoot(ctx, alice); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.EnsureRoot(ctx, bob.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/hello.txt", "/hello_world.txt", "/100%off.txt"} {
+		if err := store.Insert(ctx, &File{UserID: alice, Path: p, Size: 1, MIME: "text/plain", Permissions: 31}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Insert(ctx, &File{UserID: bob.ID, Path: "/hello.txt", Size: 1, MIME: "text/plain", Permissions: 31}); err != nil {
+		t.Fatal(err)
+	}
+
+	hits, err := store.SearchByName(ctx, alice, "hello", 20)
+	if err != nil || len(hits) != 2 {
+		t.Fatalf("hello = %v %v", hits, err)
+	}
+	if hits[0].Name != "hello.txt" || hits[1].Name != "hello_world.txt" {
+		t.Fatalf("order = %+v", hits)
+	}
+
+	hits, err = store.SearchByName(ctx, alice, "hello_", 20)
+	if err != nil || len(hits) != 1 || hits[0].Name != "hello_world.txt" {
+		t.Fatalf("escaped underscore = %v %v", hits, err)
+	}
+
+	hits, err = store.SearchByName(ctx, alice, "100%", 20)
+	if err != nil || len(hits) != 1 || hits[0].Name != "100%off.txt" {
+		t.Fatalf("escaped percent = %v %v", hits, err)
+	}
+
+	hits, err = store.SearchByName(ctx, alice, "   ", 20)
+	if err != nil || len(hits) != 0 {
+		t.Fatalf("empty term = %v %v", hits, err)
+	}
+
+	hits, err = store.SearchByName(ctx, bob.ID, "hello", 20)
+	if err != nil || len(hits) != 1 || hits[0].UserID != bob.ID {
+		t.Fatalf("bob = %v %v", hits, err)
+	}
+	for _, h := range hits {
+		if h.UserID != bob.ID {
+			t.Fatalf("leaked %+v", h)
+		}
+	}
+
+	hits, err = store.SearchByName(ctx, alice, "hello", 1)
+	if err != nil || len(hits) != 1 {
+		t.Fatalf("limit = %v %v", hits, err)
+	}
+}
+
 func TestInsertRequiresParent(t *testing.T) {
 	ctx := context.Background()
 	db := testDB(t)

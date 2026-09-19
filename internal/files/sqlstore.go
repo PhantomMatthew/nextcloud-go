@@ -24,6 +24,7 @@ type Store interface {
 	RenameSubtree(ctx context.Context, userID int64, srcPath, dstPath string, now time.Time) error
 	Usage(ctx context.Context, userID int64) (int64, error)
 	RecalcAncestors(ctx context.Context, userID int64, startParent *int64, now time.Time) error
+	SearchByName(ctx context.Context, userID int64, term string, limit int) ([]File, error)
 }
 
 // SQLStore is a Store backed by database.DB.
@@ -323,6 +324,58 @@ FROM files WHERE user_id = ? AND (path = ? OR path LIKE ?)`, userID, src, src+"/
 	}
 	_ = node
 	return nil
+}
+
+const searchByNameMax = 20
+
+func (s *SQLStore) SearchByName(ctx context.Context, userID int64, term string, limit int) ([]File, error) {
+	term = strings.TrimSpace(term)
+	if userID == 0 || term == "" {
+		return nil, nil
+	}
+	if limit <= 0 || limit > searchByNameMax {
+		limit = searchByNameMax
+	}
+	op := "LIKE"
+	if s.db.Dialect() == database.DialectPostgres {
+		op = "ILIKE"
+	}
+	q := fmt.Sprintf(`
+SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions
+FROM files
+WHERE user_id = ? AND path <> '/' AND name %s ? ESCAPE '\'
+ORDER BY name, id
+LIMIT ?`, op)
+	rows, err := s.db.Query(ctx, q, userID, likeContains(term), limit)
+	if err != nil {
+		return nil, fmt.Errorf("files: search: %w", err)
+	}
+	defer rows.Close()
+	var out []File
+	for rows.Next() {
+		f, err := scanFile(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("files: search: %w", err)
+	}
+	return out, nil
+}
+
+func likeContains(term string) string {
+	var b strings.Builder
+	b.WriteByte('%')
+	for _, r := range term {
+		if r == '\\' || r == '%' || r == '_' {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('%')
+	return b.String()
 }
 
 func (s *SQLStore) Usage(ctx context.Context, userID int64) (int64, error) {
