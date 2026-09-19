@@ -189,6 +189,9 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-19** — Phase 2g: S3-compatible `storage.Storage` via minio-go,
+  `openStorage` `type == "s3"` (see ADR-0015). Search and user/group shares
+  remain later.
 - **2026-09-19** — Phase 2h: `jobs.SQLStore` / `SQLRunner`, `shares.expire` and
   `locks.expire`, App Start/Stop (see ADR-0014). S3, search, and user/group
   shares remain later.
