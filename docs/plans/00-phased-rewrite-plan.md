@@ -189,6 +189,9 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-19** — Phase 2k: user/group shares (`shareType` 0/1),
+  `0009_share_recipients`, recipient files-jail listing (see ADR-0017).
+  Lock leftovers remain later.
 - **2026-09-19** — Phase 2i: OCS unified-search `files` provider, basename
   `SearchByName` over filecache (see ADR-0016). User/group shares and lock
   leftovers remain later.
