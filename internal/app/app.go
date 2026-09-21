@@ -18,6 +18,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/config"
 	carddav "github.com/PhantomMatthew/nextcloud-go/internal/contacts"
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
+	"github.com/PhantomMatthew/nextcloud-go/internal/events"
 	"github.com/PhantomMatthew/nextcloud-go/internal/files"
 	"github.com/PhantomMatthew/nextcloud-go/internal/httpx"
 	"github.com/PhantomMatthew/nextcloud-go/internal/jobs"
@@ -158,7 +159,9 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	}
 	meta := files.NewSQLStore(db)
 	a.fileMeta = meta
+	bus := events.NewBus(logger)
 	dav := files.NewDAV(st, meta, a.Users)
+	dav.Events = bus
 	dav.Props = files.NewSQLPropertyStore(db)
 	dav.Locks = files.NewSQLLockStore(db)
 	dav.Shares = sharing.NewSQLShareStore(db)
@@ -219,6 +222,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 			DefaultCallTimeout:   time.Duration(cfg.Plugin.DefaultCPUTimeoutMS) * time.Millisecond,
 			Cache:                a.Cache,
 			DB:                   a.DB,
+			Bus:                  bus,
 		}, logger)
 		if err != nil {
 			if cerr := a.closeResources(ctx); cerr != nil {

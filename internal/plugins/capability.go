@@ -70,6 +70,11 @@ func (c *Capabilities) canPublishEvent(topic string) bool {
 	return c != nil && !strings.HasPrefix(topic, "core.") && globAny(c.Events.Publish, topic)
 }
 
+// canSubscribeEvent reports whether the plugin may receive topic.
+func (c *Capabilities) canSubscribeEvent(topic string) bool {
+	return c != nil && globAny(c.Events.Subscribe, topic)
+}
+
 func (c *Capabilities) canRegisterJobs() bool {
 	return c != nil && c.Jobs.Register
 }

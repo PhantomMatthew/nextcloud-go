@@ -2,29 +2,35 @@
 package wasmgen
 
 const (
-	i32          = 0x7f
-	i64          = 0x7e
-	functype     = 0x60
-	opEnd        = 0x0b
-	opI32Const   = 0x41
-	opI64Const   = 0x42
-	opI32Add     = 0x6a
-	opI32And     = 0x71
-	opI32Eq      = 0x46
-	opI64Eq      = 0x51
-	opI64Load    = 0x29
-	opLocalGet   = 0x20
-	opLocalSet   = 0x21
-	opGlobalGet  = 0x23
-	opGlobalSet  = 0x24
-	opCall       = 0x10
-	opDrop       = 0x1a
-	opLoop       = 0x03
-	opIf         = 0x04
-	opBr         = 0x0c
-	opI64ShrU    = 0x88
-	opI32WrapI64 = 0xa7
-	blockVoid    = 0x40
+	i32           = 0x7f
+	i64           = 0x7e
+	functype      = 0x60
+	opEnd         = 0x0b
+	opI32Const    = 0x41
+	opI64Const    = 0x42
+	opI32Add      = 0x6a
+	opI32And      = 0x71
+	opI32Eq       = 0x46
+	opI64Eq       = 0x51
+	opI64Load     = 0x29
+	opLocalGet    = 0x20
+	opLocalSet    = 0x21
+	opGlobalGet   = 0x23
+	opGlobalSet   = 0x24
+	opCall        = 0x10
+	opDrop        = 0x1a
+	opBlock       = 0x02
+	opLoop        = 0x03
+	opIf          = 0x04
+	opBr          = 0x0c
+	opBrIf        = 0x0d
+	opI32Load8U   = 0x2d
+	opI32Store8   = 0x3a
+	opI32GeU      = 0x4f
+	opI64ShrU     = 0x88
+	opI32WrapI64  = 0xa7
+	opUnreachable = 0x00
+	blockVoid     = 0x40
 )
 
 // Standard type table indices used by module specs.
@@ -698,6 +704,88 @@ func DBTxModule(insertSQL, selectSQL string) []byte {
 	expr = append(expr, i32c(0)...)
 	s.onInstall = expr
 	s.onInstallLocals = 3
+	return s.build()
+}
+
+// memcpy emits dst[0:n] = src[0:n] byte-by-byte; iLocal is clobbered.
+func memcpy(dst, src, n []byte, iLocal uint32) []byte {
+	e := i32c(0)
+	e = append(e, opLocalSet, byte(iLocal)) //nolint:gosec // G115: local indices are small constants
+	e = append(e, opBlock, blockVoid, opLoop, blockVoid)
+	e = append(e, opLocalGet, byte(iLocal)) //nolint:gosec // G115: local indices are small constants
+	e = append(e, n...)
+	e = append(e, opI32GeU, opBrIf, 0x01)
+	e = append(e, dst...)
+	e = append(e, opLocalGet, byte(iLocal), opI32Add) //nolint:gosec // G115: local indices are small constants
+	e = append(e, src...)
+	e = append(e, opLocalGet, byte(iLocal), opI32Add) //nolint:gosec // G115: local indices are small constants
+	e = append(e, opI32Load8U, 0x00, 0x00)
+	e = append(e, opI32Store8, 0x00, 0x00)
+	e = append(e, opLocalGet, byte(iLocal)) //nolint:gosec // G115: local indices are small constants
+	e = append(e, i32c(1)...)
+	e = append(e, opI32Add, opLocalSet, byte(iLocal)) //nolint:gosec // G115: local indices are small constants
+	e = append(e, opBr, 0x00, opEnd, opEnd)
+	return e
+}
+
+// EventModule builds an event subscriber/publisher probe: ncgo_on_event logs
+// "event <topic> <payload>" at info, and do_publish calls event_publish with
+// the baked-in topic/payload and returns the host's result code.
+func EventModule(publishTopic, publishPayload string) []byte {
+	const prefix = "event "
+	s := guestSpec{
+		imports:   []imp{{"log", tLog}, {"event_publish", tFourI32}},
+		data:      [][]byte{[]byte(prefix), []byte(publishTopic), []byte(publishPayload)},
+		onInstall: i32c(0),
+	}
+	offs := s.dataOffsets()
+	allocIdx := uint32(len(s.imports)) + 1 //nolint:gosec // G115: test modules have few imports
+
+	// params: 0=topicPtr 1=topicLen 2=payloadPtr 3=payloadLen
+	// locals: 4=dst 5=i 6=total
+	onEvent := i32c(int32(len(prefix)))
+	onEvent = append(onEvent, opLocalGet, 0x01, opI32Add)
+	onEvent = append(onEvent, i32c(1)...)
+	onEvent = append(onEvent, opI32Add, opLocalGet, 0x03, opI32Add, opLocalSet, 0x06)
+	onEvent = append(onEvent, opLocalGet, 0x06, opCall)
+	onEvent = append(onEvent, u32(allocIdx)...)
+	onEvent = append(onEvent, opLocalSet, 0x04) // dst = alloc(total)
+	onEvent = append(onEvent, memcpy([]byte{opLocalGet, 0x04}, i32c(offs[0]), i32c(int32(len(prefix))), 5)...)
+	dstTopic := append([]byte{opLocalGet, 0x04}, i32c(int32(len(prefix)))...)
+	dstTopic = append(dstTopic, opI32Add)
+	onEvent = append(onEvent, memcpy(dstTopic, []byte{opLocalGet, 0x00}, []byte{opLocalGet, 0x01}, 5)...)
+	onEvent = append(onEvent, dstTopic...)
+	onEvent = append(onEvent, opLocalGet, 0x01, opI32Add)
+	onEvent = append(onEvent, i32c(0x20)...)
+	onEvent = append(onEvent, opI32Store8, 0x00, 0x00) // dst[6+topicLen] = ' '
+	dstPayload := append([]byte{opLocalGet, 0x04}, i32c(int32(len(prefix)+1))...)
+	dstPayload = append(dstPayload, opI32Add, opLocalGet, 0x01, opI32Add)
+	onEvent = append(onEvent, memcpy(dstPayload, []byte{opLocalGet, 0x02}, []byte{opLocalGet, 0x03}, 5)...)
+	onEvent = append(onEvent, i32c(1)...)
+	onEvent = append(onEvent, opLocalGet, 0x04, opLocalGet, 0x06, opCall, 0x00, opDrop) // log built message
+	onEvent = append(onEvent, i32c(0)...)
+	s.extras = append(s.extras, extraFn{name: "ncgo_on_event", typ: tFourI32, locals: 3, expr: onEvent})
+
+	doPublish := i32c(offs[1])
+	doPublish = append(doPublish, i32c(i32n(len(publishTopic)))...)
+	doPublish = append(doPublish, i32c(offs[2])...)
+	doPublish = append(doPublish, i32c(i32n(len(publishPayload)))...)
+	doPublish = append(doPublish, opCall, 0x01) // event_publish; the code is the return value
+	s.extras = append(s.extras, extraFn{name: "do_publish", typ: tNullToI32, expr: doPublish})
+	return s.build()
+}
+
+// EventFailListenerModule exports ncgo_on_event returning a non-zero code.
+func EventFailListenerModule() []byte {
+	s := guestSpec{onInstall: i32c(0)}
+	s.extras = []extraFn{{name: "ncgo_on_event", typ: tFourI32, expr: i32c(7)}}
+	return s.build()
+}
+
+// EventTrapListenerModule exports ncgo_on_event that traps (unreachable).
+func EventTrapListenerModule() []byte {
+	s := guestSpec{onInstall: i32c(0)}
+	s.extras = []extraFn{{name: "ncgo_on_event", typ: tFourI32, expr: []byte{opUnreachable}}}
 	return s.build()
 }
 

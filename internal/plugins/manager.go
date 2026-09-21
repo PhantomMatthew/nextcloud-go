@@ -47,5 +47,6 @@ func startOne(ctx context.Context, h *Host, row *RegistryRow, logger *slog.Logge
 		_ = p.Close(ctx)
 		return fail("start", err)
 	}
+	h.attach(p)
 	return p
 }

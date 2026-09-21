@@ -9,10 +9,10 @@ import (
 )
 
 // This file holds the host functions whose backing subsystems are not yet
-// implemented (storage proxying, outbound HTTP, event bus, job wiring,
-// route mounting, plugin config store). Each validates the relevant
-// capability so the default-deny posture is exercised now, then returns
-// ErrUnsupported until its increment lands.
+// implemented (storage proxying, outbound HTTP, job wiring, route mounting,
+// plugin config store). Each validates the relevant capability so the
+// default-deny posture is exercised now, then returns ErrUnsupported until
+// its increment lands.
 
 func (h *Host) configGet(ctx context.Context, _ api.Module, _, _, _, _ int32) int32 {
 	return unsupportedGranted(pluginCaps(ctx).hasConfigRead())
@@ -77,14 +77,6 @@ func (h *Host) httpResponseBodyRead(ctx context.Context, _ api.Module, _, _, _ i
 
 func (h *Host) httpResponseClose(ctx context.Context, _ api.Module, _ int32) int32 {
 	return unsupportedGranted(pluginCaps(ctx).hasHTTPOutbound())
-}
-
-func (h *Host) eventPublish(ctx context.Context, mod api.Module, topicPtr, topicLen, _, _ int32) int32 {
-	topic, code := readString(mod, topicPtr, topicLen)
-	if code != pluginsdk.ErrCodeOK {
-		return code
-	}
-	return unsupportedGranted(pluginCaps(ctx).canPublishEvent(topic))
 }
 
 func (h *Host) jobEnqueue(ctx context.Context, _ api.Module, _, _, _, _ int32, _ int64) int32 {

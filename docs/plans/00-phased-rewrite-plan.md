@@ -189,6 +189,14 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4c2: in-process event bus (`internal/events`,
+  synchronous fan-out with re-entrant snapshot semantics) and plugin event
+  delivery — `event_publish` implemented with `events.publish` glob +
+  `core.*` reservation, manifest `events.subscribe` + `ncgo_on_event`
+  delivery via guest alloc/write/call/free, publisher self-skip, delivery
+  failures logged and never propagated, and the first core emission
+  (`files.uploaded` with MessagePack `{user, path, size, created}`) from the
+  files DAV (see ADR-0040).
 - **2026-09-21** — Phase 4c1: `db.*` host functions implemented — SQL
   safety via xwb1989/sqlparser AST table extraction (fail closed),
   SELECT/write/DDL classes with DDL restricted to lifecycle hooks,

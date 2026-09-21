@@ -12,6 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vmihailenco/msgpack/v5"
+
+	"github.com/PhantomMatthew/nextcloud-go/internal/events"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
@@ -31,6 +34,8 @@ type DAV struct {
 	Incoming IncomingLookup
 	NewToken func() string
 	Remote   RemoteFile
+	// Events, when set, receives files.uploaded after a successful Write.
+	Events *events.Bus
 }
 
 // NewDAV returns a DAV adapter.
@@ -403,7 +408,30 @@ func (d *DAV) listRemote(ctx context.Context, np string, m *IncomingMount) ([]*w
 }
 
 func (d *DAV) Write(ctx context.Context, user, p string, r io.Reader, mtime *time.Time) (*webdav.Entry, bool, error) {
-	return d.writeMaybeIncoming(ctx, user, p, r, mtime, true)
+	ent, created, err := d.writeMaybeIncoming(ctx, user, p, r, mtime, true)
+	if err != nil {
+		return nil, false, err
+	}
+	d.emitUploaded(ctx, user, ent, created)
+	return ent, created, nil
+}
+
+// emitUploaded publishes files.uploaded after a successful write; emission
+// never fails the write.
+func (d *DAV) emitUploaded(ctx context.Context, user string, ent *webdav.Entry, created bool) {
+	if d.Events == nil {
+		return
+	}
+	payload, err := msgpack.Marshal(map[string]any{
+		"user":    user,
+		"path":    ent.Path,
+		"size":    ent.Size,
+		"created": created,
+	})
+	if err != nil {
+		return
+	}
+	d.Events.Publish(ctx, events.Event{Topic: "files.uploaded", Payload: payload, Source: "host"})
 }
 
 func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *time.Time, snapshot bool) (*webdav.Entry, bool, error) {

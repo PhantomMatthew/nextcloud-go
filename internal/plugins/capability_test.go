@@ -63,3 +63,30 @@ func TestCapabilityDefaults(t *testing.T) {
 		t.Fatal("wildcard grant should allow non-core topics")
 	}
 }
+
+func TestCanSubscribeEvent(t *testing.T) {
+	var nilCaps *Capabilities
+	if nilCaps.canSubscribeEvent("demo.x") {
+		t.Fatal("nil capabilities must deny subscriptions")
+	}
+	c := &Capabilities{}
+	if c.canSubscribeEvent("demo.x") {
+		t.Fatal("empty grants must deny subscriptions")
+	}
+	c.Events.Subscribe = []string{"demo.*", "exact.topic"}
+	for _, tc := range []struct {
+		topic string
+		want  bool
+	}{
+		{"demo.hello", true},
+		{"demo.", true},
+		{"exact.topic", true},
+		{"other.hello", false},
+		{"demo.hello.extra", true}, // * crosses dots (path.Match)
+		{"core.user.deleted", false},
+	} {
+		if got := c.canSubscribeEvent(tc.topic); got != tc.want {
+			t.Errorf("canSubscribeEvent(%q) = %v, want %v", tc.topic, got, tc.want)
+		}
+	}
+}

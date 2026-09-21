@@ -117,11 +117,11 @@ func TestEventPublishDenied(t *testing.T) {
 	}
 }
 
-func TestEventPublishGrantedUnsupported(t *testing.T) {
+func TestEventPublishGrantedUnavailable(t *testing.T) {
 	h, buf := testHost(t, HostConfig{})
 	m := probeManifest()
 	m.Capabilities = Capabilities{Events: EventsCapabilities{Publish: []string{"files.*"}}}
-	installModule(t, h, m, wasmgen.EventProbeModule("files.uploaded", ErrCodeUnsupported))
+	installModule(t, h, m, wasmgen.EventProbeModule("files.uploaded", ErrCodeUnavailable))
 	if !strings.Contains(buf.String(), "probe-ok") {
 		t.Fatalf("log %q", buf.String())
 	}

@@ -598,6 +598,13 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-22** — Phase 4c2 implemented events (ADR-0040): §6
+  `event_publish` and the §6/§10 subscription model are live — synchronous
+  in-process bus, `events.subscribe` globs gate `ncgo_on_event` delivery
+  (alloc/write/call/free into guest memory), publishers skip themselves,
+  delivery failures never fail the publish, and the files module emits
+  `files.uploaded` with a MessagePack `{user, path, size, created}` payload
+  per §10.
 - **2026-09-21** — Phase 4c1 implemented `db.*` (ADR-0039): §14 Q1
   resolved with xwb1989/sqlparser (single MySQL-dialect parser for all
   three backends, fail closed); DDL restricted to lifecycle hooks per

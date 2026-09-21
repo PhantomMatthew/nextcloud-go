@@ -12,6 +12,7 @@ import (
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/cache"
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
+	"github.com/PhantomMatthew/nextcloud-go/internal/events"
 )
 
 // HostConfig sizes the wazero runtime and wires host services.
@@ -23,6 +24,9 @@ type HostConfig struct {
 	Cache cache.Cache
 	// DB backs the db_* host functions. Nil makes them return ErrUnavailable.
 	DB database.DB
+	// Bus backs event_publish and host-to-plugin event delivery. Nil makes
+	// event_publish return ErrUnavailable and disables delivery.
+	Bus *events.Bus
 }
 
 // Host is a wazero-backed plugin runtime.
@@ -35,6 +39,11 @@ type Host struct {
 	// functions (which receive api.Module, not *instance) can find it.
 	handleTabsMu sync.RWMutex
 	handleTabs   map[api.Module]*handleTable
+
+	// dispatch tracks started plugins eligible for event delivery.
+	dispMu      sync.RWMutex
+	dispatch    map[*Plugin]struct{}
+	unsubEvents func()
 }
 
 // NewHost constructs a runtime with the full ncgo host module surface. WASI
@@ -60,7 +69,10 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().
 		WithCloseOnContextDone(true).
 		WithMemoryLimitPages(pages))
-	h := &Host{rt: rt, logger: logger, cfg: cfg, handleTabs: make(map[api.Module]*handleTable)}
+	h := &Host{rt: rt, logger: logger, cfg: cfg, handleTabs: make(map[api.Module]*handleTable), dispatch: make(map[*Plugin]struct{})}
+	if cfg.Bus != nil {
+		h.unsubEvents = cfg.Bus.Subscribe(h.dispatchEvent)
+	}
 	if err := h.registerHostModule(ctx); err != nil {
 		_ = rt.Close(ctx)
 		return nil, fmt.Errorf("plugins: host module: %w", err)
@@ -139,6 +151,10 @@ func (h *Host) Load(ctx context.Context, m *Manifest, wasm []byte) (*Plugin, err
 func (h *Host) Close(ctx context.Context) error {
 	if h == nil || h.rt == nil {
 		return nil
+	}
+	if h.unsubEvents != nil {
+		h.unsubEvents()
+		h.unsubEvents = nil
 	}
 	return h.rt.Close(ctx)
 }

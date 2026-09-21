@@ -127,6 +127,9 @@ func (p *Plugin) Close(ctx context.Context) error {
 	if p == nil {
 		return nil
 	}
+	if p.host != nil {
+		p.host.detach(p)
+	}
 	if p.manager != nil {
 		p.manager.closeAll()
 	}
