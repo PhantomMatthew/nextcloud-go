@@ -1,0 +1,19 @@
+PUT /remote.php/dav/calendars/bob/personal_shared_by_admin/ncgo-bob-001.ics HTTP/1.1
+Host: cloud.example.com
+User-Agent: ncgo-goldentest/0.0
+Accept: */*
+Authorization: Basic Ym9iOmJvYg==
+Content-Type: text/calendar; charset=utf-8
+Content-Length: 201
+
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//nextcloud-go//EN
+BEGIN:VEVENT
+UID:ncgo-bob-001
+DTSTAMP:20250501T120000Z
+DTSTART:20250502T140000Z
+DTEND:20250502T150000Z
+SUMMARY:Phase 3e3
+END:VEVENT
+END:VCALENDAR

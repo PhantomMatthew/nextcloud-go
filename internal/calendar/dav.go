@@ -53,6 +53,45 @@ func (d *DAV) resolveUser(ctx context.Context, uid string) (*users.User, error) 
 	return u, nil
 }
 
+const accessOwner = "owner"
+
+// resolvedCalendar is a calendar visible to the authenticated user,
+// either their own or one shared with them.
+type resolvedCalendar struct {
+	cal      Calendar // cal.UserID is the owner's id; store calls use it
+	access   string   // accessOwner | ShareAccessRead | ShareAccessReadWrite
+	ownerUID string
+	shared   bool
+}
+
+// sharedURI is the calendar URI a sharee sees for a shared calendar,
+// following the Nextcloud "{uri}_shared_by_{owner}" naming.
+func sharedURI(sc *SharedCalendar) string {
+	return sc.URI + "_shared_by_" + sc.OwnerUID
+}
+
+// resolveCalendar finds calURI among the user's own calendars first,
+// then among calendars shared with them (matched by sharedURI).
+func (d *DAV) resolveCalendar(ctx context.Context, u *users.User, calURI string) (*resolvedCalendar, error) {
+	cal, err := d.Store.GetCalendarByURI(ctx, u.ID, calURI)
+	if err == nil {
+		return &resolvedCalendar{cal: *cal, access: accessOwner, ownerUID: u.UID}, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	shared, err := d.Store.ListSharedCalendars(ctx, u.ID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range shared {
+		if sharedURI(&shared[i]) == calURI {
+			return &resolvedCalendar{cal: shared[i].Calendar, access: shared[i].Access, ownerUID: shared[i].OwnerUID, shared: true}, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
 func (d *DAV) Stat(ctx context.Context, user, p string) (*webdav.Entry, error) {
 	u, err := d.resolveUser(ctx, user)
 	if err != nil {
@@ -65,14 +104,14 @@ func (d *DAV) Stat(ctx context.Context, user, p string) (*webdav.Entry, error) {
 	if calURI == "" {
 		return d.homeEntry(ctx, u), nil
 	}
-	cal, err := d.Store.GetCalendarByURI(ctx, u.ID, calURI)
+	rc, err := d.resolveCalendar(ctx, u, calURI)
 	if err != nil {
 		return nil, mapErr(err)
 	}
 	if objURI == "" {
-		return calendarEntry(cal), nil
+		return resolvedCalendarEntry(rc), nil
 	}
-	obj, err := d.Store.GetObject(ctx, u.ID, calURI, objURI)
+	obj, err := d.Store.GetObject(ctx, rc.cal.UserID, rc.cal.URI, objURI)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -96,13 +135,24 @@ func (d *DAV) List(ctx context.Context, user, p string) ([]*webdav.Entry, error)
 		if err != nil {
 			return nil, err
 		}
-		out := make([]*webdav.Entry, 0, len(cals))
+		shared, err := d.Store.ListSharedCalendars(ctx, u.ID)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]*webdav.Entry, 0, len(cals)+len(shared))
 		for i := range cals {
 			out = append(out, calendarEntry(&cals[i]))
 		}
+		for i := range shared {
+			out = append(out, sharedCalendarEntry(&shared[i]))
+		}
 		return out, nil
 	}
-	objs, err := d.Store.ListObjects(ctx, u.ID, calURI)
+	rc, err := d.resolveCalendar(ctx, u, calURI)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	objs, err := d.Store.ListObjects(ctx, rc.cal.UserID, rc.cal.URI)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -125,7 +175,11 @@ func (d *DAV) Read(ctx context.Context, user, p string) (io.ReadCloser, *webdav.
 	if objURI == "" {
 		return nil, nil, webdav.ErrMethodNotAllowed
 	}
-	obj, err := d.Store.GetObject(ctx, u.ID, calURI, objURI)
+	rc, err := d.resolveCalendar(ctx, u, calURI)
+	if err != nil {
+		return nil, nil, mapErr(err)
+	}
+	obj, err := d.Store.GetObject(ctx, rc.cal.UserID, rc.cal.URI, objURI)
 	if err != nil {
 		return nil, nil, mapErr(err)
 	}
@@ -144,12 +198,19 @@ func (d *DAV) Write(ctx context.Context, user, p string, r io.Reader, _ *time.Ti
 	if objURI == "" {
 		return nil, false, webdav.ErrMethodNotAllowed
 	}
+	rc, err := d.resolveCalendar(ctx, u, calURI)
+	if err != nil {
+		return nil, false, mapErr(err)
+	}
+	if rc.shared && rc.access != ShareAccessReadWrite {
+		return nil, false, mapErr(ErrForbidden)
+	}
 	data, err := io.ReadAll(io.LimitReader(r, 4<<20))
 	if err != nil {
 		return nil, false, err
 	}
 	obj := &Object{URI: objURI, Data: data}
-	created, err := d.Store.PutObject(ctx, u.ID, calURI, obj)
+	created, err := d.Store.PutObject(ctx, rc.cal.UserID, rc.cal.URI, obj)
 	if err != nil {
 		return nil, false, mapErr(err)
 	}
@@ -205,10 +266,20 @@ func (d *DAV) Remove(ctx context.Context, user, p string) error {
 	if calURI == "" {
 		return webdav.ErrForbidden
 	}
+	rc, err := d.resolveCalendar(ctx, u, calURI)
+	if err != nil {
+		return mapErr(err)
+	}
 	if objURI == "" {
+		if rc.shared {
+			return mapErr(ErrForbidden)
+		}
 		return mapErr(d.Store.DeleteCalendar(ctx, u.ID, calURI))
 	}
-	return mapErr(d.Store.DeleteObject(ctx, u.ID, calURI, objURI))
+	if rc.shared && rc.access != ShareAccessReadWrite {
+		return mapErr(ErrForbidden)
+	}
+	return mapErr(d.Store.DeleteObject(ctx, rc.cal.UserID, rc.cal.URI, objURI))
 }
 
 func (d *DAV) Move(context.Context, string, string, string, string, bool) (*webdav.Entry, bool, error) {
@@ -320,6 +391,26 @@ func calendarEntry(c *Calendar) *webdav.Entry {
 		CalendarEnabled:     c.Enabled,
 		CalendarDescription: c.Description,
 	}
+}
+
+// resolvedCalendarEntry renders a resolved (own or shared) calendar.
+func resolvedCalendarEntry(rc *resolvedCalendar) *webdav.Entry {
+	e := calendarEntry(&rc.cal)
+	if rc.shared {
+		e.Path = "/" + rc.cal.URI + "_shared_by_" + rc.ownerUID
+		e.Shared = true
+		e.ShareAccess = rc.access
+		e.OwnerPrincipal = "/remote.php/dav/principals/users/" + rc.ownerUID + "/"
+		e.Permissions = webdav.PermRead
+		if rc.access == ShareAccessReadWrite {
+			e.Permissions = webdav.PermAll
+		}
+	}
+	return e
+}
+
+func sharedCalendarEntry(sc *SharedCalendar) *webdav.Entry {
+	return resolvedCalendarEntry(&resolvedCalendar{cal: sc.Calendar, access: sc.Access, ownerUID: sc.OwnerUID, shared: true})
 }
 
 func objectEntry(calURI string, o *Object) *webdav.Entry {

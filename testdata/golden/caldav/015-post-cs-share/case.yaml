@@ -1,0 +1,24 @@
+schema_version: 1
+id: caldav/015-post-cs-share
+description: |
+  POST cs:share on the personal calendar shares it to bob read-write.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 3e3
+  captured_at: "2026-09-21T00:00:00Z"
+request:
+  body_kind: bytes
+response:
+  body_kind: empty
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 200
+replayable: true
+mutating: true
+synthetic: true
+tags: [caldav, sharing, phase3e3]

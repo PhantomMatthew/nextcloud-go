@@ -189,6 +189,12 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-21** — Phase 3e3: calendar sharing via `calendar_shares`
+  and POST `cs:share`; shared calendars appear as
+  `{uri}_shared_by_{owner}` in the sharee's home with `share-access`
+  and `nc:owner-principal`; read-write enforced for object writes (see
+  ADR-0032). Invite accept flow, group shares, and scheduling remain
+  later.
 - **2026-09-21** — Phase 3e2: `free-busy-query` REPORT returns a raw
   VFREEBUSY document via new `webdav.RawReportFS`; RRULE expansion
   (FREQ/INTERVAL/COUNT/UNTIL, cap 1000), TRANSP:TRANSPARENT excluded,

@@ -163,6 +163,12 @@ func writeProps(buf *bytes.Buffer, ctx PropfindContext, e *Entry) {
 			fmt.Fprintf(buf, `<d:sync-token>https://nextcloud-go/sync/%s</d:sync-token>`, xmlEscape(e.CTag))
 		}
 		buf.WriteString(`<cal:supported-calendar-component-set><cal:comp name="VEVENT"/><cal:comp name="VTODO"/></cal:supported-calendar-component-set>`)
+		if e.ShareAccess != "" {
+			fmt.Fprintf(buf, `<d:share-access><d:%s/></d:share-access>`, xmlEscape(e.ShareAccess))
+		}
+		if e.OwnerPrincipal != "" {
+			fmt.Fprintf(buf, `<nc:owner-principal><d:href>%s</d:href></nc:owner-principal>`, xmlEscape(e.OwnerPrincipal))
+		}
 		if e.CalendarColor != "" {
 			fmt.Fprintf(buf, `<apple:calendar-color>%s</apple:calendar-color>`, xmlEscape(e.CalendarColor))
 		}

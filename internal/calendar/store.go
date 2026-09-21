@@ -23,6 +23,8 @@ const (
 	RecurUntilMS         = int64(4102444800000) // 2100-01-01
 	ComponentVEVENT      = "VEVENT"
 	ComponentVTODO       = "VTODO"
+	ShareAccessRead      = "read"
+	ShareAccessReadWrite = "read-write"
 )
 
 // Calendar is a CalDAV calendar collection.
@@ -71,4 +73,26 @@ type Store interface {
 	ListObjects(ctx context.Context, userID int64, calendarURI string) ([]Object, error)
 	ObjectsInRange(ctx context.Context, userID int64, calendarURI string, start, end time.Time) ([]Object, error)
 	GetByUID(ctx context.Context, calendarID int64, uid string) (*Object, error)
+	UpsertCalendarShare(ctx context.Context, calendarID, targetUserID int64, access string) error
+	DeleteCalendarShare(ctx context.Context, calendarID, targetUserID int64) error
+	ListSharedCalendars(ctx context.Context, userID int64) ([]SharedCalendar, error)
+	GetSharedCalendar(ctx context.Context, userID int64, uri string) (*SharedCalendar, error)
+}
+
+// Share grants a target user access to a calendar.
+type Share struct {
+	ID           int64
+	CalendarID   int64
+	TargetUserID int64
+	Access       string // ShareAccessRead | ShareAccessReadWrite
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+// SharedCalendar is a calendar visible to a sharee, with the owner UID
+// and the granted access level.
+type SharedCalendar struct {
+	Calendar
+	OwnerUID string
+	Access   string
 }

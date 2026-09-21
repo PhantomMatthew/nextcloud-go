@@ -1,0 +1,15 @@
+POST /remote.php/dav/calendars/admin/personal/ HTTP/1.1
+Host: cloud.example.com
+User-Agent: ncgo-goldentest/0.0
+Accept: */*
+Authorization: Basic YWRtaW46YWRtaW4=
+Content-Type: application/xml; charset=utf-8
+Content-Length: 222
+
+<?xml version="1.0" encoding="utf-8" ?>
+<cs:share xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/">
+  <cs:set>
+    <d:href>/remote.php/dav/principals/users/bob/</d:href>
+    <cs:read-write/>
+  </cs:set>
+</cs:share>

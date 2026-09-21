@@ -56,6 +56,8 @@ type Entry struct {
 	CalendarEnabled      bool
 	CalendarDescription  string
 	CalendarData         string
+	ShareAccess          string // "" | "read" | "read-write" (shared calendars)
+	OwnerPrincipal       string // principal href of the owner (shared calendars)
 	CurrentUserPrincipal string
 	CalendarHomeSet      string
 	IsAddressbook        bool
@@ -147,6 +149,12 @@ type ReportFS interface {
 // ok=false falls back to the multistatus Report path.
 type RawReportFS interface {
 	RawReport(ctx context.Context, user, path string, req ReportRequest) (body []byte, contentType string, ok bool, err error)
+}
+
+// ShareFS is implemented by filesystems that accept a POST share request
+// (CalDAV cs:share on a calendar collection).
+type ShareFS interface {
+	Share(ctx context.Context, user, path string, body []byte) error
 }
 
 // CalendarMkdirFS is implemented by filesystems that accept MKCALENDAR.

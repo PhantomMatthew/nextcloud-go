@@ -103,9 +103,36 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.report(w, r)
 	case "MKCALENDAR":
 		h.mkcalendar(w, r)
+	case http.MethodPost:
+		h.postShare(w, r)
 	default:
 		h.methodNotAllowed(w, r)
 	}
+}
+
+// postShare handles POST cs:share on a calendar collection. Filesystems
+// without ShareFS get 405.
+func (h *Handler) postShare(w http.ResponseWriter, r *http.Request) {
+	user, sub, ok := h.authorizePath(w, r)
+	if !ok {
+		return
+	}
+	sharer, ok := h.FS.(ShareFS)
+	if !ok {
+		h.methodNotAllowed(w, r)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+	if err := sharer.Share(r.Context(), user, sub, body); err != nil {
+		writeFSError(w, err)
+		return
+	}
+	w.Header().Set("Content-Length", "0")
+	w.WriteHeader(http.StatusOK)
 }
 
 func (h *Handler) davHeader() string {

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
 )
 
@@ -33,32 +34,49 @@ func (d *DAV) Report(ctx context.Context, user, p string, req webdav.ReportReque
 	switch kind {
 	case "calendar-query":
 		comp, start, end := parseCompFilter(req.Body)
-		return d.query(ctx, u.ID, calURI, comp, start, end)
+		return d.query(ctx, u, calURI, comp, start, end)
 	case "calendar-multiget":
-		return d.multiget(ctx, user, u.ID, req.Body)
+		return d.multiget(ctx, u, req.Body)
 	default:
 		return nil, webdav.ErrBadRequest
 	}
 }
 
-func (d *DAV) query(ctx context.Context, userID int64, calURI, component string, start, end time.Time) ([]*webdav.Entry, error) {
-	var cals []Calendar
+// query runs a calendar-query over the user's own and shared calendars.
+// Store calls use each calendar's owner id and original URI; entry paths
+// use the URI the requester sees.
+func (d *DAV) query(ctx context.Context, u *users.User, calURI, component string, start, end time.Time) ([]*webdav.Entry, error) {
+	type target struct {
+		ownerID  int64
+		storeURI string
+		entryURI string
+	}
+	var targets []target
 	if calURI == "" {
-		listed, err := d.Store.ListCalendars(ctx, userID)
+		listed, err := d.Store.ListCalendars(ctx, u.ID)
 		if err != nil {
 			return nil, err
 		}
-		cals = listed
+		for i := range listed {
+			targets = append(targets, target{u.ID, listed[i].URI, listed[i].URI})
+		}
+		shared, err := d.Store.ListSharedCalendars(ctx, u.ID)
+		if err != nil {
+			return nil, err
+		}
+		for i := range shared {
+			targets = append(targets, target{shared[i].UserID, shared[i].URI, sharedURI(&shared[i])})
+		}
 	} else {
-		c, err := d.Store.GetCalendarByURI(ctx, userID, calURI)
+		rc, err := d.resolveCalendar(ctx, u, calURI)
 		if err != nil {
 			return nil, mapErr(err)
 		}
-		cals = []Calendar{*c}
+		targets = []target{{rc.cal.UserID, rc.cal.URI, calURI}}
 	}
 	var out []*webdav.Entry
-	for i := range cals {
-		objs, err := d.Store.ObjectsInRange(ctx, userID, cals[i].URI, start, end)
+	for _, t := range targets {
+		objs, err := d.Store.ObjectsInRange(ctx, t.ownerID, t.storeURI, start, end)
 		if err != nil {
 			return nil, mapErr(err)
 		}
@@ -66,22 +84,27 @@ func (d *DAV) query(ctx context.Context, userID int64, calURI, component string,
 			if component != "" && objs[j].Component != component {
 				continue
 			}
-			out = append(out, objectEntry(cals[i].URI, &objs[j]))
+			out = append(out, objectEntry(t.entryURI, &objs[j]))
 		}
 	}
 	return out, nil
 }
 
-func (d *DAV) multiget(ctx context.Context, uid string, userID int64, body []byte) ([]*webdav.Entry, error) {
+func (d *DAV) multiget(ctx context.Context, u *users.User, body []byte) ([]*webdav.Entry, error) {
 	hrefs := parseHrefs(body)
 	out := make([]*webdav.Entry, 0, len(hrefs))
 	for _, href := range hrefs {
-		calURI, objURI, ok := hrefToObject(href, uid)
+		calURI, objURI, ok := hrefToObject(href, u.UID)
 		if !ok {
 			out = append(out, &webdav.Entry{Path: href, Status: http.StatusNotFound})
 			continue
 		}
-		obj, err := d.Store.GetObject(ctx, userID, calURI, objURI)
+		rc, err := d.resolveCalendar(ctx, u, calURI)
+		if err != nil {
+			out = append(out, &webdav.Entry{Path: "/" + calURI + "/" + objURI, Status: http.StatusNotFound})
+			continue
+		}
+		obj, err := d.Store.GetObject(ctx, rc.cal.UserID, rc.cal.URI, objURI)
 		if err != nil {
 			out = append(out, &webdav.Entry{Path: "/" + calURI + "/" + objURI, Status: http.StatusNotFound})
 			continue

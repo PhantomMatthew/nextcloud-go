@@ -341,3 +341,92 @@ func scanObject(row scanner) (*Object, error) {
 	o.UpdatedAt = time.UnixMilli(updated).UTC()
 	return &o, nil
 }
+
+func (s *SQLStore) UpsertCalendarShare(ctx context.Context, calendarID, targetUserID int64, access string) error {
+	if access != ShareAccessRead && access != ShareAccessReadWrite {
+		return fmt.Errorf("%w: share access %q", ErrInvalid, access)
+	}
+	now := s.now().UnixMilli()
+	res, err := s.db.Exec(ctx, `
+UPDATE calendar_shares SET access=?, updated_at=? WHERE calendar_id=? AND target_user_id=?`,
+		access, now, calendarID, targetUserID)
+	if err != nil {
+		return fmt.Errorf("calendar: share update: %w", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		return nil
+	}
+	if _, err := s.db.Exec(ctx, `
+INSERT INTO calendar_shares (calendar_id, target_user_id, access, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?)`, calendarID, targetUserID, access, now, now); err != nil {
+		return fmt.Errorf("calendar: share insert: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLStore) DeleteCalendarShare(ctx context.Context, calendarID, targetUserID int64) error {
+	res, err := s.db.Exec(ctx, `
+DELETE FROM calendar_shares WHERE calendar_id = ? AND target_user_id = ?`, calendarID, targetUserID)
+	if err != nil {
+		return fmt.Errorf("calendar: share delete: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *SQLStore) ListSharedCalendars(ctx context.Context, userID int64) ([]SharedCalendar, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT c.id, c.user_id, c.uri, c.displayname, c.description, c.calendar_color, c.calendar_order, c.timezone, c.enabled, c.ctag, c.created_at, c.updated_at,
+       u.uid, s.access
+FROM calendar_shares s
+JOIN calendars c ON c.id = s.calendar_id
+JOIN users u ON u.id = c.user_id
+WHERE s.target_user_id = ? ORDER BY c.uri`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("calendar: list shared: %w", err)
+	}
+	defer rows.Close()
+	var out []SharedCalendar
+	for rows.Next() {
+		sc, err := scanSharedCalendar(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *sc)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLStore) GetSharedCalendar(ctx context.Context, userID int64, uri string) (*SharedCalendar, error) {
+	row := s.db.QueryRow(ctx, `
+SELECT c.id, c.user_id, c.uri, c.displayname, c.description, c.calendar_color, c.calendar_order, c.timezone, c.enabled, c.ctag, c.created_at, c.updated_at,
+       u.uid, s.access
+FROM calendar_shares s
+JOIN calendars c ON c.id = s.calendar_id
+JOIN users u ON u.id = c.user_id
+WHERE s.target_user_id = ? AND c.uri = ?`, userID, uri)
+	sc, err := scanSharedCalendar(row)
+	if err != nil {
+		return nil, err
+	}
+	return sc, nil
+}
+
+func scanSharedCalendar(row scanner) (*SharedCalendar, error) {
+	var sc SharedCalendar
+	var enabled int
+	var created, updated int64
+	err := row.Scan(&sc.ID, &sc.UserID, &sc.URI, &sc.DisplayName, &sc.Description, &sc.Color, &sc.Order, &sc.Timezone, &enabled, &sc.CTag, &created, &updated, &sc.OwnerUID, &sc.Access)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, database.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("calendar: scan shared: %w", err)
+	}
+	sc.Enabled = enabled != 0
+	sc.CreatedAt = time.UnixMilli(created).UTC()
+	sc.UpdatedAt = time.UnixMilli(updated).UTC()
+	return &sc, nil
+}

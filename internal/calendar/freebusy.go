@@ -156,12 +156,19 @@ func (d *DAV) FreeBusy(ctx context.Context, user, calURI string, start, end time
 			return nil, err
 		}
 		cals = listed
+		shared, err := d.Store.ListSharedCalendars(ctx, u.ID)
+		if err != nil {
+			return nil, err
+		}
+		for i := range shared {
+			cals = append(cals, shared[i].Calendar)
+		}
 	} else {
-		c, err := d.Store.GetCalendarByURI(ctx, u.ID, calURI)
+		rc, err := d.resolveCalendar(ctx, u, calURI)
 		if err != nil {
 			return nil, mapErr(err)
 		}
-		cals = []Calendar{*c}
+		cals = []Calendar{rc.cal}
 	}
 	var busy [][2]time.Time
 	for i := range cals {
