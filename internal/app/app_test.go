@@ -172,6 +172,12 @@ func seedPhase1DAV(t *testing.T, a *App) {
 			t.Fatal(err)
 		}
 	}
+	if err := a.Users.CreateGroup(context.Background(), &users.Group{GID: "engineers", DisplayName: "Engineers"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Users.AddGroupMember(context.Background(), "engineers", "bob"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := a.davFS.Stat(context.Background(), "bob", "/"); err != nil {
 		t.Fatal(err)
 	}

@@ -9,4 +9,4 @@ X-Permitted-Cross-Domain-Policies: none
 X-Robots-Tag: noindex, nofollow
 X-Xss-Protection: 1; mode=block
 
-{"ocs":{"meta":{"status":"ok","statuscode":200,"message":"OK"},"data":{"exact":{"users":[],"groups":[],"remotes":[],"remote_groups":[],"emails":[],"circles":[],"rooms":[]},"users":[],"groups":[],"emails":[],"circles":[],"rooms":[],"remotes":[],"remote_groups":[],"lookup":[{"label":"Bob Remote","value":{"shareType":6,"shareWith":"bob@https:\/\/remote.example.com","server":"https:\/\/remote.example.com"}}]}}}
+{"ocs":{"meta":{"status":"ok","statuscode":200,"message":"OK"},"data":{"exact":{"users":[{"label":"Bob","value":{"shareType":0,"shareWith":"bob"}}],"groups":[],"remotes":[],"remote_groups":[],"emails":[],"circles":[],"rooms":[]},"users":[],"groups":[],"emails":[],"circles":[],"rooms":[],"remotes":[],"remote_groups":[],"lookup":[{"label":"Bob Remote","value":{"shareType":6,"shareWith":"bob@https:\/\/remote.example.com","server":"https:\/\/remote.example.com"}}]}}}

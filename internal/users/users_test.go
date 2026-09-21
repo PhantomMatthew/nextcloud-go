@@ -170,3 +170,43 @@ func TestEnsureBootstrapAdmin(t *testing.T) {
 		t.Fatalf("second bootstrap count = %d %v", n, err)
 	}
 }
+
+func TestSearchAndSearchGroups(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+	s := NewSQLStore(db)
+	for _, u := range []*User{
+		{UID: "alice", DisplayName: "Alice A", PasswordHash: "x", Enabled: true},
+		{UID: "bob", DisplayName: "Bob B", PasswordHash: "x", Enabled: true},
+		{UID: "bobby", DisplayName: "Bobby C", PasswordHash: "x", Enabled: false},
+	} {
+		if err := s.Create(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.CreateGroup(ctx, &Group{GID: "engineers", DisplayName: "Engineers"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateGroup(ctx, &Group{GID: "sales", DisplayName: "Sales"}); err != nil {
+		t.Fatal(err)
+	}
+
+	found, err := s.Search(ctx, "bob", 20)
+	if err != nil || len(found) != 1 || found[0].UID != "bob" {
+		t.Fatalf("search bob = %v %v (disabled bobby must be excluded)", found, err)
+	}
+	found, err = s.Search(ctx, "a", 20)
+	if err != nil || len(found) != 1 {
+		t.Fatalf("search a = %v %v (disabled bobby must be excluded)", found, err)
+	}
+	if got, _ := s.Search(ctx, "", 20); got != nil {
+		t.Fatalf("empty term = %v", got)
+	}
+	groups, err := s.SearchGroups(ctx, "eng", 20)
+	if err != nil || len(groups) != 1 || groups[0].GID != "engineers" {
+		t.Fatalf("groups = %v %v", groups, err)
+	}
+	if got, _ := s.SearchGroups(ctx, "zzz", 20); len(got) != 0 {
+		t.Fatalf("no match = %v", got)
+	}
+}

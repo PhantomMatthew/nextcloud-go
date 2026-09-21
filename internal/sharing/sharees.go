@@ -8,6 +8,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/files"
 	"github.com/PhantomMatthew/nextcloud-go/internal/ocm"
 	"github.com/PhantomMatthew/nextcloud-go/internal/ocs"
+	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 )
 
 const (
@@ -15,11 +16,12 @@ const (
 	ocsShareesPrefixV2 = "/ocs/v2.php/apps/files_sharing/api/v1/sharees"
 )
 
-// ShareesHandler serves GET files_sharing sharees (federated cloud ID plus
-// optional lookup server search).
+// ShareesHandler serves GET files_sharing sharees: exact federated cloud
+// ID, local user/group typeahead, and optional lookup server search.
 type ShareesHandler struct {
 	Version ocs.Version
 	Lookup  *LookupClient
+	Users   users.Store // nil disables local user/group typeahead
 }
 
 func (h ShareesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -40,7 +42,7 @@ func (h ShareesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			hits = res
 		}
 	}
-	writeOCS(w, r, h.Version, 0, "", shareesPayload(search, ocm.RequestBaseURL(r), hits))
+	writeOCS(w, r, h.Version, 0, "", h.shareesPayload(r, search, hits))
 }
 
 func lookupEnabled(v string) bool {
@@ -62,7 +64,11 @@ func shareesPathRemainder(path string, version ocs.Version) (string, bool) {
 	return strings.TrimPrefix(path, prefix), true
 }
 
-func shareesPayload(search, origin string, hits []LookupResult) ocs.OrderedMap {
+// shareesPayload builds the sharees data map. Local user/group matches
+// come from the Users store: an exact uid/gid match lands in exact.*,
+// other matches in the typeahead collections.
+func (h ShareesHandler) shareesPayload(r *http.Request, search string, hits []LookupResult) ocs.OrderedMap {
+	origin := ocm.RequestBaseURL(r)
 	search = strings.TrimSpace(search)
 	remotes := make([]any, 0)
 	uid, remote := ocm.SplitCloudID(search)
@@ -102,19 +108,57 @@ func shareesPayload(search, origin string, hits []LookupResult) ocs.OrderedMap {
 			)),
 		))
 	}
+	exactUsers := make([]any, 0)
+	exactGroups := make([]any, 0)
+	localUsers := make([]any, 0)
+	localGroups := make([]any, 0)
+	if h.Users != nil && search != "" {
+		if found, err := h.Users.Search(r.Context(), search, 20); err == nil {
+			for i := range found {
+				entry := ocs.Obj(
+					ocs.K("label", shareeLabel(found[i].DisplayName, found[i].UID)),
+					ocs.K("value", ocs.Obj(
+						ocs.K("shareType", files.ShareTypeUser),
+						ocs.K("shareWith", found[i].UID),
+					)),
+				)
+				if found[i].UID == search {
+					exactUsers = append(exactUsers, entry)
+				} else {
+					localUsers = append(localUsers, entry)
+				}
+			}
+		}
+		if found, err := h.Users.SearchGroups(r.Context(), search, 20); err == nil {
+			for i := range found {
+				entry := ocs.Obj(
+					ocs.K("label", shareeLabel(found[i].DisplayName, found[i].GID)),
+					ocs.K("value", ocs.Obj(
+						ocs.K("shareType", files.ShareTypeGroup),
+						ocs.K("shareWith", found[i].GID),
+					)),
+				)
+				if found[i].GID == search {
+					exactGroups = append(exactGroups, entry)
+				} else {
+					localGroups = append(localGroups, entry)
+				}
+			}
+		}
+	}
 	empty := []any{}
 	return ocs.Obj(
 		ocs.K("exact", ocs.Obj(
-			ocs.K("users", empty),
-			ocs.K("groups", empty),
+			ocs.K("users", exactUsers),
+			ocs.K("groups", exactGroups),
 			ocs.K("remotes", remotes),
 			ocs.K("remote_groups", empty),
 			ocs.K("emails", empty),
 			ocs.K("circles", empty),
 			ocs.K("rooms", empty),
 		)),
-		ocs.K("users", empty),
-		ocs.K("groups", empty),
+		ocs.K("users", localUsers),
+		ocs.K("groups", localGroups),
 		ocs.K("emails", empty),
 		ocs.K("circles", empty),
 		ocs.K("rooms", empty),
@@ -122,4 +166,11 @@ func shareesPayload(search, origin string, hits []LookupResult) ocs.OrderedMap {
 		ocs.K("remote_groups", empty),
 		ocs.K("lookup", lookup),
 	)
+}
+
+func shareeLabel(displayName, id string) string {
+	if displayName != "" {
+		return displayName
+	}
+	return id
 }

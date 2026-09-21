@@ -189,6 +189,10 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-21** — Phase 3f1: OCS sharees local user/group typeahead
+  via `users.Search`/`SearchGroups`; exact uid/gid lands in exact.*,
+  other matches in users/groups (see ADR-0034). sharees/recommended
+  remains later.
 - **2026-09-21** — Phase 3e4: local iTIP scheduling — organizer writes
   deliver invites to local attendees' default calendars, attendee
   PARTSTAT replies update the organizer copy, organizer deletes cancel

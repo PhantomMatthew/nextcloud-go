@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
@@ -209,4 +210,83 @@ func nullEmail(s string) any {
 		return nil
 	}
 	return s
+}
+
+const searchMax = 20
+
+// Search returns enabled users whose uid or display name contains term,
+// ordered by uid. Limit is capped at 20.
+func (s *SQLStore) Search(ctx context.Context, term string, limit int) ([]User, error) {
+	term = strings.TrimSpace(term)
+	if term == "" {
+		return nil, nil
+	}
+	if limit <= 0 || limit > searchMax {
+		limit = searchMax
+	}
+	op := "LIKE"
+	if s.db.Dialect() == database.DialectPostgres {
+		op = "ILIKE"
+	}
+	like := "%" + term + "%"
+	rows, err := s.db.Query(ctx, fmt.Sprintf(`
+SELECT id, uid, display_name, email, password_hash, quota_bytes, enabled, created_at, updated_at
+FROM users WHERE enabled = 1 AND (uid %s ? OR display_name %s ?) ORDER BY uid LIMIT ?`, op, op), like, like, limit)
+	if err != nil {
+		return nil, fmt.Errorf("users: search: %w", err)
+	}
+	defer rows.Close()
+	var out []User
+	for rows.Next() {
+		var u User
+		var email sql.NullString
+		var quota sql.NullInt64
+		var enabled int
+		var created, updated int64
+		if err := rows.Scan(&u.ID, &u.UID, &u.DisplayName, &email, &u.PasswordHash, &quota, &enabled, &created, &updated); err != nil {
+			return nil, fmt.Errorf("users: search scan: %w", err)
+		}
+		u.Email = email.String
+		if quota.Valid {
+			q := quota.Int64
+			u.QuotaBytes = &q
+		}
+		u.Enabled = enabled != 0
+		u.CreatedAt = time.UnixMilli(created).UTC()
+		u.UpdatedAt = time.UnixMilli(updated).UTC()
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// SearchGroups returns groups whose gid or display name contains term,
+// ordered by gid. Limit is capped at 20.
+func (s *SQLStore) SearchGroups(ctx context.Context, term string, limit int) ([]Group, error) {
+	term = strings.TrimSpace(term)
+	if term == "" {
+		return nil, nil
+	}
+	if limit <= 0 || limit > searchMax {
+		limit = searchMax
+	}
+	op := "LIKE"
+	if s.db.Dialect() == database.DialectPostgres {
+		op = "ILIKE"
+	}
+	like := "%" + term + "%"
+	rows, err := s.db.Query(ctx, fmt.Sprintf(`
+SELECT id, gid, display_name FROM groups WHERE gid %s ? OR display_name %s ? ORDER BY gid LIMIT ?`, op, op), like, like, limit)
+	if err != nil {
+		return nil, fmt.Errorf("users: search groups: %w", err)
+	}
+	defer rows.Close()
+	var out []Group
+	for rows.Next() {
+		var g Group
+		if err := rows.Scan(&g.ID, &g.GID, &g.DisplayName); err != nil {
+			return nil, fmt.Errorf("users: search groups scan: %w", err)
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
 }

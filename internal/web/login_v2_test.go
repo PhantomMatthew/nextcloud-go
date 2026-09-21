@@ -330,6 +330,14 @@ func (s stubUserStore) GetByEmail(_ context.Context, email string) (*users.User,
 	cp := *s.u
 	return &cp, nil
 }
+
+func (stubUserStore) Search(context.Context, string, int) ([]users.User, error) {
+	return nil, nil
+}
+
+func (stubUserStore) SearchGroups(context.Context, string, int) ([]users.Group, error) {
+	return nil, nil
+}
 func (stubUserStore) UpdatePasswordHash(context.Context, int64, string) error { return nil }
 func (stubUserStore) Count(context.Context) (int64, error)                    { return 1, nil }
 func (stubUserStore) CreateGroup(context.Context, *users.Group) error         { return nil }

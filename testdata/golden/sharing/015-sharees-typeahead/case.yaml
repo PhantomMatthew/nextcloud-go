@@ -1,10 +1,10 @@
 schema_version: 1
-id: sharing/012-sharees-local-empty
+id: sharing/015-sharees-typeahead
 description: |
-  Authenticated sharees search without @ returns empty remotes (no local user search).
+  Authenticated sharees search for a partial term returns local user matches.
 provenance:
   capture: synthetic
-  source: hand-authored for nextcloud-go Phase 3d5
+  source: hand-authored for nextcloud-go Phase 3f1
   captured_at: "2026-09-21T00:00:00Z"
 request:
   body_kind: empty
@@ -21,4 +21,4 @@ assertions:
 replayable: true
 mutating: false
 synthetic: true
-tags: [sharing, ocs, sharees, phase3d5]
+tags: [sharing, ocs, sharees, phase3f1]
