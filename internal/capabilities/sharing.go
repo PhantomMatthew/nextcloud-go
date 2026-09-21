@@ -49,6 +49,10 @@ func (s SharingProvider) GetCapabilities() ocs.OrderedMap {
 					ocs.K("enabled", false),
 				)),
 			)),
+			ocs.K("sharee", ocs.Obj(
+				ocs.K("query_lookup_default", false),
+				ocs.K("always_show_unique", true),
+			)),
 		)),
 	)
 }

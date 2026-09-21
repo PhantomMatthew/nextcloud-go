@@ -1,0 +1,24 @@
+schema_version: 1
+id: sharing/012-sharees-local-empty
+description: |
+  Authenticated sharees search without @ returns empty remotes (no local user search).
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 3d5
+  captured_at: "2026-09-21T00:00:00Z"
+request:
+  body_kind: empty
+response:
+  body_kind: json
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 200
+replayable: true
+mutating: false
+synthetic: true
+tags: [sharing, ocs, sharees, phase3d5]

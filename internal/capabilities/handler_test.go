@@ -132,3 +132,18 @@ func TestFederationOutgoingIncoming(t *testing.T) {
 		t.Fatalf("expire = %v supported = %v", expire, supported)
 	}
 }
+
+func TestShareeQueryLookupDefault(t *testing.T) {
+	h := newHandler()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/ocs/v2.php/cloud/capabilities?format=json", nil)
+	h.ServeOCS(ocs.V2).ServeHTTP(rr, req)
+	var env map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	sharee, _ := env["ocs"].(map[string]any)["data"].(map[string]any)["capabilities"].(map[string]any)["files_sharing"].(map[string]any)["sharee"].(map[string]any)
+	if sharee["query_lookup_default"] != false || sharee["always_show_unique"] != true {
+		t.Fatalf("sharee = %v", sharee)
+	}
+}

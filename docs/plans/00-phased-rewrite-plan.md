@@ -189,6 +189,9 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-21** — Phase 3d5: OCS sharees returns `exact.remotes` for a
+  cloud ID; `sharee.query_lookup_default` is false (see ADR-0026).
+  Folder/write proxy, unshare notify, and lookup server remain later.
 - **2026-09-20** — Phase 3d4: `files_sharing.federation` is an object with
   `outgoing`/`incoming` true so desktop can discover federated share
   (see ADR-0025). Federated search, folder/write proxy, and unshare remain

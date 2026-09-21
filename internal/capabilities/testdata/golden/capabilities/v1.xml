@@ -54,6 +54,10 @@
       <enabled></enabled>
      </expire_date_supported>
     </federation>
+    <sharee>
+     <query_lookup_default></query_lookup_default>
+     <always_show_unique>1</always_show_unique>
+    </sharee>
    </files_sharing>
   </capabilities>
  </data>
