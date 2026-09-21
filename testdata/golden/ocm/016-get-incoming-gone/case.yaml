@@ -1,0 +1,24 @@
+schema_version: 1
+id: ocm/016-get-incoming-gone
+description: |
+  Recipient GET of an inbound federated file is 404 after SHARE_UNSHARED.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 3d7
+  captured_at: "2026-09-21T00:00:00Z"
+request:
+  body_kind: empty
+response:
+  body_kind: bytes
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 404
+replayable: true
+mutating: false
+synthetic: true
+tags: [ocm, webdav, phase3d7]

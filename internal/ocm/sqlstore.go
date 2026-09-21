@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
@@ -61,6 +62,25 @@ func (s *SQLStore) Delete(ctx context.Context, userID, id int64) error {
 	_, err := s.db.Exec(ctx, `DELETE FROM ocm_incoming WHERE user_id = ? AND id = ?`, userID, id)
 	if err != nil {
 		return fmt.Errorf("ocm: delete: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLStore) DeleteByRemoteIDAndToken(ctx context.Context, remoteID, token string) error {
+	remoteID = strings.TrimSpace(remoteID)
+	token = strings.TrimSpace(token)
+	if remoteID == "" || token == "" {
+		return ErrNotFound
+	}
+	in, err := scanIncoming(s.db.QueryRow(ctx, `
+SELECT id, user_id, user_uid, name, remote, remote_id, owner, token, item_type, permissions, accepted, created_at
+FROM ocm_incoming WHERE remote_id = ? AND token = ?`, remoteID, token))
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx, `DELETE FROM ocm_incoming WHERE id = ?`, in.ID)
+	if err != nil {
+		return fmt.Errorf("ocm: delete remote: %w", err)
 	}
 	return nil
 }

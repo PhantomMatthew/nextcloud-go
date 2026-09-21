@@ -1,0 +1,8 @@
+POST /ocm/notifications HTTP/1.1
+Host: cloud.example.com
+User-Agent: ncgo-goldentest/0.0
+Accept: application/json
+Content-Type: application/json
+Content-Length: 167
+
+{"notificationType":"SHARE_UNSHARED","resourceType":"file","providerId":"42","notification":{"sharedSecret":"ocmtok001","message":"file is no longer shared with you"}}

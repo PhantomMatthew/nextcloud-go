@@ -353,6 +353,8 @@ func (remoteOCMRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 		return &http.Response{StatusCode: http.StatusOK, Header: hdr, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
 	case req.Method == http.MethodPost && path == "/ocm/shares":
 		return &http.Response{StatusCode: http.StatusCreated, Header: hdr, Body: io.NopCloser(strings.NewReader(`{"recipientDisplayName":"bob"}`)), Request: req}, nil
+	case req.Method == http.MethodPost && path == "/ocm/notifications":
+		return &http.Response{StatusCode: http.StatusCreated, Header: hdr, Body: io.NopCloser(strings.NewReader("[]")), Request: req}, nil
 	case req.Method == "PROPFIND" && strings.HasPrefix(path, "/public.php/webdav"):
 		body := remotePublicPropfindXML(path)
 		hdr = make(http.Header)

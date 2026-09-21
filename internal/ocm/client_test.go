@@ -136,6 +136,61 @@ func TestNotifyOutgoingMissingFields(t *testing.T) {
 	}
 }
 
+func TestNotifyUnshareOK(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/ocm", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"enabled":true,"endPoint":"http://`+r.Host+`/ocm"}`)
+	})
+	mux.HandleFunc("/ocm/notifications", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s", r.Method)
+		}
+		var body unshareJSON
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.NotificationType != "SHARE_UNSHARED" || body.ResourceType != "file" || body.ProviderID != "1" || body.Notification.SharedSecret != "tok15charsxxxx" {
+			t.Fatalf("body = %+v", body)
+		}
+		if body.Notification.Message != "file is no longer shared with you" {
+			t.Fatalf("message = %q", body.Notification.Message)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `[]`)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	c := &Client{HTTP: srv.Client()}
+	ep, err := c.Discover(t.Context(), srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.NotifyUnshare(t.Context(), ep, UnshareNotice{ProviderID: "1", Token: "tok15charsxxxx"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNotifyUnshareNon2xx(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ocm/notifications", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	c := &Client{HTTP: srv.Client()}
+	err := c.NotifyUnshare(t.Context(), srv.URL+"/ocm", UnshareNotice{ProviderID: "1", Token: "tok"})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestNotifyUnshareMissingFields(t *testing.T) {
+	if err := NewClient().NotifyUnshare(t.Context(), "http://x", UnshareNotice{}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestSplitCloudIDTrailingAt(t *testing.T) {
 	if uid, remote := SplitCloudID("bob@"); uid != "" || remote != "" {
 		t.Fatalf("split = %q %q", uid, remote)

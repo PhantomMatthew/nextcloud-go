@@ -68,6 +68,13 @@ type OutgoingNotice struct {
 	Token        string
 }
 
+// UnshareNotice is the JSON posted to a remote POST /ocm/notifications.
+type UnshareNotice struct {
+	ProviderID string
+	Token      string
+	Message    string
+}
+
 // Discover returns the remote OCM API endPoint.
 func (c *Client) Discover(ctx context.Context, origin string) (string, error) {
 	origin = strings.TrimRight(strings.TrimSpace(origin), "/")
@@ -153,6 +160,46 @@ func (c *Client) NotifyOutgoing(ctx context.Context, endPoint string, n Outgoing
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxOCMBody))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("%w: notify status %d", ErrInvalid, resp.StatusCode)
+	}
+	return nil
+}
+
+// NotifyUnshare posts SHARE_UNSHARED to the remote endPoint.
+func (c *Client) NotifyUnshare(ctx context.Context, endPoint string, n UnshareNotice) error {
+	endPoint = strings.TrimRight(strings.TrimSpace(endPoint), "/")
+	if endPoint == "" || n.ProviderID == "" || n.Token == "" {
+		return fmt.Errorf("%w: unshare", ErrInvalid)
+	}
+	msg := n.Message
+	if msg == "" {
+		msg = "file is no longer shared with you"
+	}
+	payload, err := json.Marshal(unshareJSON{
+		NotificationType: "SHARE_UNSHARED",
+		ResourceType:     "file",
+		ProviderID:       n.ProviderID,
+		Notification: unshareNotificationJSON{
+			SharedSecret: n.Token,
+			Message:      msg,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endPoint+"/notifications", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.httpc().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxOCMBody))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("%w: unshare status %d", ErrInvalid, resp.StatusCode)
 	}
 	return nil
 }
@@ -395,4 +442,16 @@ type outgoingProtocolJSON struct {
 
 type outgoingProtocolOptionsJSON struct {
 	SharedSecret string `json:"sharedSecret"`
+}
+
+type unshareJSON struct {
+	NotificationType string                  `json:"notificationType"`
+	ResourceType     string                  `json:"resourceType"`
+	ProviderID       string                  `json:"providerId"`
+	Notification     unshareNotificationJSON `json:"notification"`
+}
+
+type unshareNotificationJSON struct {
+	SharedSecret string `json:"sharedSecret"`
+	Message      string `json:"message"`
 }

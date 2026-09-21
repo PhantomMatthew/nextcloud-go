@@ -37,5 +37,6 @@ type Store interface {
 	List(ctx context.Context, userID int64) ([]Incoming, error)
 	Get(ctx context.Context, userID, id int64) (*Incoming, error)
 	Delete(ctx context.Context, userID, id int64) error
+	DeleteByRemoteIDAndToken(ctx context.Context, remoteID, token string) error
 	files.IncomingLookup
 }

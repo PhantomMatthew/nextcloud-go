@@ -247,6 +247,8 @@ func (remoteOCMTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Header: hdr, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
 	case req.Method == http.MethodPost && req.URL.Path == "/ocm/shares":
 		return &http.Response{StatusCode: http.StatusCreated, Header: hdr, Body: io.NopCloser(bytes.NewReader([]byte(`{"recipientDisplayName":"bob"}`))), Request: req}, nil
+	case req.Method == http.MethodPost && req.URL.Path == "/ocm/notifications":
+		return &http.Response{StatusCode: http.StatusCreated, Header: hdr, Body: io.NopCloser(strings.NewReader("[]")), Request: req}, nil
 	default:
 		return &http.Response{StatusCode: http.StatusNotFound, Header: hdr, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
 	}
@@ -274,6 +276,42 @@ func TestOCSCreateRemoteShare(t *testing.T) {
 	}
 	if data["url"] != "" {
 		t.Fatalf("url = %v", data["url"])
+	}
+}
+
+func TestOCSDeleteRemoteShare(t *testing.T) {
+	svc := testService(t)
+	svc.OCM = &ocm.Client{HTTP: &http.Client{Transport: remoteOCMTransport{}}}
+	h := Handler{Service: svc, Version: ocs.V2}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/ocs/v2.php/apps/files_sharing/api/v1/shares?format=json", strings.NewReader("path=/a.txt&shareType=6&shareWith=bob@https://remote.example.com"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Host = "cloud.example.com"
+	h.ServeHTTP(rr, withUser(req))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var env map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	id := env["ocs"].(map[string]any)["data"].(map[string]any)["id"].(string)
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodDelete, "/ocs/v2.php/apps/files_sharing/api/v1/shares/"+id+"?format=json", nil)
+	h.ServeHTTP(rr, withUser(req))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("delete status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	u, err := svc.Users.GetByUID(t.Context(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed, err := svc.Store.ListByOwner(t.Context(), u.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 0 {
+		t.Fatalf("leftover shares = %+v", listed)
 	}
 }
 

@@ -3,6 +3,7 @@ package ocm
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -108,10 +109,17 @@ type IncomingHandler struct {
 
 func (h IncomingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/ocm"), "/")
-	if rest != "shares" {
+	switch rest {
+	case "shares":
+		h.handleShares(w, r)
+	case "notifications":
+		h.handleNotifications(w, r)
+	default:
 		http.NotFound(w, r)
-		return
 	}
+}
+
+func (h IncomingHandler) handleShares(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.NotFound(w, r)
 		return
@@ -140,6 +148,84 @@ func (h IncomingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusCreated)
 	_, _ = w.Write(body)
+}
+
+type incomingNotificationRequest struct {
+	NotificationType string          `json:"notificationType"`
+	ResourceType     string          `json:"resourceType"`
+	ProviderID       any             `json:"providerId"`
+	Notification     json.RawMessage `json:"notification"`
+}
+
+type incomingNotificationPayload struct {
+	SharedSecret string `json:"sharedSecret"`
+}
+
+func (h IncomingHandler) handleNotifications(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.NotFound(w, r)
+		return
+	}
+	dec := json.NewDecoder(io.LimitReader(r.Body, maxOCMBody))
+	dec.UseNumber()
+	var req incomingNotificationRequest
+	if err := dec.Decode(&req); err != nil {
+		writeOCMError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.NotificationType) == "" || strings.TrimSpace(req.ResourceType) == "" || len(req.Notification) == 0 || string(req.Notification) == "null" {
+		writeOCMError(w, http.StatusBadRequest, "missing arguments")
+		return
+	}
+	providerID := parseProviderID(req.ProviderID)
+	if providerID == "" {
+		writeOCMError(w, http.StatusBadRequest, "missing arguments")
+		return
+	}
+	switch req.ResourceType {
+	case "file", "folder":
+	default:
+		writeIncomingErr(w, ErrUnsupported)
+		return
+	}
+	if req.NotificationType != "SHARE_UNSHARED" {
+		writeOCMError(w, http.StatusBadRequest, "unknown notification type")
+		return
+	}
+	var payload incomingNotificationPayload
+	if err := json.Unmarshal(req.Notification, &payload); err != nil {
+		writeOCMError(w, http.StatusBadRequest, "missing arguments")
+		return
+	}
+	secret := strings.TrimSpace(payload.SharedSecret)
+	if secret == "" {
+		writeOCMError(w, http.StatusBadRequest, "missing arguments")
+		return
+	}
+	if err := h.Store.DeleteByRemoteIDAndToken(r.Context(), providerID, secret); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeOCMError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeIncomingErr(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_, _ = w.Write([]byte("[]"))
+}
+
+func parseProviderID(v any) string {
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t)
+	case json.Number:
+		return strings.TrimSpace(t.String())
+	case float64:
+		return strconv.FormatInt(int64(t), 10)
+	default:
+		return ""
+	}
 }
 
 func (h IncomingHandler) buildIncoming(r *http.Request, req *incomingShareRequest) (*Incoming, string, error) {

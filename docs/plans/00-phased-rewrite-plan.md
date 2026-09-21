@@ -189,6 +189,10 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-21** — Phase 3d7: outbound federated share delete posts
+  `SHARE_UNSHARED` to `{endPoint}/notifications`; inbound
+  `POST /ocm/notifications` drops the matching `ocm_incoming` row (see
+  ADR-0028). Lookup server and CalDAV leftovers remain later.
 - **2026-09-21** — Phase 3d6: inbound federated folder Depth 1 PROPFIND,
   nested GET, and permission-gated PUT/DELETE/MKCOL proxy (see
   ADR-0027). Unshare notify, lookup server, and CalDAV leftovers remain

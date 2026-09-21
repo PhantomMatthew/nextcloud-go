@@ -333,7 +333,31 @@ func (s *Service) Delete(ctx context.Context, uid string, id int64) error {
 	if err != nil {
 		return err
 	}
+	if sh.ShareType == files.ShareTypeRemote {
+		ignoreUnshareErr(s.notifyUnshare(ctx, sh))
+	}
 	return s.Store.Delete(ctx, sh.ID)
+}
+
+func ignoreUnshareErr(err error) {
+	if err == nil {
+		return
+	}
+}
+
+func (s *Service) notifyUnshare(ctx context.Context, sh *files.Share) error {
+	if s.OCM == nil || sh == nil {
+		return errFederate
+	}
+	_, remoteHost := ocm.SplitCloudID(sh.ShareWith)
+	endPoint, err := s.OCM.Discover(ctx, ocm.NormalizeOrigin(remoteHost))
+	if err != nil {
+		return err
+	}
+	return s.OCM.NotifyUnshare(ctx, endPoint, ocm.UnshareNotice{
+		ProviderID: strconv.FormatInt(sh.ID, 10),
+		Token:      sh.Token,
+	})
 }
 
 // LookupValid returns a non-expired share and its owner.

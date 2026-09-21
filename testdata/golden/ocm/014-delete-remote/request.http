@@ -1,0 +1,7 @@
+DELETE /ocs/v2.php/apps/files_sharing/api/v1/shares/1?format=json HTTP/1.1
+Host: cloud.example.com
+User-Agent: ncgo-goldentest/0.0
+Accept: application/json
+Authorization: Basic YWRtaW46YWRtaW4=
+OCS-APIRequest: true
+
