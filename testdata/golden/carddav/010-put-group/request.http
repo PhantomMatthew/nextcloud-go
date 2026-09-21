@@ -1,0 +1,15 @@
+PUT /remote.php/dav/addressbooks/users/admin/contacts/ncgo-group-001.vcf HTTP/1.1
+Host: cloud.example.com
+User-Agent: ncgo-goldentest/0.0
+Accept: */*
+Authorization: Basic YWRtaW46YWRtaW4=
+Content-Type: text/vcard; charset=utf-8
+Content-Length: 107
+
+BEGIN:VCARD
+VERSION:3.0
+UID:ncgo-group-001
+FN:Family
+KIND:group
+MEMBER:urn:uuid:ncgo-contact-001
+END:VCARD

@@ -107,3 +107,39 @@ func TestContactsDAV_RoundTrip(t *testing.T) {
 		t.Fatalf("deep path = %v", err)
 	}
 }
+
+func TestContactGroup(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+	us := users.NewSQLStore(db)
+	u := &users.User{UID: "alice", DisplayName: "Alice", PasswordHash: "x", Enabled: true}
+	if err := us.Create(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	store := NewSQLStore(db)
+	freeze := time.Date(2025, 5, 1, 12, 0, 0, 0, time.UTC)
+	store.Clock = func() time.Time { return freeze }
+	dav := &DAV{Store: store, Users: us, Clock: func() time.Time { return freeze }}
+
+	const groupVCard = "BEGIN:VCARD\nVERSION:3.0\nUID:ncgo-group-001\nFN:Family\nKIND:group\nMEMBER:urn:uuid:ncgo-contact-001\nEND:VCARD\n"
+	ent, created, err := dav.Write(ctx, "alice", "/contacts/ncgo-group-001.vcf", bytes.NewReader([]byte(groupVCard)), nil)
+	if err != nil || !created || ent.ETag == "" {
+		t.Fatalf("write group = %+v created=%v err=%v", ent, created, err)
+	}
+	rc, _, err := dav.Read(ctx, "alice", "/contacts/ncgo-group-001.vcf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	if string(body) != groupVCard {
+		t.Fatalf("read group = %q", body)
+	}
+	entries, err := dav.Report(ctx, "alice", "/contacts", webdav.ReportRequest{
+		Name: "addressbook-query",
+		Body: []byte(`<c:addressbook-query xmlns:c="urn:ietf:params:xml:ns:carddav"/>`),
+	})
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("query = %v %v", entries, err)
+	}
+}

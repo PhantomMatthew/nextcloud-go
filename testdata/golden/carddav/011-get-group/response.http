@@ -1,0 +1,23 @@
+HTTP/1.1 200 OK
+Server: nginx
+Content-Type: text/vcard; charset=utf-8
+Etag: "c3e2dfc470bf686bb17fe6ae6aa9d3c8918d65a9"
+Feature-Policy: autoplay 'self';camera 'none';fullscreen 'self';geolocation 'none';microphone 'none';payment 'none'
+Last-Modified: Thu, 01 May 2025 12:00:00 GMT
+Oc-Etag: "c3e2dfc470bf686bb17fe6ae6aa9d3c8918d65a9"
+Oc-Fileid: 00000002ocdev00001
+Feature-Policy: autoplay 'self';camera 'none';fullscreen 'self';geolocation 'none';microphone 'none';payment 'none'
+Referrer-Policy: no-referrer
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Permitted-Cross-Domain-Policies: none
+X-Robots-Tag: noindex, nofollow
+X-Xss-Protection: 1; mode=block
+
+BEGIN:VCARD
+VERSION:3.0
+UID:ncgo-group-001
+FN:Family
+KIND:group
+MEMBER:urn:uuid:ncgo-contact-001
+END:VCARD
