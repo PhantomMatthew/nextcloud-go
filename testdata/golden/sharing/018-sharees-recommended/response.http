@@ -1,0 +1,12 @@
+HTTP/1.1 200 OK
+Server: nginx
+Content-Type: application/json; charset=utf-8
+Feature-Policy: autoplay 'self';camera 'none';fullscreen 'self';geolocation 'none';microphone 'none';payment 'none'
+Referrer-Policy: no-referrer
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Permitted-Cross-Domain-Policies: none
+X-Robots-Tag: noindex, nofollow
+X-Xss-Protection: 1; mode=block
+
+{"ocs":{"meta":{"status":"ok","statuscode":200,"message":"OK"},"data":{"exact":{"users":[],"groups":[],"remotes":[],"remote_groups":[],"emails":[],"circles":[],"rooms":[]},"users":[],"groups":[{"label":"Engineers","value":{"shareType":1,"shareWith":"engineers"}}],"emails":[],"circles":[],"rooms":[],"remotes":[],"remote_groups":[],"lookup":[]}}}

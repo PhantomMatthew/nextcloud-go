@@ -2,6 +2,7 @@ package sharing
 
 import (
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
@@ -17,11 +18,13 @@ const (
 )
 
 // ShareesHandler serves GET files_sharing sharees: exact federated cloud
-// ID, local user/group typeahead, and optional lookup server search.
+// ID, local user/group typeahead, optional lookup server search, and
+// /recommended recipients derived from the user's current shares.
 type ShareesHandler struct {
 	Version ocs.Version
 	Lookup  *LookupClient
-	Users   users.Store // nil disables local user/group typeahead
+	Users   users.Store      // nil disables local user/group typeahead
+	Shares  files.ShareStore // nil disables /recommended
 }
 
 func (h ShareesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -30,7 +33,15 @@ func (h ShareesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rest, ok := shareesPathRemainder(r.URL.Path, h.Version)
-	if !ok || (rest != "" && rest != "/") {
+	if !ok {
+		writeOCS(w, r, h.Version, ocs.RespondNotFound, "Not found", nil)
+		return
+	}
+	if rest == "/recommended" {
+		writeOCS(w, r, h.Version, 0, "", h.recommendedPayload(r))
+		return
+	}
+	if rest != "" && rest != "/" {
 		writeOCS(w, r, h.Version, ocs.RespondNotFound, "Not found", nil)
 		return
 	}
@@ -173,4 +184,79 @@ func shareeLabel(displayName, id string) string {
 		return displayName
 	}
 	return id
+}
+
+// recommendedPayload builds the /recommended data map: distinct local
+// user/group recipients of the caller's current shares, most recent
+// first, capped at 20 each.
+func (h ShareesHandler) recommendedPayload(r *http.Request) ocs.OrderedMap {
+	usersList := make([]any, 0)
+	groupsList := make([]any, 0)
+	principal, _ := auth.UserFromContext(r.Context())
+	if h.Shares != nil && h.Users != nil && principal != nil {
+		if u, err := h.Users.GetByUID(r.Context(), principal.UID); err == nil {
+			if shares, err := h.Shares.ListByOwner(r.Context(), u.ID, ""); err == nil {
+				sort.SliceStable(shares, func(i, j int) bool { return shares[i].StimeMs > shares[j].StimeMs })
+				seenUsers := map[string]bool{}
+				seenGroups := map[string]bool{}
+				for i := range shares {
+					sh := &shares[i]
+					switch sh.ShareType {
+					case files.ShareTypeUser:
+						if seenUsers[sh.ShareWith] || len(usersList) >= 20 {
+							continue
+						}
+						seenUsers[sh.ShareWith] = true
+						label := sh.ShareWith
+						if tu, err := h.Users.GetByUID(r.Context(), sh.ShareWith); err == nil && tu.DisplayName != "" {
+							label = tu.DisplayName
+						}
+						usersList = append(usersList, ocs.Obj(
+							ocs.K("label", label),
+							ocs.K("value", ocs.Obj(
+								ocs.K("shareType", files.ShareTypeUser),
+								ocs.K("shareWith", sh.ShareWith),
+							)),
+						))
+					case files.ShareTypeGroup:
+						if seenGroups[sh.ShareWith] || len(groupsList) >= 20 {
+							continue
+						}
+						seenGroups[sh.ShareWith] = true
+						label := sh.ShareWith
+						if g, err := h.Users.GetGroupByGID(r.Context(), sh.ShareWith); err == nil && g.DisplayName != "" {
+							label = g.DisplayName
+						}
+						groupsList = append(groupsList, ocs.Obj(
+							ocs.K("label", label),
+							ocs.K("value", ocs.Obj(
+								ocs.K("shareType", files.ShareTypeGroup),
+								ocs.K("shareWith", sh.ShareWith),
+							)),
+						))
+					}
+				}
+			}
+		}
+	}
+	empty := []any{}
+	return ocs.Obj(
+		ocs.K("exact", ocs.Obj(
+			ocs.K("users", empty),
+			ocs.K("groups", empty),
+			ocs.K("remotes", empty),
+			ocs.K("remote_groups", empty),
+			ocs.K("emails", empty),
+			ocs.K("circles", empty),
+			ocs.K("rooms", empty),
+		)),
+		ocs.K("users", usersList),
+		ocs.K("groups", groupsList),
+		ocs.K("emails", empty),
+		ocs.K("circles", empty),
+		ocs.K("rooms", empty),
+		ocs.K("remotes", empty),
+		ocs.K("remote_groups", empty),
+		ocs.K("lookup", empty),
+	)
 }

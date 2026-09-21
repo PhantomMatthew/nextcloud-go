@@ -1,0 +1,24 @@
+schema_version: 1
+id: sharing/018-sharees-recommended
+description: |
+  GET sharees/recommended returns group recipients of the caller's current shares.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 3f3
+  captured_at: "2026-09-21T00:00:00Z"
+request:
+  body_kind: empty
+response:
+  body_kind: json
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 200
+replayable: true
+mutating: false
+synthetic: true
+tags: [sharing, ocs, sharees, phase3f3]

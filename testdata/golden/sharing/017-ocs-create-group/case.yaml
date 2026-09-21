@@ -1,0 +1,24 @@
+schema_version: 1
+id: sharing/017-ocs-create-group
+description: |
+  Create a group share on /hello.txt for the engineers group via OCS.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 3f3
+  captured_at: "2026-09-21T00:00:00Z"
+request:
+  body_kind: bytes
+response:
+  body_kind: json
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 200
+replayable: true
+mutating: true
+synthetic: true
+tags: [sharing, ocs, phase3f3]

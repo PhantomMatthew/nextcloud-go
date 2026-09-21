@@ -189,6 +189,9 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-21** — Phase 3f3: OCS sharees `/recommended` returns
+  distinct local user/group recipients of the caller's current shares,
+  most recent first (see ADR-0036).
 - **2026-09-21** — Phase 3f2: CardDAV contact groups proven — KIND:group
   vCards with MEMBER round-trip as plain VCARD objects; no
   group-specific server handling needed (see ADR-0035).
