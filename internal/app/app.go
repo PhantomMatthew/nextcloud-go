@@ -216,6 +216,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		ph, err := plugins.NewHost(ctx, plugins.HostConfig{
 			DefaultMemoryLimitMB: cfg.Plugin.DefaultMemoryLimitMB,
 			DefaultCallTimeout:   time.Duration(cfg.Plugin.DefaultCPUTimeoutMS) * time.Millisecond,
+			Cache:                a.Cache,
 		}, logger)
 		if err != nil {
 			if cerr := a.closeResources(ctx); cerr != nil {

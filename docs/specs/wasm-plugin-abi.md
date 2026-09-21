@@ -598,6 +598,12 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-21** — Phase 4a runtime core landed (ADR-0037): typed
+  capabilities, instance models, and the full host function surface are
+  implemented per this spec with one deviation — routes/ocs manifest
+  validation requires the `/apps/` prefix only, because the walkthrough in
+  §10 grants `/apps/file-tagger/` for plugin id `com.example.file-tagger`
+  (strict `<plugin-id>` prefix would reject it). blake2b is BLAKE2b-256.
 - **2026-09-17** — Phase 0 stub lives in `internal/plugins`. wazero v1 has no
   fuel metering API; CPU budget is wall-clock timeout + memory pages until
   Phase 4 (ADR-0006).

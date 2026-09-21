@@ -10,6 +10,13 @@ const (
 	LevelError int32 = 3
 )
 
+// Hash algorithms for CryptoHash / CryptoHMAC.
+const (
+	HashSHA256  int32 = 0
+	HashSHA512  int32 = 1
+	HashBLAKE2b int32 = 2
+)
+
 const (
 	ErrCodeOK               int32 = 0
 	ErrCodeInternal         int32 = -1

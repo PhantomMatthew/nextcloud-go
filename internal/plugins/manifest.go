@@ -4,20 +4,88 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
 
 const abiV1 = "ncgo-abi/1"
 
-var pluginIDRe = regexp.MustCompile(`^[a-z0-9]+(\.[a-z0-9-]+)+$`)
+var (
+	pluginIDRe = regexp.MustCompile(`^[a-z0-9]+(\.[a-z0-9-]+)+$`)
+	hostPortRe = regexp.MustCompile(`^[^\s:/]+(:\d+)?$`)
+)
 
 // Manifest is a parsed plugin.toml.
 type Manifest struct {
 	Plugin       PluginSection      `toml:"plugin"`
 	Runtime      RuntimeSection     `toml:"runtime"`
-	Capabilities map[string]any     `toml:"capabilities"`
+	Capabilities Capabilities       `toml:"capabilities"`
 	EntryPoints  EntryPointsSection `toml:"entry_points"`
+}
+
+// Capabilities is the typed [capabilities] section: permissions the plugin
+// requests and an admin grants at install. Anything not listed is denied.
+// TOML dotted keys (db.read = [...]) decode into the nested structs below.
+type Capabilities struct {
+	DB      DBCapabilities      `toml:"db"`
+	Storage StorageCapabilities `toml:"storage"`
+	HTTP    HTTPCapabilities    `toml:"http"`
+	Events  EventsCapabilities  `toml:"events"`
+	Jobs    JobsCapabilities    `toml:"jobs"`
+	Routes  RoutesCapabilities  `toml:"routes"`
+	OCS     OCSCapabilities     `toml:"ocs"`
+	WebDAV  WebDAVCapabilities  `toml:"webdav"`
+	Config  ConfigCapabilities  `toml:"config"`
+}
+
+// DBCapabilities grants table access by name glob.
+type DBCapabilities struct {
+	Read  []string `toml:"read"`
+	Write []string `toml:"write"`
+}
+
+// StorageCapabilities grants file access; scopes are "user" or "system".
+type StorageCapabilities struct {
+	Read  []string `toml:"read"`
+	Write []string `toml:"write"`
+}
+
+// HTTPCapabilities grants outbound HTTP to host[:port] entries.
+type HTTPCapabilities struct {
+	Outbound []string `toml:"outbound"`
+}
+
+// EventsCapabilities grants event bus topics by glob.
+type EventsCapabilities struct {
+	Publish   []string `toml:"publish"`
+	Subscribe []string `toml:"subscribe"`
+}
+
+// JobsCapabilities grants background job registration.
+type JobsCapabilities struct {
+	Register bool `toml:"register"`
+}
+
+// RoutesCapabilities grants HTTP route prefixes under /apps/.
+type RoutesCapabilities struct {
+	Register []string `toml:"register"`
+}
+
+// OCSCapabilities grants OCS endpoint prefixes under /apps/.
+type OCSCapabilities struct {
+	Register []string `toml:"register"`
+}
+
+// WebDAVCapabilities grants custom WebDAV property names.
+type WebDAVCapabilities struct {
+	Props []string `toml:"props"`
+}
+
+// ConfigCapabilities grants plugin config keys by glob.
+type ConfigCapabilities struct {
+	Read  []string `toml:"read"`
+	Write []string `toml:"write"`
 }
 
 // PluginSection is identity metadata.
@@ -89,8 +157,47 @@ func (m *Manifest) Validate() error {
 	if m.Runtime.CPUTimeoutMS > 30000 {
 		return fmt.Errorf("%w: cpu_timeout_ms %d", ErrManifestInvalid, m.Runtime.CPUTimeoutMS)
 	}
+	if m.Runtime.InstanceModel == "pooled" && m.Runtime.PoolSize <= 0 {
+		return fmt.Errorf("%w: pooled requires pool_size >= 1", ErrManifestInvalid)
+	}
 	if m.EntryPoints.Module == "" {
 		return fmt.Errorf("%w: empty module", ErrManifestInvalid)
+	}
+	return m.Capabilities.validate()
+}
+
+var reservedPropPrefixes = []string{"oc:", "nc:", "core."}
+
+func (c *Capabilities) validate() error {
+	if c == nil {
+		return nil
+	}
+	for _, scope := range append(append([]string{}, c.Storage.Read...), c.Storage.Write...) {
+		if scope != "user" && scope != "system" {
+			return fmt.Errorf("%w: storage scope %q", ErrManifestInvalid, scope)
+		}
+	}
+	for _, host := range c.HTTP.Outbound {
+		if !hostPortRe.MatchString(host) {
+			return fmt.Errorf("%w: http.outbound %q", ErrManifestInvalid, host)
+		}
+	}
+	for _, topic := range c.Events.Publish {
+		if strings.HasPrefix(topic, "core.") {
+			return fmt.Errorf("%w: events.publish reserved topic %q", ErrManifestInvalid, topic)
+		}
+	}
+	for _, path := range append(append([]string{}, c.Routes.Register...), c.OCS.Register...) {
+		if !strings.HasPrefix(path, "/apps/") {
+			return fmt.Errorf("%w: route %q must start with /apps/", ErrManifestInvalid, path)
+		}
+	}
+	for _, prop := range c.WebDAV.Props {
+		for _, prefix := range reservedPropPrefixes {
+			if strings.HasPrefix(prop, prefix) {
+				return fmt.Errorf("%w: webdav prop %q uses reserved prefix", ErrManifestInvalid, prop)
+			}
+		}
 	}
 	return nil
 }

@@ -20,6 +20,13 @@ func TestModulesCompile(t *testing.T) {
 		{"noexports", NoExportsModule()},
 		{"loop", LoopModule()},
 		{"oob", OOBLogModule()},
+		{"counter", CounterModule()},
+		{"ctxuser", CtxUserModule()},
+		{"cache-rt", CacheRoundTripModule("k", "v")},
+		{"cache-incr", CacheIncrementModule("n", 5)},
+		{"crypto-hash", CryptoHashModule("abc")},
+		{"event-probe", EventProbeModule("files.x", -9)},
+		{"route-probe", RouteProbeModule("/apps/x/y", -3)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			compiled, err := r.CompileModule(ctx, tc.bin)

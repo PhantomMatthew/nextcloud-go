@@ -2,53 +2,86 @@ package plugins
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/tetratelabs/wazero"
-	"github.com/tetratelabs/wazero/api"
 )
 
-// Plugin is a compiled guest module.
+// Plugin is a compiled guest module with its instance manager.
 type Plugin struct {
 	host     *Host
 	manifest *Manifest
 	compiled wazero.CompiledModule
-	inst     api.Module
+	manager  *instanceManager
 }
 
-// Install instantiates the module, checks ABI 1, and runs on_install if set.
+func (p *Plugin) callTimeout() time.Duration {
+	if p.manifest.Runtime.CPUTimeoutMS > 0 {
+		return time.Duration(p.manifest.Runtime.CPUTimeoutMS) * time.Millisecond
+	}
+	return p.host.cfg.DefaultCallTimeout
+}
+
+// Call invokes an exported entry point with the manifest's per-call timeout.
+// Per-call metadata (user, request id, locale, deadline) is taken from a
+// CallContext attached with WithCallContext. A trap destroys the instance.
+// Non-zero i32 results are returned as-is; interpreting them as errors is up
+// to the caller (ncgo_abi_version legitimately returns 1).
+func (p *Plugin) Call(ctx context.Context, entry string, args ...uint64) ([]uint64, error) {
+	if p == nil || p.host == nil {
+		return nil, fmt.Errorf("plugins: nil plugin")
+	}
+	callCtx, cancel := context.WithTimeout(withCall(ctx, p), p.callTimeout())
+	defer cancel()
+
+	inst, release, err := p.manager.acquire(callCtx)
+	if err != nil {
+		return nil, err
+	}
+	fn := inst.mod.ExportedFunction(entry)
+	if fn == nil {
+		release(false)
+		return nil, fmt.Errorf("%w: %s", ErrMissingExport, entry)
+	}
+	results, err := fn.Call(callCtx, args...)
+	if err != nil {
+		release(true)
+		return nil, wrapTrap(err)
+	}
+	release(false)
+	return results, nil
+}
+
+// callEntry invokes an entry point and converts a non-zero i32 result into
+// a PluginError.
+func (p *Plugin) callEntry(ctx context.Context, entry string, args ...uint64) error {
+	results, err := p.Call(ctx, entry, args...)
+	if err != nil {
+		return err
+	}
+	if len(results) > 0 {
+		if code := int32(results[0]); code != 0 { //nolint:gosec // G115: plugin i32 return
+			return &PluginError{Code: code}
+		}
+	}
+	return nil
+}
+
+// Install warms instances, checks ABI 1, and runs on_install if set.
 func (p *Plugin) Install(ctx context.Context) error {
 	if p == nil || p.host == nil {
 		return fmt.Errorf("plugins: nil plugin")
 	}
-	if p.inst != nil {
-		_ = p.inst.Close(ctx)
-		p.inst = nil
-	}
-	name := p.manifest.Plugin.ID
-	cfg := wazero.NewModuleConfig().WithName(name).WithStartFunctions()
-	timeout := p.host.cfg.DefaultCallTimeout
-	if p.manifest.Runtime.CPUTimeoutMS > 0 {
-		timeout = time.Duration(p.manifest.Runtime.CPUTimeoutMS) * time.Millisecond
-	}
-	callCtx, cancel := context.WithTimeout(withPlugin(ctx, p.manifest.Plugin.ID, p.manifest.Plugin.Version), timeout)
+	callCtx, cancel := context.WithTimeout(withPlugin(ctx, p.manifest.Plugin.ID, p.manifest.Plugin.Version), p.callTimeout())
 	defer cancel()
-
-	inst, err := p.host.rt.InstantiateModule(callCtx, p.compiled, cfg)
-	if err != nil {
-		return wrapTrap(err)
+	if err := p.manager.warm(callCtx); err != nil {
+		return err
 	}
-	p.inst = inst
 
-	fn := inst.ExportedFunction("ncgo_abi_version")
-	if fn == nil {
-		return ErrMissingExport
-	}
-	results, err := fn.Call(callCtx)
+	results, err := p.Call(ctx, "ncgo_abi_version")
 	if err != nil {
-		return wrapTrap(err)
+		return err
 	}
 	if len(results) == 0 || int32(results[0]) != 1 { //nolint:gosec // G115: ABI version is 0 or 1
 		return ErrABIMismatch
@@ -58,35 +91,35 @@ func (p *Plugin) Install(ctx context.Context) error {
 	if on == "" {
 		return nil
 	}
-	entry := inst.ExportedFunction(on)
-	if entry == nil {
-		return fmt.Errorf("%w: %s", ErrMissingExport, on)
+	return p.callEntry(ctx, on)
+}
+
+// Uninstall runs on_uninstall if set and releases all instances.
+func (p *Plugin) Uninstall(ctx context.Context) error {
+	if p == nil || p.host == nil {
+		return fmt.Errorf("plugins: nil plugin")
 	}
-	results, err = entry.Call(callCtx)
-	if err != nil {
-		return wrapTrap(err)
-	}
-	if len(results) > 0 {
-		code := int32(results[0]) //nolint:gosec // G115: plugin i32 return
-		if code != 0 {
-			return &PluginError{Code: code}
+	on := p.manifest.EntryPoints.OnUninstall
+	if on != "" {
+		if err := p.callEntry(ctx, on); err != nil {
+			return err
 		}
 	}
+	p.manager.closeAll()
 	return nil
 }
 
-// Close releases the instance.
+// Close releases all instances and the compiled module.
 func (p *Plugin) Close(ctx context.Context) error {
 	if p == nil {
 		return nil
 	}
-	var err error
-	if p.inst != nil {
-		err = p.inst.Close(ctx)
-		p.inst = nil
+	if p.manager != nil {
+		p.manager.closeAll()
 	}
+	var err error
 	if p.compiled != nil {
-		err = errors.Join(err, p.compiled.Close(ctx))
+		err = p.compiled.Close(ctx)
 		p.compiled = nil
 	}
 	return err

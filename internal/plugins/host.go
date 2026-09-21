@@ -7,12 +7,17 @@ import (
 	"time"
 
 	"github.com/tetratelabs/wazero"
+
+	"github.com/PhantomMatthew/nextcloud-go/internal/cache"
 )
 
-// HostConfig sizes the wazero runtime.
+// HostConfig sizes the wazero runtime and wires host services.
 type HostConfig struct {
 	DefaultMemoryLimitMB int
 	DefaultCallTimeout   time.Duration
+	// Cache backs the cache_* host functions. Nil makes them return
+	// ErrUnavailable.
+	Cache cache.Cache
 }
 
 // Host is a wazero-backed plugin runtime.
@@ -22,7 +27,8 @@ type Host struct {
 	cfg    HostConfig
 }
 
-// NewHost constructs a runtime with the ncgo.log host module. WASI is not instantiated.
+// NewHost constructs a runtime with the full ncgo host module surface. WASI
+// is not instantiated.
 func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, error) {
 	if cfg.DefaultMemoryLimitMB <= 0 {
 		cfg.DefaultMemoryLimitMB = 32
@@ -45,34 +51,20 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 		WithCloseOnContextDone(true).
 		WithMemoryLimitPages(pages))
 	h := &Host{rt: rt, logger: logger, cfg: cfg}
-	_, err := rt.NewHostModuleBuilder("ncgo").
-		NewFunctionBuilder().
-		WithFunc(h.log).
-		Export("log").
-		Instantiate(ctx)
-	if err != nil {
+	if err := h.registerHostModule(ctx); err != nil {
 		_ = rt.Close(ctx)
 		return nil, fmt.Errorf("plugins: host module: %w", err)
 	}
 	return h, nil
 }
 
-type ctxKey int
-
-const (
-	ctxPluginID ctxKey = iota
-	ctxPluginVersion
-)
-
-func withPlugin(ctx context.Context, id, version string) context.Context {
-	ctx = context.WithValue(ctx, ctxPluginID, id)
-	return context.WithValue(ctx, ctxPluginVersion, version)
-}
-
 // Load compiles wasm and rejects forbidden imports / missing exports.
 func (h *Host) Load(ctx context.Context, m *Manifest, wasm []byte) (*Plugin, error) {
 	if m == nil {
 		return nil, ErrManifestInvalid
+	}
+	if err := m.Validate(); err != nil {
+		return nil, err
 	}
 	compiled, err := h.rt.CompileModule(ctx, wasm)
 	if err != nil {
@@ -99,7 +91,9 @@ func (h *Host) Load(ctx context.Context, m *Manifest, wasm []byte) (*Plugin, err
 			return nil, fmt.Errorf("%w: %s", ErrMissingExport, name)
 		}
 	}
-	return &Plugin{host: h, manifest: m, compiled: compiled}, nil
+	p := &Plugin{host: h, manifest: m, compiled: compiled}
+	p.manager = newInstanceManager(h, m, compiled)
+	return p, nil
 }
 
 // Close shuts the runtime.

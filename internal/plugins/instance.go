@@ -1,0 +1,220 @@
+package plugins
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sync"
+	"sync/atomic"
+
+	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/api"
+)
+
+// ErrHandleLimit is returned when an instance exceeds its open-handle budget.
+var ErrHandleLimit = errors.New("plugins: handle limit reached")
+
+// Per-instance handle budgets from the ABI spec.
+const (
+	maxStreamHandles = 64
+	maxRowsHandles   = 16
+	maxHTTPHandles   = 16
+)
+
+type handleKind int
+
+const (
+	handleStream handleKind = iota
+	handleRows
+	handleHTTP
+)
+
+var handleLimits = map[handleKind]int32{
+	handleStream: maxStreamHandles,
+	handleRows:   maxRowsHandles,
+	handleHTTP:   maxHTTPHandles,
+}
+
+type handleEntry struct {
+	kind handleKind
+	val  any
+}
+
+// handleTable tracks opaque handles owned by one instance. Handles are
+// per-instance: an id handed to one instance is meaningless to another.
+type handleTable struct {
+	mu     sync.Mutex
+	next   int32
+	counts map[handleKind]int32
+	items  map[int32]handleEntry
+}
+
+func newHandleTable() *handleTable {
+	return &handleTable{
+		next:   1,
+		counts: make(map[handleKind]int32),
+		items:  make(map[int32]handleEntry),
+	}
+}
+
+func (t *handleTable) add(kind handleKind, val any) (int32, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.counts[kind] >= handleLimits[kind] {
+		return 0, fmt.Errorf("%w: kind %d", ErrHandleLimit, kind)
+	}
+	id := t.next
+	t.next++
+	t.items[id] = handleEntry{kind: kind, val: val}
+	t.counts[kind]++
+	return id, nil
+}
+
+func (t *handleTable) get(id int32, kind handleKind) (any, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	e, ok := t.items[id]
+	if !ok || e.kind != kind {
+		return nil, false
+	}
+	return e.val, true
+}
+
+func (t *handleTable) remove(id int32, kind handleKind) (any, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	e, ok := t.items[id]
+	if !ok || e.kind != kind {
+		return nil, false
+	}
+	delete(t.items, id)
+	t.counts[kind]--
+	return e.val, true
+}
+
+// instance is one instantiated module plus its per-instance state.
+type instance struct {
+	mod     api.Module
+	handles *handleTable
+}
+
+// instanceManager owns the instance lifecycle for one plugin according to its
+// manifest's instance_model.
+type instanceManager struct {
+	host     *Host
+	manifest *Manifest
+	compiled wazero.CompiledModule
+
+	seq      atomic.Uint64
+	pool     chan *instance // pooled model
+	single   *instance      // singleton model
+	singleMu sync.Mutex
+}
+
+func newInstanceManager(host *Host, m *Manifest, compiled wazero.CompiledModule) *instanceManager {
+	im := &instanceManager{host: host, manifest: m, compiled: compiled}
+	if m.Runtime.InstanceModel == "pooled" {
+		im.pool = make(chan *instance, m.Runtime.PoolSize)
+	}
+	return im
+}
+
+func (im *instanceManager) instantiate(ctx context.Context) (*instance, error) {
+	// Instance names must be unique within the runtime (wazero rejects
+	// duplicates); the plugin id alone is not enough for pooled instances.
+	name := fmt.Sprintf("%s#%d", im.manifest.Plugin.ID, im.seq.Add(1))
+	cfg := wazero.NewModuleConfig().WithName(name).WithStartFunctions()
+	mod, err := im.host.rt.InstantiateModule(ctx, im.compiled, cfg)
+	if err != nil {
+		return nil, wrapTrap(err)
+	}
+	return &instance{mod: mod, handles: newHandleTable()}, nil
+}
+
+// warm pre-instantiates the pool for the pooled model.
+func (im *instanceManager) warm(ctx context.Context) error {
+	if im.pool == nil {
+		return nil
+	}
+	for i := 0; i < cap(im.pool); i++ {
+		inst, err := im.instantiate(ctx)
+		if err != nil {
+			return err
+		}
+		im.pool <- inst
+	}
+	return nil
+}
+
+// acquire hands out an instance per the model. The returned release must be
+// called with broken=true when the call trapped, which destroys the instance
+// (spec: any trap destroys the instance).
+func (im *instanceManager) acquire(ctx context.Context) (inst *instance, release func(broken bool), err error) {
+	switch im.manifest.Runtime.InstanceModel {
+	case "pooled":
+		select {
+		case inst := <-im.pool:
+			return inst, func(broken bool) { im.releasePooled(ctx, inst, broken) }, nil
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		}
+	case "singleton":
+		im.singleMu.Lock()
+		if im.single == nil {
+			inst, err := im.instantiate(ctx)
+			if err != nil {
+				im.singleMu.Unlock()
+				return nil, nil, err
+			}
+			im.single = inst
+		}
+		inst := im.single
+		return inst, func(broken bool) {
+			if broken {
+				_ = inst.mod.Close(context.Background())
+				im.single = nil
+			}
+			im.singleMu.Unlock()
+		}, nil
+	default: // per_request
+		inst, err := im.instantiate(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		return inst, func(bool) {
+			_ = inst.mod.Close(context.Background())
+		}, nil
+	}
+}
+
+func (im *instanceManager) releasePooled(_ context.Context, inst *instance, broken bool) {
+	if !broken {
+		im.pool <- inst
+		return
+	}
+	_ = inst.mod.Close(context.Background())
+	// Replenish with a fresh instance; use a detached context because the
+	// call context that broke the instance is typically already expired.
+	fresh, err := im.instantiate(context.Background())
+	if err != nil {
+		im.host.logger.WarnContext(context.Background(), "plugins: pool replenish failed",
+			slog.String("plugin.id", im.manifest.Plugin.ID), slog.String("error", err.Error()))
+		return
+	}
+	im.pool <- fresh
+}
+
+// closeAll releases every instance owned by the manager.
+func (im *instanceManager) closeAll() {
+	if im.pool != nil {
+		close(im.pool)
+		for inst := range im.pool {
+			_ = inst.mod.Close(context.Background())
+		}
+	}
+	if im.single != nil {
+		_ = im.single.mod.Close(context.Background())
+		im.single = nil
+	}
+}

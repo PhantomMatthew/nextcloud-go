@@ -189,6 +189,12 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-21** — Phase 4a: plugin runtime core — typed capabilities with
+  default-deny checks, per_request/pooled/singleton instance manager with
+  per-instance handle tables, full ncgo-abi/1 host function surface
+  registered (log/ctx/crypto/cache implemented; db/storage/http/events/jobs/
+  routes/ocs/webdav/config return ErrUnsupported until their increments),
+  pluginsdk bindings (see ADR-0037).
 - **2026-09-21** — Phase 3f3: OCS sharees `/recommended` returns
   distinct local user/group recipients of the caller's current shares,
   most recent first (see ADR-0036).
