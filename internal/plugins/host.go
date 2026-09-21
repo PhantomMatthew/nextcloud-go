@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/api"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/cache"
+	"github.com/PhantomMatthew/nextcloud-go/internal/database"
 )
 
 // HostConfig sizes the wazero runtime and wires host services.
@@ -18,6 +21,8 @@ type HostConfig struct {
 	// Cache backs the cache_* host functions. Nil makes them return
 	// ErrUnavailable.
 	Cache cache.Cache
+	// DB backs the db_* host functions. Nil makes them return ErrUnavailable.
+	DB database.DB
 }
 
 // Host is a wazero-backed plugin runtime.
@@ -25,6 +30,11 @@ type Host struct {
 	rt     wazero.Runtime
 	logger *slog.Logger
 	cfg    HostConfig
+
+	// handleTabs maps a live module instance to its handle table so host
+	// functions (which receive api.Module, not *instance) can find it.
+	handleTabsMu sync.RWMutex
+	handleTabs   map[api.Module]*handleTable
 }
 
 // NewHost constructs a runtime with the full ncgo host module surface. WASI
@@ -50,12 +60,41 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().
 		WithCloseOnContextDone(true).
 		WithMemoryLimitPages(pages))
-	h := &Host{rt: rt, logger: logger, cfg: cfg}
+	h := &Host{rt: rt, logger: logger, cfg: cfg, handleTabs: make(map[api.Module]*handleTable)}
 	if err := h.registerHostModule(ctx); err != nil {
 		_ = rt.Close(ctx)
 		return nil, fmt.Errorf("plugins: host module: %w", err)
 	}
 	return h, nil
+}
+
+// registerHandles associates an instance's handle table with its module.
+func (h *Host) registerHandles(mod api.Module, t *handleTable) {
+	h.handleTabsMu.Lock()
+	defer h.handleTabsMu.Unlock()
+	h.handleTabs[mod] = t
+}
+
+// unregisterHandles drops the association when an instance closes.
+func (h *Host) unregisterHandles(mod api.Module) {
+	h.handleTabsMu.Lock()
+	defer h.handleTabsMu.Unlock()
+	delete(h.handleTabs, mod)
+}
+
+// handlesFor returns the handle table for the calling module instance.
+func (h *Host) handlesFor(mod api.Module) *handleTable {
+	h.handleTabsMu.RLock()
+	defer h.handleTabsMu.RUnlock()
+	return h.handleTabs[mod]
+}
+
+// logHandleCleanup reports leftover-handle cleanup failures.
+func (h *Host) logHandleCleanup(err error) {
+	if h.logger != nil {
+		h.logger.WarnContext(context.Background(), "plugins: handle cleanup failed",
+			slog.String("error", err.Error()))
+	}
 }
 
 // Load compiles wasm and rejects forbidden imports / missing exports.

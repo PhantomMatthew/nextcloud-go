@@ -27,6 +27,9 @@ func TestModulesCompile(t *testing.T) {
 		{"crypto-hash", CryptoHashModule("abc")},
 		{"event-probe", EventProbeModule("files.x", -9)},
 		{"route-probe", RouteProbeModule("/apps/x/y", -3)},
+		{"db", DBModule("CREATE TABLE pt_items (path TEXT)", "INSERT INTO pt_items (path) VALUES ('hello-item')", "SELECT path FROM pt_items")},
+		{"db-denied", DBDeniedModule("SELECT id FROM users", -3)},
+		{"db-tx", DBTxModule("INSERT INTO pt_items (path) VALUES ('tx-item')", "SELECT path FROM pt_items")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			compiled, err := r.CompileModule(ctx, tc.bin)

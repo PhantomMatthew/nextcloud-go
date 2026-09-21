@@ -218,6 +218,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 			DefaultMemoryLimitMB: cfg.Plugin.DefaultMemoryLimitMB,
 			DefaultCallTimeout:   time.Duration(cfg.Plugin.DefaultCPUTimeoutMS) * time.Millisecond,
 			Cache:                a.Cache,
+			DB:                   a.DB,
 		}, logger)
 		if err != nil {
 			if cerr := a.closeResources(ctx); cerr != nil {

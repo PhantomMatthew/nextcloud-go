@@ -93,10 +93,41 @@ func (t *handleTable) remove(id int32, kind handleKind) (any, bool) {
 	return e.val, true
 }
 
+// closeAll releases every open handle: database rows are closed, open
+// transactions are rolled back. Cleanup errors are joined and returned.
+func (t *handleTable) closeAll() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var errs []error
+	for id, e := range t.items {
+		if tx, ok := e.val.(interface{ Rollback() error }); ok {
+			if err := tx.Rollback(); err != nil {
+				errs = append(errs, err)
+			}
+		} else if closer, ok := e.val.(interface{ Close() error }); ok {
+			if err := closer.Close(); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		delete(t.items, id)
+	}
+	t.counts = make(map[handleKind]int32)
+	return errors.Join(errs...)
+}
+
 // instance is one instantiated module plus its per-instance state.
 type instance struct {
 	mod     api.Module
 	handles *handleTable
+}
+
+// close releases leftover handles and closes the module.
+func (in *instance) close(h *Host) {
+	if err := in.handles.closeAll(); err != nil {
+		h.logHandleCleanup(err)
+	}
+	h.unregisterHandles(in.mod)
+	_ = in.mod.Close(context.Background())
 }
 
 // instanceManager owns the instance lifecycle for one plugin according to its
@@ -129,7 +160,9 @@ func (im *instanceManager) instantiate(ctx context.Context) (*instance, error) {
 	if err != nil {
 		return nil, wrapTrap(err)
 	}
-	return &instance{mod: mod, handles: newHandleTable()}, nil
+	inst := &instance{mod: mod, handles: newHandleTable()}
+	im.host.registerHandles(mod, inst.handles)
+	return inst, nil
 }
 
 // warm pre-instantiates the pool for the pooled model.
@@ -172,8 +205,10 @@ func (im *instanceManager) acquire(ctx context.Context) (inst *instance, release
 		inst := im.single
 		return inst, func(broken bool) {
 			if broken {
-				_ = inst.mod.Close(context.Background())
+				inst.close(im.host)
 				im.single = nil
+			} else if err := inst.handles.closeAll(); err != nil {
+				im.host.logHandleCleanup(err)
 			}
 			im.singleMu.Unlock()
 		}, nil
@@ -183,17 +218,22 @@ func (im *instanceManager) acquire(ctx context.Context) (inst *instance, release
 			return nil, nil, err
 		}
 		return inst, func(bool) {
-			_ = inst.mod.Close(context.Background())
+			inst.close(im.host)
 		}, nil
 	}
 }
 
 func (im *instanceManager) releasePooled(_ context.Context, inst *instance, broken bool) {
 	if !broken {
+		// Clean release: close leftover handles (plugin forgot to), keep the
+		// instance alive for reuse.
+		if err := inst.handles.closeAll(); err != nil {
+			im.host.logHandleCleanup(err)
+		}
 		im.pool <- inst
 		return
 	}
-	_ = inst.mod.Close(context.Background())
+	inst.close(im.host)
 	// Replenish with a fresh instance; use a detached context because the
 	// call context that broke the instance is typically already expired.
 	fresh, err := im.instantiate(context.Background())
@@ -210,11 +250,11 @@ func (im *instanceManager) closeAll() {
 	if im.pool != nil {
 		close(im.pool)
 		for inst := range im.pool {
-			_ = inst.mod.Close(context.Background())
+			inst.close(im.host)
 		}
 	}
 	if im.single != nil {
-		_ = im.single.mod.Close(context.Background())
+		im.single.close(im.host)
 		im.single = nil
 	}
 }

@@ -23,16 +23,21 @@ func (p *Plugin) callTimeout() time.Duration {
 	return p.host.cfg.DefaultCallTimeout
 }
 
-// Call invokes an exported entry point with the manifest's per-call timeout.
-// Per-call metadata (user, request id, locale, deadline) is taken from a
-// CallContext attached with WithCallContext. A trap destroys the instance.
-// Non-zero i32 results are returned as-is; interpreting them as errors is up
-// to the caller (ncgo_abi_version legitimately returns 1).
+// Call invokes an exported entry point outside lifecycle hooks. Per-call
+// metadata (user, request id, locale, deadline) is taken from a CallContext
+// attached with WithCallContext. A trap destroys the instance. Non-zero i32
+// results are returned as-is; interpreting them as errors is up to the
+// caller (ncgo_abi_version legitimately returns 1).
 func (p *Plugin) Call(ctx context.Context, entry string, args ...uint64) ([]uint64, error) {
+	return p.call(ctx, entry, false, args...)
+}
+
+// call is the shared entry-point invocation; inHook marks lifecycle hooks.
+func (p *Plugin) call(ctx context.Context, entry string, inHook bool, args ...uint64) ([]uint64, error) {
 	if p == nil || p.host == nil {
 		return nil, fmt.Errorf("plugins: nil plugin")
 	}
-	callCtx, cancel := context.WithTimeout(withCall(ctx, p), p.callTimeout())
+	callCtx, cancel := context.WithTimeout(withCall(ctx, p, inHook), p.callTimeout())
 	defer cancel()
 
 	inst, release, err := p.manager.acquire(callCtx)
@@ -54,9 +59,9 @@ func (p *Plugin) Call(ctx context.Context, entry string, args ...uint64) ([]uint
 }
 
 // callEntry invokes an entry point and converts a non-zero i32 result into
-// a PluginError.
-func (p *Plugin) callEntry(ctx context.Context, entry string, args ...uint64) error {
-	results, err := p.Call(ctx, entry, args...)
+// a PluginError. inHook marks lifecycle hooks (install/uninstall/upgrade).
+func (p *Plugin) callEntry(ctx context.Context, entry string, inHook bool, args ...uint64) error {
+	results, err := p.call(ctx, entry, inHook, args...)
 	if err != nil {
 		return err
 	}
@@ -99,7 +104,7 @@ func (p *Plugin) Install(ctx context.Context) error {
 	if on == "" {
 		return nil
 	}
-	return p.callEntry(ctx, on)
+	return p.callEntry(ctx, on, true)
 }
 
 // Uninstall runs on_uninstall if set and releases all instances.
@@ -109,7 +114,7 @@ func (p *Plugin) Uninstall(ctx context.Context) error {
 	}
 	on := p.manifest.EntryPoints.OnUninstall
 	if on != "" {
-		if err := p.callEntry(ctx, on); err != nil {
+		if err := p.callEntry(ctx, on, true); err != nil {
 			return err
 		}
 	}

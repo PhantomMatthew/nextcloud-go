@@ -26,6 +26,9 @@ const (
 type callInfo struct {
 	plugin *Plugin
 	call   CallContext
+	// inHook is true for lifecycle hooks (install/uninstall/upgrade), where
+	// DDL against granted tables is permitted.
+	inHook bool
 }
 
 func withPlugin(ctx context.Context, id, version string) context.Context {
@@ -38,13 +41,13 @@ func WithCallContext(ctx context.Context, cc CallContext) context.Context {
 	return context.WithValue(ctx, ctxCall, cc)
 }
 
-func withCall(ctx context.Context, p *Plugin) context.Context {
+func withCall(ctx context.Context, p *Plugin, inHook bool) context.Context {
 	var cc CallContext
 	if v, ok := ctx.Value(ctxCall).(CallContext); ok {
 		cc = v
 	}
 	ctx = withPlugin(ctx, p.manifest.Plugin.ID, p.manifest.Plugin.Version)
-	return context.WithValue(ctx, ctxCall, callInfo{plugin: p, call: cc})
+	return context.WithValue(ctx, ctxCall, callInfo{plugin: p, call: cc, inHook: inHook})
 }
 
 func callFromCtx(ctx context.Context) callInfo {

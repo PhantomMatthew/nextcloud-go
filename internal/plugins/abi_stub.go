@@ -9,10 +9,10 @@ import (
 )
 
 // This file holds the host functions whose backing subsystems are not yet
-// implemented (SQL-safe db access, storage proxying, outbound HTTP, event
-// bus, job wiring, route mounting, plugin config store). Each validates the
-// relevant capability so the default-deny posture is exercised now, then
-// returns ErrUnsupported until its increment lands.
+// implemented (storage proxying, outbound HTTP, event bus, job wiring,
+// route mounting, plugin config store). Each validates the relevant
+// capability so the default-deny posture is exercised now, then returns
+// ErrUnsupported until its increment lands.
 
 func (h *Host) configGet(ctx context.Context, _ api.Module, _, _, _, _ int32) int32 {
 	return unsupportedGranted(pluginCaps(ctx).hasConfigRead())
@@ -20,42 +20,6 @@ func (h *Host) configGet(ctx context.Context, _ api.Module, _, _, _, _ int32) in
 
 func (h *Host) configSet(ctx context.Context, _ api.Module, _, _, _, _ int32) int32 {
 	return unsupportedGranted(pluginCaps(ctx).hasConfigWrite())
-}
-
-func (h *Host) dbQuery(ctx context.Context, _ api.Module, _, _, _, _ int32) int64 {
-	return int64(unsupportedGranted(pluginCaps(ctx).hasAnyDB()))
-}
-
-func (h *Host) dbExec(ctx context.Context, _ api.Module, _, _, _, _, _ int32) int32 {
-	return unsupportedGranted(pluginCaps(ctx).hasAnyDB())
-}
-
-func (h *Host) dbRowsNext(ctx context.Context, _ api.Module, _, _, _ int32) int32 {
-	return unsupportedGranted(pluginCaps(ctx).hasAnyDB())
-}
-
-func (h *Host) dbRowsClose(ctx context.Context, _ api.Module, _ int32) int32 {
-	return unsupportedGranted(pluginCaps(ctx).hasAnyDB())
-}
-
-func (h *Host) dbTxBegin(ctx context.Context, _ api.Module) int64 {
-	return int64(unsupportedGranted(pluginCaps(ctx).hasAnyDB()))
-}
-
-func (h *Host) dbTxCommit(ctx context.Context, _ api.Module, _ int32) int32 {
-	return unsupportedGranted(pluginCaps(ctx).hasAnyDB())
-}
-
-func (h *Host) dbTxRollback(ctx context.Context, _ api.Module, _ int32) int32 {
-	return unsupportedGranted(pluginCaps(ctx).hasAnyDB())
-}
-
-func (h *Host) dbTxQuery(ctx context.Context, _ api.Module, _, _, _, _, _ int32) int64 {
-	return int64(unsupportedGranted(pluginCaps(ctx).hasAnyDB()))
-}
-
-func (h *Host) dbTxExec(ctx context.Context, _ api.Module, _, _, _, _, _, _ int32) int32 {
-	return unsupportedGranted(pluginCaps(ctx).hasAnyDB())
 }
 
 func (h *Host) storageStat(ctx context.Context, _ api.Module, _, _, _, _ int32) int32 {

@@ -189,6 +189,11 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-21** — Phase 4c1: `db.*` host functions implemented — SQL
+  safety via xwb1989/sqlparser AST table extraction (fail closed),
+  SELECT/write/DDL classes with DDL restricted to lifecycle hooks,
+  MessagePack rows, transactions, and handle cleanup on every release
+  path (see ADR-0039). Resolves spec §14 Q1 for v1.
 - **2026-09-21** — Phase 4b: `.ncplugin` archives, ed25519 signing with
   operator-pinned trusted keys, `0015_plugins` registry, verified
   install/upgrade (capability re-approval) / uninstall, boot-time loading

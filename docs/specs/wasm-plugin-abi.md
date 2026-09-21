@@ -598,6 +598,11 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-21** — Phase 4c1 implemented `db.*` (ADR-0039): §14 Q1
+  resolved with xwb1989/sqlparser (single MySQL-dialect parser for all
+  three backends, fail closed); DDL restricted to lifecycle hooks per
+  §6.3; transaction handles share the rows budget; rows are MessagePack
+  arrays per §6.1 via vmihailenco/msgpack/v5.
 - **2026-09-21** — Phase 4b pinned the §4 archive format and §13 signature
   scheme (ADR-0038): signed payload = canonical JSON array of
   `{name, sha256}` sorted by name; `signature.sig` = JSON
