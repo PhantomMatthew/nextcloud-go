@@ -66,6 +66,11 @@ func (s *SQLStore) GetByID(ctx context.Context, id int64) (*User, error) {
 FROM users WHERE id = ?`, id)
 }
 
+func (s *SQLStore) GetByEmail(ctx context.Context, email string) (*User, error) {
+	return s.getUser(ctx, `SELECT id, uid, display_name, email, password_hash, quota_bytes, enabled, created_at, updated_at
+FROM users WHERE email = ?`, email)
+}
+
 func (s *SQLStore) getUser(ctx context.Context, q string, arg any) (*User, error) {
 	row := s.db.QueryRow(ctx, q, arg)
 	var u User

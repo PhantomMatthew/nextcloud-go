@@ -214,6 +214,11 @@ func (d *DAV) Write(ctx context.Context, user, p string, r io.Reader, _ *time.Ti
 	if err != nil {
 		return nil, false, mapErr(err)
 	}
+	if !rc.shared {
+		if err := d.scheduleWrite(ctx, u, data); err != nil {
+			return nil, false, mapErr(err)
+		}
+	}
 	return objectEntry(calURI, obj), created, nil
 }
 
@@ -278,6 +283,11 @@ func (d *DAV) Remove(ctx context.Context, user, p string) error {
 	}
 	if rc.shared && rc.access != ShareAccessReadWrite {
 		return mapErr(ErrForbidden)
+	}
+	if !rc.shared {
+		if err := d.scheduleCancel(ctx, u, rc, objURI); err != nil {
+			return mapErr(err)
+		}
 	}
 	return mapErr(d.Store.DeleteObject(ctx, rc.cal.UserID, rc.cal.URI, objURI))
 }

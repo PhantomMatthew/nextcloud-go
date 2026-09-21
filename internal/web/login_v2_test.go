@@ -322,6 +322,14 @@ func (s stubUserStore) GetByID(_ context.Context, id int64) (*users.User, error)
 	cp := *s.u
 	return &cp, nil
 }
+
+func (s stubUserStore) GetByEmail(_ context.Context, email string) (*users.User, error) {
+	if s.u == nil || s.u.Email != email {
+		return nil, users.ErrNotFound
+	}
+	cp := *s.u
+	return &cp, nil
+}
 func (stubUserStore) UpdatePasswordHash(context.Context, int64, string) error { return nil }
 func (stubUserStore) Count(context.Context) (int64, error)                    { return 1, nil }
 func (stubUserStore) CreateGroup(context.Context, *users.Group) error         { return nil }

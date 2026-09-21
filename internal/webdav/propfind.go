@@ -157,6 +157,9 @@ func writeProps(buf *bytes.Buffer, ctx PropfindContext, e *Entry) {
 	if e.AddressbookHomeSet != "" {
 		fmt.Fprintf(buf, `<card:addressbook-home-set><d:href>%s</d:href></card:addressbook-home-set>`, xmlEscape(e.AddressbookHomeSet))
 	}
+	if e.CalendarUserAddress != "" {
+		fmt.Fprintf(buf, `<cal:calendar-user-address-set><d:href>%s</d:href></cal:calendar-user-address-set>`, xmlEscape(e.CalendarUserAddress))
+	}
 	if e.IsCalendar {
 		if e.CTag != "" {
 			fmt.Fprintf(buf, `<cs:getctag>&quot;%s&quot;</cs:getctag>`, xmlEscape(e.CTag))

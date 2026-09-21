@@ -37,6 +37,7 @@ type Store interface {
 	Create(ctx context.Context, u *User) error
 	GetByUID(ctx context.Context, uid string) (*User, error)
 	GetByID(ctx context.Context, id int64) (*User, error)
+	GetByEmail(ctx context.Context, email string) (*User, error)
 	UpdatePasswordHash(ctx context.Context, id int64, hash string) error
 	Count(ctx context.Context) (int64, error)
 	CreateGroup(ctx context.Context, g *Group) error

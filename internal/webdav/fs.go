@@ -58,6 +58,7 @@ type Entry struct {
 	CalendarData         string
 	ShareAccess          string // "" | "read" | "read-write" (shared calendars)
 	OwnerPrincipal       string // principal href of the owner (shared calendars)
+	CalendarUserAddress  string // mailto: address for scheduling (principals)
 	CurrentUserPrincipal string
 	CalendarHomeSet      string
 	IsAddressbook        bool

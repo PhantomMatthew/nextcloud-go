@@ -189,6 +189,12 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-21** — Phase 3e4: local iTIP scheduling — organizer writes
+  deliver invites to local attendees' default calendars, attendee
+  PARTSTAT replies update the organizer copy, organizer deletes cancel
+  attendee copies; principals emit `calendar-user-address-set` (see
+  ADR-0033). iMIP, inbox/outbox, and SEQUENCE remain later. Phase 3
+  CalDAV scope complete.
 - **2026-09-21** — Phase 3e3: calendar sharing via `calendar_shares`
   and POST `cs:share`; shared calendars appear as
   `{uri}_shared_by_{owner}` in the sharee's home with `share-access`

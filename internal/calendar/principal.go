@@ -70,7 +70,7 @@ func (d *PrincipalDAV) entry(u *users.User) *webdav.Entry {
 	if name == "" {
 		name = u.UID
 	}
-	return &webdav.Entry{
+	e := &webdav.Entry{
 		Path:                 "/",
 		IsDir:                true,
 		IsPrincipal:          true,
@@ -84,6 +84,10 @@ func (d *PrincipalDAV) entry(u *users.User) *webdav.Entry {
 		CalendarHomeSet:      "/remote.php/dav/calendars/" + u.UID + "/",
 		AddressbookHomeSet:   "/remote.php/dav/addressbooks/users/" + u.UID + "/",
 	}
+	if u.Email != "" {
+		e.CalendarUserAddress = "mailto:" + u.Email
+	}
+	return e
 }
 
 func stringsTrimPath(p string) string {

@@ -167,6 +167,11 @@ func seedPhase1DAV(t *testing.T, a *App) {
 			t.Fatal(err)
 		}
 	}
+	for uid, email := range map[string]string{"admin": "admin@example.com", "bob": "bob@example.com"} {
+		if _, err := a.DB.Exec(context.Background(), `UPDATE users SET email = ? WHERE uid = ?`, email, uid); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err := a.davFS.Stat(context.Background(), "bob", "/"); err != nil {
 		t.Fatal(err)
 	}
