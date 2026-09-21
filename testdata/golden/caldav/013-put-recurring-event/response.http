@@ -1,0 +1,14 @@
+HTTP/1.1 201 Created
+Server: nginx
+Etag: "f811af06e934ed537b1fc18300f3a03fa31c3d91"
+Feature-Policy: autoplay 'self';camera 'none';fullscreen 'self';geolocation 'none';microphone 'none';payment 'none'
+Last-Modified: Thu, 01 May 2025 12:00:00 GMT
+Oc-Etag: "f811af06e934ed537b1fc18300f3a03fa31c3d91"
+Oc-Fileid: 00000003ocdev00001
+Referrer-Policy: no-referrer
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Permitted-Cross-Domain-Policies: none
+X-Robots-Tag: noindex, nofollow
+X-Xss-Protection: 1; mode=block
+

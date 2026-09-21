@@ -11,11 +11,14 @@ import (
 )
 
 type parsedEvent struct {
-	UID        string
-	Component  string
-	FirstOccur time.Time
-	LastOccur  time.Time
-	Recurring  bool
+	UID         string
+	Component   string
+	FirstOccur  time.Time
+	LastOccur   time.Time
+	Recurring   bool
+	RRule       string        // raw RRULE value, "" if none
+	Transparent bool          // TRANSP:TRANSPARENT
+	Dur         time.Duration // real DTEND-DTSTART (or DURATION), kept even when recurring
 }
 
 func parseICS(data []byte) (*parsedEvent, error) {
@@ -58,16 +61,20 @@ func parseICS(data []byte) (*parsedEvent, error) {
 			end = start.Add(d)
 		}
 	}
+	dur := end.Sub(start)
 	recurring := props["RRULE"] != ""
 	if recurring {
 		end = time.UnixMilli(RecurUntilMS).UTC()
 	}
 	return &parsedEvent{
-		UID:        uid,
-		Component:  ComponentVEVENT,
-		FirstOccur: start,
-		LastOccur:  end,
-		Recurring:  recurring,
+		UID:         uid,
+		Component:   ComponentVEVENT,
+		FirstOccur:  start,
+		LastOccur:   end,
+		Recurring:   recurring,
+		RRule:       props["RRULE"],
+		Transparent: strings.EqualFold(props["TRANSP"], "TRANSPARENT"),
+		Dur:         dur,
 	}, nil
 }
 

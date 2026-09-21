@@ -30,6 +30,19 @@ func (h *Handler) report(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
+	if raw, rok := h.FS.(RawReportFS); rok {
+		rawBody, contentType, handled, rerr := raw.RawReport(r.Context(), user, sub, ReportRequest{Name: name, Body: body})
+		if rerr != nil {
+			writeFSError(w, rerr)
+			return
+		}
+		if handled {
+			w.Header().Set("Content-Type", contentType)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(rawBody)
+			return
+		}
+	}
 	entries, err := reporter.Report(r.Context(), user, sub, ReportRequest{Name: name, Body: body})
 	if err != nil {
 		writeFSError(w, err)
@@ -92,7 +105,7 @@ func reportName(body []byte) string {
 			continue
 		}
 		switch se.Name.Local {
-		case "calendar-query", "calendar-multiget", "addressbook-query", "addressbook-multiget":
+		case "calendar-query", "calendar-multiget", "addressbook-query", "addressbook-multiget", "free-busy-query":
 			return se.Name.Local
 		}
 	}

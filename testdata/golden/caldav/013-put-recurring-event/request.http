@@ -1,0 +1,20 @@
+PUT /remote.php/dav/calendars/admin/personal/ncgo-event-002.ics HTTP/1.1
+Host: cloud.example.com
+User-Agent: ncgo-goldentest/0.0
+Accept: */*
+Authorization: Basic YWRtaW46YWRtaW4=
+Content-Type: text/calendar; charset=utf-8
+Content-Length: 228
+
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//nextcloud-go//EN
+BEGIN:VEVENT
+UID:ncgo-event-002
+DTSTAMP:20250501T120000Z
+DTSTART:20250501T140000Z
+DTEND:20250501T150000Z
+RRULE:FREQ=DAILY;COUNT=3
+SUMMARY:Phase 3e2
+END:VEVENT
+END:VCALENDAR

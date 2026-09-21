@@ -142,6 +142,13 @@ type ReportFS interface {
 	Report(ctx context.Context, user, path string, req ReportRequest) ([]*Entry, error)
 }
 
+// RawReportFS may be implemented by a ReportFS to answer a REPORT with a
+// raw body instead of a multistatus (e.g. CalDAV free-busy-query).
+// ok=false falls back to the multistatus Report path.
+type RawReportFS interface {
+	RawReport(ctx context.Context, user, path string, req ReportRequest) (body []byte, contentType string, ok bool, err error)
+}
+
 // CalendarMkdirFS is implemented by filesystems that accept MKCALENDAR.
 type CalendarMkdirFS interface {
 	MkCalendar(ctx context.Context, user, path string, props map[string]string) (*Entry, error)

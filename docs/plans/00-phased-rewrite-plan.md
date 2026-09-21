@@ -189,6 +189,11 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-21** — Phase 3e2: `free-busy-query` REPORT returns a raw
+  VFREEBUSY document via new `webdav.RawReportFS`; RRULE expansion
+  (FREQ/INTERVAL/COUNT/UNTIL, cap 1000), TRANSP:TRANSPARENT excluded,
+  busy intervals merged (see ADR-0031). BY* rules, scheduling, and
+  calendar sharing remain later.
 - **2026-09-21** — Phase 3e1: CalDAV VTODO objects (DTSTART/DUE/DURATION/
   COMPLETED/CREATED anchors), `calendar-query` comp-filter component
   filtering, and VEVENT+VTODO `supported-calendar-component-set` (see
