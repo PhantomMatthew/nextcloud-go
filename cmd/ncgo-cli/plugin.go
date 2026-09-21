@@ -1,19 +1,43 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
+	"github.com/PhantomMatthew/nextcloud-go/internal/config"
+	"github.com/PhantomMatthew/nextcloud-go/internal/database"
 	"github.com/PhantomMatthew/nextcloud-go/internal/plugins"
 )
 
 func newPlugin() *cobra.Command {
 	cmd := &cobra.Command{Use: "plugin", Short: "Plugin tools"}
-	cmd.AddCommand(&cobra.Command{
+	cmd.AddCommand(
+		newPluginCheck(),
+		newPluginKeygen(),
+		newPluginPack(),
+		newPluginSign(),
+		newPluginVerify(),
+		newPluginInstall(),
+		newPluginUninstall(),
+		newPluginList(),
+		newPluginEnable("enable <plugin-id>", true),
+		newPluginEnable("disable <plugin-id>", false),
+	)
+	return cmd
+}
+
+func newPluginCheck() *cobra.Command {
+	return &cobra.Command{
 		Use:   "check <dir>",
 		Short: "Load and install a plugin from a directory",
 		Args:  cobra.ExactArgs(1),
@@ -49,6 +73,359 @@ func newPlugin() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "ok %s %s\n", m.Plugin.ID, m.Plugin.Version)
 			return nil
 		},
-	})
+	}
+}
+
+func newPluginKeygen() *cobra.Command {
+	var out string
+	cmd := &cobra.Command{
+		Use:   "keygen",
+		Short: "Generate an ed25519 signing key pair (<out>.key / <out>.pub)",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if out == "" {
+				return errors.New("--out is required")
+			}
+			pub, priv, err := plugins.GenerateKey()
+			if err != nil {
+				return err
+			}
+			if err := writeKeyFile(out+".key", priv, 0o600); err != nil {
+				return err
+			}
+			if err := writeKeyFile(out+".pub", pub, 0o644); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "keyid %s\n", plugins.KeyIDFromPublic(pub))
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&out, "out", "o", "", "output path prefix")
 	return cmd
+}
+
+func writeKeyFile(path string, key []byte, mode fs.FileMode) error {
+	enc := base64.StdEncoding.EncodeToString(key)
+	if err := os.WriteFile(path, []byte(enc+"\n"), mode); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
+
+func readPrivateKey(path string) (ed25519.PrivateKey, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	line, _, _ := strings.Cut(string(raw), "\n")
+	priv, err := base64.StdEncoding.DecodeString(strings.TrimSpace(line))
+	if err != nil || len(priv) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("%s: malformed private key", path)
+	}
+	return ed25519.PrivateKey(priv), nil
+}
+
+func newPluginPack() *cobra.Command {
+	var out string
+	cmd := &cobra.Command{
+		Use:   "pack <dir>",
+		Short: "Pack a plugin directory into a .ncplugin archive",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if out == "" {
+				return errors.New("--out is required")
+			}
+			members, err := packDir(args[0])
+			if err != nil {
+				return err
+			}
+			raw, err := plugins.WriteArchive(members)
+			if err != nil {
+				return err
+			}
+			if _, err := plugins.ReadArchive(raw); err != nil {
+				return fmt.Errorf("packed archive fails validation: %w", err)
+			}
+			if err := os.WriteFile(out, raw, 0o600); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "packed %s (%d bytes)\n", out, len(raw))
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&out, "out", "o", "", "output .ncplugin path")
+	return cmd
+}
+
+// packDir collects plugin files: plugin.toml, the wasm module, and any extra
+// regular files (i18n/, README, settings schema). Keys, signatures, and
+// hidden files are excluded.
+func packDir(dir string) (map[string][]byte, error) {
+	members := make(map[string][]byte)
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		base := filepath.Base(path)
+		if d.IsDir() {
+			if rel != "." && strings.HasPrefix(base, ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasPrefix(base, ".") || strings.HasSuffix(base, ".key") ||
+			strings.HasSuffix(base, ".pub") || base == plugins.SignatureFile {
+			return nil
+		}
+		data, err := os.ReadFile(path) //nolint:gosec // G122: operator-supplied local dir in a CLI dev tool
+		if err != nil {
+			return err
+		}
+		members[filepath.ToSlash(rel)] = data
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := members["plugin.toml"]; !ok {
+		return nil, errors.New("plugin.toml not found")
+	}
+	return members, nil
+}
+
+func newPluginSign() *cobra.Command {
+	var keyPath, out string
+	cmd := &cobra.Command{
+		Use:   "sign <archive.ncplugin>",
+		Short: "Sign an archive with an ed25519 private key",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			priv, err := readPrivateKey(keyPath)
+			if err != nil {
+				return err
+			}
+			raw, err := os.ReadFile(args[0])
+			if err != nil {
+				return err
+			}
+			a, err := plugins.ReadArchive(raw)
+			if err != nil {
+				return err
+			}
+			sigRaw, err := plugins.SignMembers(a.Members(), priv)
+			if err != nil {
+				return err
+			}
+			members := a.Members()
+			members[plugins.SignatureFile] = sigRaw
+			packed, err := plugins.WriteArchive(members)
+			if err != nil {
+				return err
+			}
+			if out == "" {
+				out = args[0]
+			}
+			if err := os.WriteFile(out, packed, 0o600); err != nil { //nolint:gosec // G703: output path is an operator-supplied CLI flag
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "signed %s\n", out)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&keyPath, "key", "", "private key file")
+	cmd.Flags().StringVarP(&out, "out", "o", "", "output path (default: in place)")
+	return cmd
+}
+
+func newPluginVerify() *cobra.Command {
+	var trustedDir string
+	cmd := &cobra.Command{
+		Use:   "verify <archive.ncplugin>",
+		Short: "Verify an archive's signature against trusted keys",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if trustedDir == "" {
+				return errors.New("--trusted-dir is required")
+			}
+			keys, err := plugins.LoadTrustedKeys(trustedDir)
+			if err != nil {
+				return err
+			}
+			raw, err := os.ReadFile(args[0])
+			if err != nil {
+				return err
+			}
+			a, err := plugins.ReadArchive(raw)
+			if err != nil {
+				return err
+			}
+			if a.Signature == nil {
+				return plugins.ErrUnsigned
+			}
+			keyID, err := plugins.VerifyMembers(a.Signature, a.Members(), keys)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "ok %s %s keyid %s\n", a.Manifest.Plugin.ID, a.Manifest.Plugin.Version, keyID)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&trustedDir, "trusted-dir", "", "directory of trusted .pub keys")
+	return cmd
+}
+
+// pluginInstaller wires config, DB, host, and trusted keys for install-time
+// commands.
+func pluginInstaller(cmd *cobra.Command) (*plugins.Installer, func(), error) {
+	cfg, err := config.Load(config.LoadOptions{Path: cfgPath})
+	if err != nil {
+		return nil, nil, err
+	}
+	ctx := cmd.Context()
+	db, err := database.Open(ctx, database.Config{
+		Driver: database.Dialect(cfg.Database.Driver),
+		DSN:    cfg.Database.DSN,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	h, err := plugins.NewHost(ctx, plugins.HostConfig{}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		_ = db.Close()
+		return nil, nil, err
+	}
+	keys, err := plugins.LoadTrustedKeys(plugins.TrustedKeysDir(cfg.Plugin.InstallDir))
+	if err != nil {
+		_ = h.Close(ctx)
+		_ = db.Close()
+		return nil, nil, err
+	}
+	in := &plugins.Installer{
+		Host:        h,
+		Registry:    plugins.NewRegistry(db),
+		InstallDir:  cfg.Plugin.InstallDir,
+		TrustedKeys: keys,
+		Logger:      slog.New(slog.DiscardHandler),
+	}
+	cleanup := func() {
+		_ = h.Close(ctx)
+		_ = db.Close()
+	}
+	return in, cleanup, nil
+}
+
+func newPluginInstall() *cobra.Command {
+	var forceUnsigned, approveCaps bool
+	cmd := &cobra.Command{
+		Use:   "install <archive.ncplugin>",
+		Short: "Verify and install a plugin archive",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			in, cleanup, err := pluginInstaller(cmd)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			raw, err := os.ReadFile(args[0])
+			if err != nil {
+				return err
+			}
+			row, err := in.Install(cmd.Context(), raw, plugins.InstallOptions{
+				ForceUnsigned: forceUnsigned,
+				ApproveCaps:   approveCaps,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "installed %s %s\n", row.ID, row.Version)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&forceUnsigned, "force-unsigned", false, "install archives without a signature")
+	cmd.Flags().BoolVar(&approveCaps, "approve-caps", false, "re-approve capability changes on upgrade")
+	return cmd
+}
+
+func newPluginUninstall() *cobra.Command {
+	return &cobra.Command{
+		Use:   "uninstall <plugin-id>",
+		Short: "Remove an installed plugin",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			in, cleanup, err := pluginInstaller(cmd)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			if err := in.Uninstall(cmd.Context(), args[0]); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "uninstalled %s\n", args[0])
+			return nil
+		},
+	}
+}
+
+func newPluginList() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List installed plugins",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := config.Load(config.LoadOptions{Path: cfgPath})
+			if err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			db, err := database.Open(ctx, database.Config{
+				Driver: database.Dialect(cfg.Database.Driver),
+				DSN:    cfg.Database.DSN,
+			})
+			if err != nil {
+				return err
+			}
+			defer func() { _ = db.Close() }()
+			rows, err := plugins.NewRegistry(db).List(ctx)
+			if err != nil {
+				return err
+			}
+			tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
+			fmt.Fprintln(tw, "ID\tVERSION\tENABLED\tKEYID")
+			for _, r := range rows {
+				fmt.Fprintf(tw, "%s\t%s\t%t\t%s\n", r.ID, r.Version, r.Enabled, r.SignatureKeyID)
+			}
+			return tw.Flush()
+		},
+	}
+}
+
+func newPluginEnable(use string, enabled bool) *cobra.Command {
+	verb := strings.Split(use, " ")[0]
+	return &cobra.Command{
+		Use:   use,
+		Short: verb + " an installed plugin",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(config.LoadOptions{Path: cfgPath})
+			if err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			db, err := database.Open(ctx, database.Config{
+				Driver: database.Dialect(cfg.Database.Driver),
+				DSN:    cfg.Database.DSN,
+			})
+			if err != nil {
+				return err
+			}
+			defer func() { _ = db.Close() }()
+			if err := plugins.NewRegistry(db).SetEnabled(ctx, args[0], enabled); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%sd %s\n", verb, args[0])
+			return nil
+		},
+	}
 }

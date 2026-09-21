@@ -598,6 +598,12 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-21** — Phase 4b pinned the §4 archive format and §13 signature
+  scheme (ADR-0038): signed payload = canonical JSON array of
+  `{name, sha256}` sorted by name; `signature.sig` = JSON
+  `{keyid, base64-ed25519}`; trust model = operator-pinned keys in
+  `<install_dir>/trusted_keys/*.pub` (resolves §14 Q2 for v1; TUF/CA
+  deferred).
 - **2026-09-21** — Phase 4a runtime core landed (ADR-0037): typed
   capabilities, instance models, and the full host function surface are
   implemented per this spec with one deviation — routes/ocs manifest

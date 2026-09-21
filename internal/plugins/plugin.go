@@ -68,8 +68,9 @@ func (p *Plugin) callEntry(ctx context.Context, entry string, args ...uint64) er
 	return nil
 }
 
-// Install warms instances, checks ABI 1, and runs on_install if set.
-func (p *Plugin) Install(ctx context.Context) error {
+// Start warms instances and checks ABI 1 without running lifecycle hooks.
+// It is the boot-time path for already-installed plugins.
+func (p *Plugin) Start(ctx context.Context) error {
 	if p == nil || p.host == nil {
 		return fmt.Errorf("plugins: nil plugin")
 	}
@@ -86,7 +87,14 @@ func (p *Plugin) Install(ctx context.Context) error {
 	if len(results) == 0 || int32(results[0]) != 1 { //nolint:gosec // G115: ABI version is 0 or 1
 		return ErrABIMismatch
 	}
+	return nil
+}
 
+// Install starts the plugin and runs on_install if set.
+func (p *Plugin) Install(ctx context.Context) error {
+	if err := p.Start(ctx); err != nil {
+		return err
+	}
 	on := p.manifest.EntryPoints.OnInstall
 	if on == "" {
 		return nil

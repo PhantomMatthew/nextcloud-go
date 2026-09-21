@@ -189,6 +189,11 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-21** — Phase 4b: `.ncplugin` archives, ed25519 signing with
+  operator-pinned trusted keys, `0015_plugins` registry, verified
+  install/upgrade (capability re-approval) / uninstall, boot-time loading
+  of enabled plugins, and the full `ncgo-cli plugin` command set
+  (see ADR-0038).
 - **2026-09-21** — Phase 4a: plugin runtime core — typed capabilities with
   default-deny checks, per_request/pooled/singleton instance manager with
   per-instance handle tables, full ncgo-abi/1 host function surface

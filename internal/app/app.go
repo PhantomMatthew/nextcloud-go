@@ -44,6 +44,7 @@ type App struct {
 	Users      users.Store
 	Router     *httpx.Router
 	PluginHost *plugins.Host
+	Plugins    []*plugins.Plugin
 
 	hasher        auth.PasswordHasher
 	authStore     auth.Store
@@ -225,6 +226,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 			return nil, err
 		}
 		a.PluginHost = ph
+		a.Plugins = plugins.StartEnabled(ctx, ph, plugins.NewRegistry(a.DB), logger)
 	}
 	a.secret = cfg.Instance.Secret
 	if a.secret == "" {
@@ -293,6 +295,11 @@ func (a *App) closeResources(ctx context.Context) error {
 		err = joinErr(err, a.jobs.Stop(ctx))
 		a.jobs = nil
 	}
+	for i, p := range a.Plugins {
+		err = joinErr(err, p.Close(ctx))
+		a.Plugins[i] = nil
+	}
+	a.Plugins = nil
 	if a.PluginHost != nil {
 		err = a.PluginHost.Close(ctx)
 		a.PluginHost = nil
