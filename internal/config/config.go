@@ -14,6 +14,14 @@ type Config struct {
 	Observability ObservabilityConfig `koanf:"observability"`
 	Maintenance   MaintenanceConfig   `koanf:"maintenance"`
 	Instance      InstanceConfig      `koanf:"instance"`
+	Sharing       SharingConfig       `koanf:"sharing"`
+}
+
+// SharingConfig controls sharing integrations. LookupServer is the base URL
+// of a Nextcloud lookup server used for federated user search; empty
+// disables lookup queries.
+type SharingConfig struct {
+	LookupServer string `koanf:"lookup_server"`
 }
 
 // ServerConfig controls the HTTP listener and trusted network identity.

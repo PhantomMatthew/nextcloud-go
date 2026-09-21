@@ -341,6 +341,15 @@ func freezeOCMShareTokens(a *App) {
 type remoteOCMRoundTripper struct{}
 
 func (remoteOCMRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Hostname() == "lookup.nextcloud.com" {
+		hdr := make(http.Header)
+		hdr.Set("Content-Type", "application/json")
+		body := "[]"
+		if req.URL.Query().Get("search") == "bob" {
+			body = `[{"federationId":"bob@https://remote.example.com","name":"Bob Remote"}]`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: hdr, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	}
 	if req.URL.Hostname() != "remote.example.com" {
 		return nil, errors.New("connection refused")
 	}

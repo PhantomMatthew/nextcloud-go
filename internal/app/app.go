@@ -68,6 +68,7 @@ type App struct {
 	notifStore    *notifications.SQLStore
 	activityStore *activity.SQLStore
 	ocmStore      *ocm.SQLStore
+	lookup        *sharing.LookupClient
 	principalFS   *caldav.PrincipalDAV
 	davRootFS     *caldav.RootDAV
 }
@@ -169,6 +170,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		OCM:    ocm.NewClient(),
 	}
 	a.ocmStore = ocm.NewSQLStore(db)
+	a.lookup = &sharing.LookupClient{BaseURL: cfg.Sharing.LookupServer}
 	dav.Incoming = files.MultiIncoming{a.shares, a.ocmStore}
 	dav.Remote = a.shares.OCM
 	a.publicFS = &files.PublicDAV{Files: dav, Resolve: a.shares.LookupValid}
@@ -250,7 +252,7 @@ func randomHex(logger *slog.Logger, n int, what string) string {
 	return hex.EncodeToString(buf)
 }
 
-// UseHTTPClient replaces the outbound OCM HTTP client (tests).
+// UseHTTPClient replaces the outbound OCM and lookup HTTP clients (tests).
 func (a *App) UseHTTPClient(c *http.Client) {
 	if a == nil || a.shares == nil {
 		return
@@ -259,6 +261,9 @@ func (a *App) UseHTTPClient(c *http.Client) {
 		a.shares.OCM = &ocm.Client{}
 	}
 	a.shares.OCM.HTTP = c
+	if a.lookup != nil {
+		a.lookup.HTTP = c
+	}
 }
 
 // Handler returns the HTTP handler.

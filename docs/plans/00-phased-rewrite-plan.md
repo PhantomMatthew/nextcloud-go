@@ -189,6 +189,11 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-21** — Phase 3d8: OCS sharees `lookup=true` queries the
+  configured lookup server (default `https://lookup.nextcloud.com`,
+  `sharing.lookup_server`) and returns hits in the `lookup` collection;
+  failures degrade to empty (see ADR-0029). CalDAV leftovers remain
+  later.
 - **2026-09-21** — Phase 3d7: outbound federated share delete posts
   `SHARE_UNSHARED` to `{endPoint}/notifications`; inbound
   `POST /ocm/notifications` drops the matching `ocm_incoming` row (see

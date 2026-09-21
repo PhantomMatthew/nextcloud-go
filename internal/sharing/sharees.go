@@ -15,9 +15,11 @@ const (
 	ocsShareesPrefixV2 = "/ocs/v2.php/apps/files_sharing/api/v1/sharees"
 )
 
-// ShareesHandler serves GET files_sharing sharees (federated cloud ID only).
+// ShareesHandler serves GET files_sharing sharees (federated cloud ID plus
+// optional lookup server search).
 type ShareesHandler struct {
 	Version ocs.Version
+	Lookup  *LookupClient
 }
 
 func (h ShareesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -30,7 +32,23 @@ func (h ShareesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeOCS(w, r, h.Version, ocs.RespondNotFound, "Not found", nil)
 		return
 	}
-	writeOCS(w, r, h.Version, 0, "", shareesPayload(r.URL.Query().Get("search"), ocm.RequestBaseURL(r)))
+	q := r.URL.Query()
+	search := q.Get("search")
+	var hits []LookupResult
+	if lookupEnabled(q.Get("lookup")) && strings.TrimSpace(search) != "" {
+		if res, err := h.Lookup.Search(r.Context(), search); err == nil {
+			hits = res
+		}
+	}
+	writeOCS(w, r, h.Version, 0, "", shareesPayload(search, ocm.RequestBaseURL(r), hits))
+}
+
+func lookupEnabled(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "true", "1":
+		return true
+	}
+	return false
 }
 
 func shareesPathRemainder(path string, version ocs.Version) (string, bool) {
@@ -44,7 +62,7 @@ func shareesPathRemainder(path string, version ocs.Version) (string, bool) {
 	return strings.TrimPrefix(path, prefix), true
 }
 
-func shareesPayload(search, origin string) ocs.OrderedMap {
+func shareesPayload(search, origin string, hits []LookupResult) ocs.OrderedMap {
 	search = strings.TrimSpace(search)
 	remotes := make([]any, 0)
 	uid, remote := ocm.SplitCloudID(search)
@@ -60,6 +78,29 @@ func shareesPayload(search, origin string) ocs.OrderedMap {
 				)),
 			))
 		}
+	}
+	lookup := make([]any, 0, len(hits))
+	for _, hit := range hits {
+		uid, remote := ocm.SplitCloudID(hit.FederationID)
+		if uid == "" || remote == "" {
+			continue
+		}
+		server := ocm.NormalizeOrigin(remote)
+		if origin != "" && sameHTTPHost(origin, server) {
+			continue
+		}
+		label := hit.Name
+		if label == "" {
+			label = hit.FederationID
+		}
+		lookup = append(lookup, ocs.Obj(
+			ocs.K("label", label),
+			ocs.K("value", ocs.Obj(
+				ocs.K("shareType", files.ShareTypeRemote),
+				ocs.K("shareWith", hit.FederationID),
+				ocs.K("server", server),
+			)),
+		))
 	}
 	empty := []any{}
 	return ocs.Obj(
@@ -79,6 +120,6 @@ func shareesPayload(search, origin string) ocs.OrderedMap {
 		ocs.K("rooms", empty),
 		ocs.K("remotes", empty),
 		ocs.K("remote_groups", empty),
-		ocs.K("lookup", empty),
+		ocs.K("lookup", lookup),
 	)
 }

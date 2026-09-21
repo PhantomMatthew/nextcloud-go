@@ -114,5 +114,6 @@ func defaultFlat() map[string]any {
 		"maintenance.needs_db_upgrade":      false,
 		"instance.id":                       "",
 		"instance.secret":                   "",
+		"sharing.lookup_server":             "https://lookup.nextcloud.com",
 	}
 }

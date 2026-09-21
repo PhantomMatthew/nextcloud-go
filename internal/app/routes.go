@@ -138,8 +138,8 @@ func (a *App) mountRoutes() error {
 	if a.shares != nil {
 		sharesV1 := sharing.Handler{Service: a.shares, Version: ocs.V1}
 		sharesV2 := sharing.Handler{Service: a.shares, Version: ocs.V2}
-		shareesV1 := sharing.ShareesHandler{Version: ocs.V1}
-		shareesV2 := sharing.ShareesHandler{Version: ocs.V2}
+		shareesV1 := sharing.ShareesHandler{Version: ocs.V1, Lookup: a.lookup}
+		shareesV2 := sharing.ShareesHandler{Version: ocs.V2, Lookup: a.lookup}
 		router.HandlePrefix(httpx.MethodAny, "/ocs/v1.php/apps/files_sharing/api/v1/shares", sharesV1, httpx.Middleware(ocs.Auth(ocs.V1, authCfg)))
 		router.HandlePrefix(httpx.MethodAny, "/ocs/v2.php/apps/files_sharing/api/v1/shares", sharesV2, httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
 		router.HandlePrefix(http.MethodGet, "/ocs/v1.php/apps/files_sharing/api/v1/sharees", shareesV1, httpx.Middleware(ocs.Auth(ocs.V1, authCfg)))
