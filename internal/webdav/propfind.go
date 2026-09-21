@@ -3,8 +3,12 @@ package webdav
 import (
 	"bytes"
 	"encoding/xml"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -201,4 +205,123 @@ func xmlEscape(s string) string {
 	var b bytes.Buffer
 	_ = xml.EscapeText(&b, []byte(s))
 	return b.String()
+}
+
+// ParseMultistatus reads a DAV 207 body into entries keyed by href basename.
+func ParseMultistatus(r io.Reader) ([]*Entry, error) {
+	if r == nil {
+		return nil, fmt.Errorf("webdav: nil multistatus")
+	}
+	dec := xml.NewDecoder(r)
+	var out []*Entry
+	var cur *Entry
+	inResType := false
+	for {
+		tok, err := dec.Token()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			local := strings.ToLower(t.Name.Local)
+			switch local {
+			case "response":
+				cur = &Entry{}
+			case "href":
+				if cur == nil {
+					cur = &Entry{}
+				}
+				var href string
+				if err := dec.DecodeElement(&href, &t); err != nil {
+					return nil, err
+				}
+				cur.Path = hrefToPath(href)
+			case "resourcetype":
+				inResType = true
+			case "collection":
+				if inResType && cur != nil {
+					cur.IsDir = true
+				}
+			case "getcontentlength":
+				if cur == nil {
+					continue
+				}
+				var s string
+				if err := dec.DecodeElement(&s, &t); err != nil {
+					return nil, err
+				}
+				n, perr := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+				if perr == nil {
+					cur.Size = n
+				}
+			case "getetag":
+				if cur == nil {
+					continue
+				}
+				var s string
+				if err := dec.DecodeElement(&s, &t); err != nil {
+					return nil, err
+				}
+				cur.ETag = strings.Trim(s, `"'`)
+			case "getcontenttype":
+				if cur == nil {
+					continue
+				}
+				var s string
+				if err := dec.DecodeElement(&s, &t); err != nil {
+					return nil, err
+				}
+				cur.ContentType = strings.TrimSpace(s)
+			case "getlastmodified":
+				if cur == nil {
+					continue
+				}
+				var s string
+				if err := dec.DecodeElement(&s, &t); err != nil {
+					return nil, err
+				}
+				if tm, perr := http.ParseTime(strings.TrimSpace(s)); perr == nil {
+					cur.ModTime = tm
+				}
+			}
+		case xml.EndElement:
+			switch strings.ToLower(t.Name.Local) {
+			case "response":
+				if cur != nil {
+					out = append(out, cur)
+					cur = nil
+				}
+			case "resourcetype":
+				inResType = false
+			}
+		}
+	}
+	return out, nil
+}
+
+func hrefToPath(href string) string {
+	href = strings.TrimSpace(href)
+	if href == "" {
+		return "/"
+	}
+	u, err := url.Parse(href)
+	p := href
+	if err == nil && u.Path != "" {
+		p = u.Path
+	}
+	if unesc, uerr := url.PathUnescape(p); uerr == nil {
+		p = unesc
+	}
+	p = strings.TrimRight(p, "/")
+	if p == "" {
+		return "/"
+	}
+	base := p[strings.LastIndex(p, "/")+1:]
+	if base == "" || base == "webdav" {
+		return "/"
+	}
+	return "/" + base
 }

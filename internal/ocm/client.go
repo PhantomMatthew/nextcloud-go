@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -180,17 +181,12 @@ func NormalizeOrigin(remote string) string {
 
 // Get fetches a federated file from the sender's public WebDAV.
 func (c *Client) Get(ctx context.Context, origin, token, rel string) (io.ReadCloser, *webdav.Entry, error) {
-	origin = NormalizeOrigin(origin)
-	if origin == "" || token == "" {
+	if token == "" {
 		return nil, nil, fmt.Errorf("%w: webdav", ErrInvalid)
 	}
-	u, err := url.Parse(origin)
-	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-		return nil, nil, fmt.Errorf("%w: origin scheme", ErrInvalid)
-	}
-	target := strings.TrimRight(origin, "/") + "/public.php/webdav/"
-	if rel != "" && rel != "/" {
-		target += strings.TrimPrefix(rel, "/")
+	target, err := publicWebDAVURL(origin, rel)
+	if err != nil {
+		return nil, nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
@@ -204,14 +200,7 @@ func (c *Client) Get(ctx context.Context, origin, token, rel string) (io.ReadClo
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxOCMBody))
 		_ = resp.Body.Close()
-		switch resp.StatusCode {
-		case http.StatusUnauthorized, http.StatusForbidden:
-			return nil, nil, webdav.ErrForbidden
-		case http.StatusNotFound:
-			return nil, nil, webdav.ErrNotFound
-		default:
-			return nil, nil, fmt.Errorf("ocm: webdav status %d", resp.StatusCode)
-		}
+		return nil, nil, mapWebDAVStatus(resp.StatusCode)
 	}
 	etag := strings.Trim(resp.Header.Get("ETag"), `"`)
 	ct := resp.Header.Get("Content-Type")
@@ -241,6 +230,151 @@ func (c *Client) Get(ctx context.Context, origin, token, rel string) (io.ReadClo
 		ContentType: ct,
 		ModTime:     mod,
 	}, nil
+}
+
+func (c *Client) Propfind(ctx context.Context, origin, token, rel string, depth int) ([]*webdav.Entry, error) {
+	if token == "" {
+		return nil, fmt.Errorf("%w: webdav", ErrInvalid)
+	}
+	if depth != 0 && depth != 1 {
+		return nil, fmt.Errorf("%w: depth", ErrInvalid)
+	}
+	target, err := publicWebDAVURL(origin, rel)
+	if err != nil {
+		return nil, err
+	}
+	body := []byte(`<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:allprop/></d:propfind>`)
+	req, err := http.NewRequestWithContext(ctx, "PROPFIND", target, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(token, "")
+	req.Header.Set("Depth", strconv.Itoa(depth))
+	req.Header.Set("Content-Type", "application/xml")
+	resp, err := c.httpc().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxOCMBody+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > maxOCMBody {
+		return nil, fmt.Errorf("%w: propfind too large", ErrInvalid)
+	}
+	if resp.StatusCode != http.StatusMultiStatus && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
+		return nil, mapWebDAVStatus(resp.StatusCode)
+	}
+	return webdav.ParseMultistatus(bytes.NewReader(raw))
+}
+
+func (c *Client) Put(ctx context.Context, origin, token, rel string, body io.Reader) (*webdav.Entry, error) {
+	if token == "" {
+		return nil, fmt.Errorf("%w: webdav", ErrInvalid)
+	}
+	target, err := publicWebDAVURL(origin, rel)
+	if err != nil {
+		return nil, err
+	}
+	if body == nil {
+		body = bytes.NewReader(nil)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, target, body)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(token, "")
+	resp, err := c.httpc().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxOCMBody))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, mapWebDAVStatus(resp.StatusCode)
+	}
+	etag := strings.Trim(resp.Header.Get("ETag"), `"`)
+	return &webdav.Entry{ETag: etag, ContentType: resp.Header.Get("Content-Type")}, nil
+}
+
+func (c *Client) Delete(ctx context.Context, origin, token, rel string) error {
+	if token == "" {
+		return fmt.Errorf("%w: webdav", ErrInvalid)
+	}
+	target, err := publicWebDAVURL(origin, rel)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, target, nil)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(token, "")
+	resp, err := c.httpc().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxOCMBody))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return mapWebDAVStatus(resp.StatusCode)
+	}
+	return nil
+}
+
+func (c *Client) Mkcol(ctx context.Context, origin, token, rel string) error {
+	if token == "" {
+		return fmt.Errorf("%w: webdav", ErrInvalid)
+	}
+	target, err := publicWebDAVURL(origin, rel)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, "MKCOL", target, nil)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(token, "")
+	resp, err := c.httpc().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxOCMBody))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return mapWebDAVStatus(resp.StatusCode)
+	}
+	return nil
+}
+
+func publicWebDAVURL(origin, rel string) (string, error) {
+	origin = NormalizeOrigin(origin)
+	if origin == "" {
+		return "", fmt.Errorf("%w: webdav", ErrInvalid)
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", fmt.Errorf("%w: origin scheme", ErrInvalid)
+	}
+	target := strings.TrimRight(origin, "/") + "/public.php/webdav/"
+	if rel != "" && rel != "/" {
+		target += strings.TrimPrefix(rel, "/")
+	}
+	return target, nil
+}
+
+func mapWebDAVStatus(code int) error {
+	switch code {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return webdav.ErrForbidden
+	case http.StatusNotFound:
+		return webdav.ErrNotFound
+	case http.StatusNotImplemented:
+		return webdav.ErrNotImplemented
+	default:
+		return fmt.Errorf("ocm: webdav status %d", code)
+	}
 }
 
 type outgoingShareJSON struct {

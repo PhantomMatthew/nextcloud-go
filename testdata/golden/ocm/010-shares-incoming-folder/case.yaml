@@ -1,0 +1,24 @@
+schema_version: 1
+id: ocm/010-shares-incoming-folder
+description: |
+  Remote posts an incoming OCM folder share with write permissions.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 3d6
+  captured_at: "2026-09-21T00:00:00Z"
+request:
+  body_kind: json
+response:
+  body_kind: json
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 201
+replayable: true
+mutating: true
+synthetic: true
+tags: [ocm, phase3d6]

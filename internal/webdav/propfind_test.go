@@ -263,6 +263,34 @@ func TestWriteMultistatus_FilesUnchangedNS(t *testing.T) {
 	}
 }
 
+func TestParseMultistatus(t *testing.T) {
+	raw := `<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:">
+<d:response>
+<d:href>/public.php/webdav/</d:href>
+<d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+</d:response>
+<d:response>
+<d:href>/public.php/webdav/child.txt</d:href>
+<d:propstat><d:prop><d:resourcetype/><d:getcontentlength>5</d:getcontentlength><d:getetag>&quot;child&quot;</d:getetag><d:getcontenttype>text/plain</d:getcontenttype><d:getlastmodified>Thu, 01 May 2025 12:00:00 GMT</d:getlastmodified></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+</d:response>
+</d:multistatus>
+`
+	ents, err := ParseMultistatus(strings.NewReader(raw))
+	if err != nil || len(ents) != 2 {
+		t.Fatalf("parse = %v %+v", err, ents)
+	}
+	if !ents[0].IsDir || ents[0].Path != "/" {
+		t.Fatalf("self = %+v", ents[0])
+	}
+	if ents[1].IsDir || ents[1].Path != "/child.txt" || ents[1].Size != 5 || ents[1].ETag != "child" || ents[1].ContentType != "text/plain" {
+		t.Fatalf("child = %+v", ents[1])
+	}
+	if ents[1].ModTime.IsZero() {
+		t.Fatal("modtime")
+	}
+}
+
 func emptyHomeRootEntry() *Entry {
 	return &Entry{
 		Path:        "/",

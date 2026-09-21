@@ -1,0 +1,24 @@
+schema_version: 1
+id: ocm/009-put-incoming-403
+description: |
+  PUT on a read-only inbound federated file is 403.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Phase 3d6
+  captured_at: "2026-09-21T00:00:00Z"
+request:
+  body_kind: bytes
+response:
+  body_kind: bytes
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 403
+replayable: true
+mutating: false
+synthetic: true
+tags: [ocm, webdav, phase3d6]

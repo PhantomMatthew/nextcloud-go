@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
@@ -92,6 +93,7 @@ type incomingProtocol struct {
 
 type incomingProtocolOptions struct {
 	SharedSecret string `json:"sharedSecret"`
+	Permissions  any    `json:"permissions"`
 }
 
 type incomingWebDAV struct {
@@ -194,9 +196,36 @@ func (h IncomingHandler) buildIncoming(r *http.Request, req *incomingShareReques
 		Owner:       strings.TrimSpace(req.Owner),
 		Token:       secret,
 		ItemType:    req.ResourceType,
-		Permissions: webdav.PermRead,
+		Permissions: parseIncomingPermissions(req.Protocol.Options.Permissions),
 		Accepted:    1,
 	}, display, nil
+}
+
+func parseIncomingPermissions(v any) int {
+	var n int
+	switch t := v.(type) {
+	case float64:
+		n = int(t)
+	case json.Number:
+		i, err := t.Int64()
+		if err != nil {
+			return webdav.PermRead
+		}
+		n = int(i)
+	case string:
+		i, err := strconv.Atoi(strings.TrimSpace(t))
+		if err != nil {
+			return webdav.PermRead
+		}
+		n = i
+	default:
+		return webdav.PermRead
+	}
+	n &= webdav.PermAll
+	if n == 0 {
+		return webdav.PermRead
+	}
+	return n
 }
 
 func fmtInvalid(field string) error {

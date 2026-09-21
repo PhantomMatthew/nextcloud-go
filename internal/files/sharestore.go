@@ -47,9 +47,13 @@ type IncomingMount struct {
 	RemoteToken  string
 }
 
-// RemoteFile fetches bytes from a federated share's public WebDAV.
+// RemoteFile fetches and mutates a federated share's public WebDAV.
 type RemoteFile interface {
 	Get(ctx context.Context, origin, token, rel string) (io.ReadCloser, *webdav.Entry, error)
+	Propfind(ctx context.Context, origin, token, rel string, depth int) ([]*webdav.Entry, error)
+	Put(ctx context.Context, origin, token, rel string, body io.Reader) (*webdav.Entry, error)
+	Delete(ctx context.Context, origin, token, rel string) error
+	Mkcol(ctx context.Context, origin, token, rel string) error
 }
 
 // IncomingLookup lists accepted user/group shares for a sharee.

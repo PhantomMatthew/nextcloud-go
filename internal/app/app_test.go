@@ -346,13 +346,30 @@ func (remoteOCMRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	}
 	hdr := make(http.Header)
 	hdr.Set("Content-Type", "application/json")
+	path := req.URL.Path
 	switch {
-	case req.Method == http.MethodGet && (req.URL.Path == "/.well-known/ocm" || req.URL.Path == "/ocm-provider"):
+	case req.Method == http.MethodGet && (path == "/.well-known/ocm" || path == "/ocm-provider"):
 		body := `{"enabled":true,"apiVersion":"1.0-proposal1","endPoint":"https://remote.example.com/ocm"}`
 		return &http.Response{StatusCode: http.StatusOK, Header: hdr, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
-	case req.Method == http.MethodPost && req.URL.Path == "/ocm/shares":
+	case req.Method == http.MethodPost && path == "/ocm/shares":
 		return &http.Response{StatusCode: http.StatusCreated, Header: hdr, Body: io.NopCloser(strings.NewReader(`{"recipientDisplayName":"bob"}`)), Request: req}, nil
-	case req.Method == http.MethodGet && (req.URL.Path == "/public.php/webdav" || req.URL.Path == "/public.php/webdav/"):
+	case req.Method == "PROPFIND" && strings.HasPrefix(path, "/public.php/webdav"):
+		body := remotePublicPropfindXML(path)
+		hdr = make(http.Header)
+		hdr.Set("Content-Type", "application/xml")
+		return &http.Response{StatusCode: http.StatusMultiStatus, Header: hdr, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	case req.Method == http.MethodGet && (path == "/public.php/webdav/child.txt"):
+		body := "child\n"
+		hdr = make(http.Header)
+		hdr.Set("Content-Type", "text/plain")
+		hdr.Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		hdr.Set("ETag", `"child"`)
+		return &http.Response{StatusCode: http.StatusOK, Header: hdr, Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: req}, nil
+	case req.Method == http.MethodPut && path == "/public.php/webdav/child.txt":
+		hdr = make(http.Header)
+		hdr.Set("ETag", `"put"`)
+		return &http.Response{StatusCode: http.StatusCreated, Header: hdr, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+	case req.Method == http.MethodGet && (path == "/public.php/webdav" || path == "/public.php/webdav/"):
 		body := "hello from remote\n"
 		hdr = make(http.Header)
 		hdr.Set("Content-Type", "text/plain")
@@ -363,6 +380,15 @@ func (remoteOCMRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	default:
 		return &http.Response{StatusCode: http.StatusNotFound, Header: hdr, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
 	}
+}
+
+func remotePublicPropfindXML(path string) string {
+	child := `<d:response><d:href>/public.php/webdav/child.txt</d:href><d:propstat><d:prop><d:resourcetype/><d:getcontentlength>6</d:getcontentlength><d:getetag>&quot;child&quot;</d:getetag><d:getcontenttype>text/plain</d:getcontenttype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`
+	self := `<d:response><d:href>/public.php/webdav/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`
+	if strings.HasSuffix(path, "child.txt") {
+		return `<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">` + child + `</d:multistatus>`
+	}
+	return `<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">` + self + child + `</d:multistatus>`
 }
 
 func TestUseHTTPClientNil(t *testing.T) {

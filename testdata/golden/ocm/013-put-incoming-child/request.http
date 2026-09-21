@@ -1,0 +1,9 @@
+PUT /remote.php/dav/files/admin/remote-dir/child.txt HTTP/1.1
+Host: cloud.example.com
+User-Agent: ncgo-goldentest/0.0
+Accept: */*
+Authorization: Basic YWRtaW46YWRtaW4=
+Content-Type: application/octet-stream
+Content-Length: 4
+
+test

@@ -1,13 +1,13 @@
 schema_version: 1
-id: ocm/009-put-incoming-501
+id: ocm/012-get-incoming-child
 description: |
-  PUT on an inbound federated file remains 501 (no write proxy).
+  GET a nested file on an inbound federated folder proxies remote public WebDAV.
 provenance:
   capture: synthetic
-  source: hand-authored for nextcloud-go Phase 3d3
-  captured_at: "2026-09-20T00:00:00Z"
+  source: hand-authored for nextcloud-go Phase 3d6
+  captured_at: "2026-09-21T00:00:00Z"
 request:
-  body_kind: bytes
+  body_kind: empty
 response:
   body_kind: bytes
   normalize:
@@ -17,8 +17,8 @@ response:
         with: nginx
 assertions:
   - kind: status_eq
-    value: 501
+    value: 200
 replayable: true
 mutating: false
 synthetic: true
-tags: [ocm, webdav, phase3d3]
+tags: [ocm, webdav, phase3d6]

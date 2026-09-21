@@ -258,3 +258,52 @@ func TestGetWebDAVStatus500(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestPropfindAndWrites(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/public.php/webdav/", func(w http.ResponseWriter, r *http.Request) {
+		user, _, ok := r.BasicAuth()
+		if !ok || user != "tok" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		switch r.Method {
+		case "PROPFIND":
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusMultiStatus)
+			_, _ = io.WriteString(w, `<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">
+<d:response><d:href>/public.php/webdav/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+<d:response><d:href>/public.php/webdav/child.txt</d:href><d:propstat><d:prop><d:resourcetype/><d:getcontentlength>5</d:getcontentlength></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+</d:multistatus>`)
+		case http.MethodPut:
+			w.Header().Set("ETag", `"put"`)
+			w.WriteHeader(http.StatusCreated)
+		case http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		case "MKCOL":
+			w.WriteHeader(http.StatusCreated)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	c := &Client{HTTP: srv.Client()}
+	ents, err := c.Propfind(t.Context(), srv.URL, "tok", "/", 1)
+	if err != nil || len(ents) != 2 || ents[1].Path != "/child.txt" {
+		t.Fatalf("propfind = %+v %v", ents, err)
+	}
+	if _, err := c.Propfind(t.Context(), srv.URL, "tok", "/", 2); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("depth 2 = %v", err)
+	}
+	ent, err := c.Put(t.Context(), srv.URL, "tok", "/child.txt", strings.NewReader("hello"))
+	if err != nil || ent.ETag != "put" {
+		t.Fatalf("put = %+v %v", ent, err)
+	}
+	if err := c.Delete(t.Context(), srv.URL, "tok", "/child.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Mkcol(t.Context(), srv.URL, "tok", "/sub"); err != nil {
+		t.Fatal(err)
+	}
+}

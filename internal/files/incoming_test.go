@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path"
 	"strings"
 	"testing"
 
@@ -147,10 +148,13 @@ func TestIncomingRemotePlaceholder(t *testing.T) {
 }
 
 type stubRemoteFile struct {
-	body   string
-	origin string
-	token  string
-	rel    string
+	body     string
+	origin   string
+	token    string
+	rel      string
+	children []*webdav.Entry
+	putRel   string
+	putBody  string
 }
 
 func (s *stubRemoteFile) Get(_ context.Context, origin, token, rel string) (io.ReadCloser, *webdav.Entry, error) {
@@ -159,6 +163,44 @@ func (s *stubRemoteFile) Get(_ context.Context, origin, token, rel string) (io.R
 	return io.NopCloser(bytes.NewReader(b)), &webdav.Entry{
 		Size: int64(len(b)), ContentType: "text/plain", ETag: "remote-etag",
 	}, nil
+}
+
+func (s *stubRemoteFile) Propfind(_ context.Context, origin, token, rel string, depth int) ([]*webdav.Entry, error) {
+	s.origin, s.token, s.rel = origin, token, rel
+	self := &webdav.Entry{Path: "/", IsDir: true, ETag: "dir"}
+	if depth == 0 && rel != "/" && rel != "" {
+		name := path.Base(rel)
+		for _, c := range s.children {
+			if c != nil && path.Base(c.Path) == name {
+				cp := *c
+				return []*webdav.Entry{&cp}, nil
+			}
+		}
+		return nil, webdav.ErrNotFound
+	}
+	out := []*webdav.Entry{self}
+	if depth == 1 {
+		out = append(out, s.children...)
+	}
+	return out, nil
+}
+
+func (s *stubRemoteFile) Put(_ context.Context, origin, token, rel string, body io.Reader) (*webdav.Entry, error) {
+	s.origin, s.token, s.rel = origin, token, rel
+	s.putRel = rel
+	b, _ := io.ReadAll(body)
+	s.putBody = string(b)
+	return &webdav.Entry{ETag: "put-etag", Size: int64(len(b))}, nil
+}
+
+func (s *stubRemoteFile) Delete(_ context.Context, origin, token, rel string) error {
+	s.origin, s.token, s.rel = origin, token, rel
+	return nil
+}
+
+func (s *stubRemoteFile) Mkcol(_ context.Context, origin, token, rel string) error {
+	s.origin, s.token, s.rel = origin, token, rel
+	return nil
 }
 
 func TestIncomingRemoteRead(t *testing.T) {
@@ -222,5 +264,94 @@ func TestIncomingRemoteFolderGetIsDir(t *testing.T) {
 	}}}
 	if _, _, err := dav.Read(ctx, "bob", "/remote-dir"); !errors.Is(err, webdav.ErrIsDir) {
 		t.Fatalf("folder get = %v", err)
+	}
+}
+
+func TestIncomingRemoteFolderListAndWrite(t *testing.T) {
+	ctx := t.Context()
+	db := testDB(t)
+	us := users.NewSQLStore(db)
+	bob := &users.User{UID: "bob", DisplayName: "Bob", PasswordHash: "x", Enabled: true}
+	if err := us.Create(ctx, bob); err != nil {
+		t.Fatal(err)
+	}
+	st, err := localfs.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dav := NewDAV(st, NewSQLStore(db), us)
+	if _, err := dav.Stat(ctx, "bob", "/"); err != nil {
+		t.Fatal(err)
+	}
+	remote := &stubRemoteFile{
+		body: "nested\n",
+		children: []*webdav.Entry{{
+			Path: "/child.txt", Size: 7, ETag: "child", ContentType: "text/plain",
+		}},
+	}
+	dav.Remote = remote
+	folder := IncomingMount{
+		Mount: "/remote-dir", Permissions: webdav.PermRead | webdav.PermUpdate | webdav.PermCreate | webdav.PermDelete,
+		ItemType: "folder", Remote: true,
+		RemoteOrigin: "https://remote.example.com", RemoteToken: "ocmtok001",
+	}
+	dav.Incoming = stubIncoming{mounts: []IncomingMount{folder}}
+	listed, err := dav.List(ctx, "bob", "/remote-dir")
+	if err != nil || len(listed) != 1 || listed[0].Path != "/child.txt" {
+		t.Fatalf("list = %+v %v", listed, err)
+	}
+	stent, err := dav.Stat(ctx, "bob", "/remote-dir/child.txt")
+	if err != nil || stent.IsDir || stent.Path != "/remote-dir/child.txt" {
+		t.Fatalf("stat child = %+v %v", stent, err)
+	}
+	rc, _, err := dav.Read(ctx, "bob", "/remote-dir/child.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	if string(body) != "nested\n" || remote.rel != "/child.txt" {
+		t.Fatalf("read = %q rel=%q", body, remote.rel)
+	}
+	if _, _, err := dav.Write(ctx, "bob", "/remote-dir/child.txt", strings.NewReader("x"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if remote.putRel != "/child.txt" || remote.putBody != "x" {
+		t.Fatalf("put = %q %q", remote.putRel, remote.putBody)
+	}
+	if _, err := dav.Mkdir(ctx, "bob", "/remote-dir/sub"); err != nil {
+		t.Fatal(err)
+	}
+	if err := dav.Remove(ctx, "bob", "/remote-dir/child.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := dav.Remove(ctx, "bob", "/remote-dir"); !errors.Is(err, webdav.ErrForbidden) {
+		t.Fatalf("delete mount = %v", err)
+	}
+}
+
+func TestIncomingRemotePutForbidden(t *testing.T) {
+	ctx := t.Context()
+	db := testDB(t)
+	us := users.NewSQLStore(db)
+	bob := &users.User{UID: "bob", DisplayName: "Bob", PasswordHash: "x", Enabled: true}
+	if err := us.Create(ctx, bob); err != nil {
+		t.Fatal(err)
+	}
+	st, err := localfs.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dav := NewDAV(st, NewSQLStore(db), us)
+	if _, err := dav.Stat(ctx, "bob", "/"); err != nil {
+		t.Fatal(err)
+	}
+	dav.Remote = &stubRemoteFile{body: "hello from remote\n"}
+	dav.Incoming = stubIncoming{mounts: []IncomingMount{{
+		Mount: "/hello-remote.txt", Permissions: webdav.PermRead, ItemType: "file", Remote: true,
+		RemoteOrigin: "https://remote.example.com", RemoteToken: "ocmtok001",
+	}}}
+	if _, _, err := dav.Write(ctx, "bob", "/hello-remote.txt", strings.NewReader("no"), nil); !errors.Is(err, webdav.ErrForbidden) {
+		t.Fatalf("readonly put = %v", err)
 	}
 }

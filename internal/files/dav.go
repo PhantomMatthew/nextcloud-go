@@ -209,7 +209,7 @@ func (d *DAV) Stat(ctx context.Context, user, p string) (*webdav.Entry, error) {
 		return nil, ierr
 	}
 	if m.Remote {
-		return remoteEntry(m, np), nil
+		return d.statRemote(ctx, np, m)
 	}
 	e, err = d.statOwned(ctx, m.OwnerUID, ownerPath)
 	if err != nil {
@@ -238,10 +238,7 @@ func (d *DAV) List(ctx context.Context, user, p string) ([]*webdav.Entry, error)
 		return nil, ierr
 	}
 	if m.Remote {
-		if m.ItemType != "folder" {
-			return nil, webdav.ErrNotDir
-		}
-		return []*webdav.Entry{}, nil
+		return d.listRemote(ctx, np, m)
 	}
 	children, err := d.listOwned(ctx, m.OwnerUID, ownerPath)
 	if err != nil {
@@ -311,30 +308,98 @@ func (d *DAV) readRemote(ctx context.Context, np string, m *IncomingMount) (io.R
 	if d.Remote == nil || m.RemoteOrigin == "" || m.RemoteToken == "" {
 		return nil, nil, webdav.ErrNotImplemented
 	}
-	if m.ItemType != "file" || np != m.Mount {
-		return nil, nil, webdav.ErrNotImplemented
+	rel, ok := remoteRel(m, np)
+	if !ok {
+		return nil, nil, webdav.ErrNotFound
 	}
 	if m.Permissions&webdav.PermRead == 0 {
 		return nil, nil, webdav.ErrForbidden
 	}
-	rc, ent, err := d.Remote.Get(ctx, m.RemoteOrigin, m.RemoteToken, "/")
+	rc, ent, err := d.Remote.Get(ctx, m.RemoteOrigin, m.RemoteToken, rel)
 	if err != nil {
 		return nil, nil, err
 	}
-	if ent == nil {
-		ent = &webdav.Entry{}
+	out := applyRemoteMeta(m, np, ent)
+	if out.ModTime.IsZero() && d.Clock != nil {
+		out.ModTime = d.Clock()
 	}
-	out := *ent
-	out.Path = np
 	out.IsDir = false
-	out.Permissions = m.Permissions
-	out.Shareable = false
-	out.Mounted = true
-	out.Shared = true
-	if out.ETag == "" {
-		out.ETag = "ocm-remote"
+	return rc, out, nil
+}
+
+func (d *DAV) statRemote(ctx context.Context, np string, m *IncomingMount) (*webdav.Entry, error) {
+	if np == m.Mount {
+		e := remoteEntry(m, "/")
+		if e != nil && e.ModTime.IsZero() && d.Clock != nil {
+			e.ModTime = d.Clock()
+		}
+		return e, nil
 	}
-	return rc, &out, nil
+	if d.Remote == nil || m.RemoteOrigin == "" || m.RemoteToken == "" {
+		return nil, webdav.ErrNotImplemented
+	}
+	rel, ok := remoteRel(m, np)
+	if !ok {
+		return nil, webdav.ErrNotFound
+	}
+	if m.Permissions&webdav.PermRead == 0 {
+		return nil, webdav.ErrForbidden
+	}
+	ents, err := d.Remote.Propfind(ctx, m.RemoteOrigin, m.RemoteToken, rel, 0)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range ents {
+		if e == nil {
+			continue
+		}
+		statPath := np
+		if e.IsDir {
+			statPath = "/"
+		}
+		out := applyRemoteMeta(m, statPath, e)
+		if out.ModTime.IsZero() && d.Clock != nil {
+			out.ModTime = d.Clock()
+		}
+		return out, nil
+	}
+	return nil, webdav.ErrNotFound
+}
+
+func (d *DAV) listRemote(ctx context.Context, np string, m *IncomingMount) ([]*webdav.Entry, error) {
+	if m.ItemType != "folder" {
+		return nil, webdav.ErrNotDir
+	}
+	if d.Remote == nil || m.RemoteOrigin == "" || m.RemoteToken == "" {
+		return nil, webdav.ErrNotImplemented
+	}
+	rel, ok := remoteRel(m, np)
+	if !ok {
+		return nil, webdav.ErrNotFound
+	}
+	if m.Permissions&webdav.PermRead == 0 {
+		return nil, webdav.ErrForbidden
+	}
+	ents, err := d.Remote.Propfind(ctx, m.RemoteOrigin, m.RemoteToken, rel, 1)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*webdav.Entry, 0, len(ents))
+	for _, e := range ents {
+		if skipRemoteSelf(e) {
+			continue
+		}
+		name := path.Base(e.Path)
+		if name == "" || name == "." || name == "/" {
+			continue
+		}
+		child := applyRemoteMeta(m, "/"+name, e)
+		if child.ModTime.IsZero() && d.Clock != nil {
+			child.ModTime = d.Clock()
+		}
+		out = append(out, child)
+	}
+	return out, nil
 }
 
 func (d *DAV) Write(ctx context.Context, user, p string, r io.Reader, mtime *time.Time) (*webdav.Entry, bool, error) {

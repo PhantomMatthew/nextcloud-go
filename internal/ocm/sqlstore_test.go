@@ -128,6 +128,27 @@ func TestDiscoveryAndIncomingPOST(t *testing.T) {
 	if rr4.Code != http.StatusOK || !strings.Contains(rr4.Body.String(), `"hello-remote.txt"`) {
 		t.Fatalf("remote shares = %d %s", rr4.Code, rr4.Body.String())
 	}
+	writeBody := `{"shareWith":"admin","name":"remote-dir","providerId":"43","owner":"alice@https://remote.example.com","shareType":"user","resourceType":"folder","protocol":{"name":"webdav","options":{"sharedSecret":"ocmtok002","permissions":15}}}`
+	postW := httptest.NewRequestWithContext(ctx, http.MethodPost, "/ocm/shares", strings.NewReader(writeBody))
+	postW.Header.Set("Content-Type", "application/json")
+	rrW := httptest.NewRecorder()
+	IncomingHandler{Store: store, Users: us}.ServeHTTP(rrW, postW)
+	if rrW.Code != http.StatusCreated {
+		t.Fatalf("folder incoming = %d %s", rrW.Code, rrW.Body.String())
+	}
+	mounts, err := store.ListIncoming(ctx, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundWrite := false
+	for _, m := range mounts {
+		if m.Mount == "/remote-dir" && m.ItemType == "folder" && m.Permissions == 15 {
+			foundWrite = true
+		}
+	}
+	if !foundWrite {
+		t.Fatalf("mounts = %+v", mounts)
+	}
 	var parsed map[string]any
 	if err := json.Unmarshal(rr4.Body.Bytes(), &parsed); err != nil {
 		t.Fatal(err)
