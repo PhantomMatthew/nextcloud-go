@@ -99,6 +99,50 @@ func TestCalendarDAV_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestReportCompFilter(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+	us := users.NewSQLStore(db)
+	u := &users.User{UID: "alice", DisplayName: "Alice", PasswordHash: "x", Enabled: true}
+	if err := us.Create(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	store := NewSQLStore(db)
+	freeze := time.Date(2025, 5, 1, 12, 0, 0, 0, time.UTC)
+	store.Clock = func() time.Time { return freeze }
+	dav := &DAV{Store: store, Users: us, Clock: func() time.Time { return freeze }}
+
+	const sampleTODO = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//nextcloud-go//EN\nBEGIN:VTODO\nUID:ncgo-todo-001\nDTSTAMP:20250501T120000Z\nDTSTART:20250502T090000Z\nDUE:20250504T180000Z\nSUMMARY:Phase 3e1\nEND:VTODO\nEND:VCALENDAR\n"
+	if _, _, err := dav.Write(ctx, "alice", "/personal/ncgo-event-001.ics", bytes.NewReader([]byte(sampleICS)), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := dav.Write(ctx, "alice", "/personal/ncgo-todo-001.ics", bytes.NewReader([]byte(sampleTODO)), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	query := func(filter string) []*webdav.Entry {
+		t.Helper()
+		body := `<c:calendar-query xmlns:c="urn:ietf:params:xml:ns:caldav"><c:filter><c:comp-filter name="VCALENDAR">` + filter + `</c:comp-filter></c:filter></c:calendar-query>`
+		entries, err := dav.Report(ctx, "alice", "/personal", webdav.ReportRequest{Name: "calendar-query", Body: []byte(body)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return entries
+	}
+	todos := query(`<c:comp-filter name="VTODO"><c:time-range start="20250501T000000Z" end="20250601T000000Z"/></c:comp-filter>`)
+	if len(todos) != 1 || todos[0].Path != "/personal/ncgo-todo-001.ics" {
+		t.Fatalf("vtodo filter = %v", todos)
+	}
+	events := query(`<c:comp-filter name="VEVENT"><c:time-range start="20250501T000000Z" end="20250601T000000Z"/></c:comp-filter>`)
+	if len(events) != 1 || events[0].Path != "/personal/ncgo-event-001.ics" {
+		t.Fatalf("vevent filter = %v", events)
+	}
+	all := query("")
+	if len(all) != 2 {
+		t.Fatalf("no filter = %v", all)
+	}
+}
+
 func TestPrincipalAndRoot(t *testing.T) {
 	ctx := context.Background()
 	db := testDB(t)

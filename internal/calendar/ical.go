@@ -26,14 +26,17 @@ func parseICS(data []byte) (*parsedEvent, error) {
 	nEvent := strings.Count(text, "BEGIN:VEVENT")
 	nTodo := strings.Count(text, "BEGIN:VTODO")
 	nJournal := strings.Count(text, "BEGIN:VJOURNAL")
-	if nEvent == 0 && (nTodo > 0 || nJournal > 0) {
+	if nJournal > 0 {
 		return nil, ErrUnsupported
 	}
-	if nEvent != 1 {
-		return nil, fmt.Errorf("%w: want exactly one VEVENT", ErrInvalid)
-	}
-	if nTodo > 0 || nJournal > 0 {
+	if nEvent > 0 && nTodo > 0 {
 		return nil, ErrUnsupported
+	}
+	if nEvent+nTodo != 1 {
+		return nil, fmt.Errorf("%w: want exactly one VEVENT or VTODO", ErrInvalid)
+	}
+	if nTodo == 1 {
+		return parseVTODO(text)
 	}
 	block := veventBlock(text)
 	props := parseProps(block)
@@ -68,6 +71,43 @@ func parseICS(data []byte) (*parsedEvent, error) {
 	}, nil
 }
 
+// parseVTODO parses a single VTODO block. DTSTART is optional; the time
+// anchor falls back to DUE, COMPLETED, then CREATED. A todo with no dates
+// gets zero FirstOccur/LastOccur and only matches range-unbounded queries.
+func parseVTODO(text string) (*parsedEvent, error) {
+	block := componentBlock(text, "VTODO")
+	props := parseProps(block)
+	uid := props["UID"]
+	if uid == "" {
+		return nil, fmt.Errorf("%w: missing UID", ErrInvalid)
+	}
+	var first, last time.Time
+	if start, ok := parseICSTime(props["DTSTART"], props["DTSTART_TZID"], props["DTSTART_VALUE"]); ok {
+		first, last = start, start
+		if raw, exists := props["DUE"]; exists {
+			if due, dok := parseICSTime(raw, props["DUE_TZID"], props["DUE_VALUE"]); dok {
+				last = due
+			}
+		} else if dur, exists := props["DURATION"]; exists {
+			if d, perr := parseICSDuration(dur); perr == nil {
+				last = start.Add(d)
+			}
+		}
+	} else if due, ok := parseICSTime(props["DUE"], props["DUE_TZID"], props["DUE_VALUE"]); ok {
+		first, last = due, due
+	} else if done, ok := parseICSTime(props["COMPLETED"], props["COMPLETED_TZID"], props["COMPLETED_VALUE"]); ok {
+		first, last = done, done
+	} else if created, ok := parseICSTime(props["CREATED"], props["CREATED_TZID"], props["CREATED_VALUE"]); ok {
+		first, last = created, created
+	}
+	return &parsedEvent{
+		UID:        uid,
+		Component:  ComponentVTODO,
+		FirstOccur: first,
+		LastOccur:  last,
+	}, nil
+}
+
 func objectETag(data []byte) string {
 	h := sha1.New() //nolint:gosec // non-cryptographic: ETag fingerprint
 	h.Write(data)
@@ -93,8 +133,12 @@ func unfoldICS(s string) string {
 }
 
 func veventBlock(text string) string {
-	start := strings.Index(text, "BEGIN:VEVENT")
-	end := strings.Index(text, "END:VEVENT")
+	return componentBlock(text, "VEVENT")
+}
+
+func componentBlock(text, name string) string {
+	start := strings.Index(text, "BEGIN:"+name)
+	end := strings.Index(text, "END:"+name)
 	if start < 0 || end < start {
 		return ""
 	}

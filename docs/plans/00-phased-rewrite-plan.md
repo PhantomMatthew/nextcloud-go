@@ -189,6 +189,10 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-21** — Phase 3e1: CalDAV VTODO objects (DTSTART/DUE/DURATION/
+  COMPLETED/CREATED anchors), `calendar-query` comp-filter component
+  filtering, and VEVENT+VTODO `supported-calendar-component-set` (see
+  ADR-0030). Free-busy, scheduling, and calendar sharing remain later.
 - **2026-09-21** — Phase 3d8: OCS sharees `lookup=true` queries the
   configured lookup server (default `https://lookup.nextcloud.com`,
   `sharing.lookup_server`) and returns hits in the `lookup` collection;

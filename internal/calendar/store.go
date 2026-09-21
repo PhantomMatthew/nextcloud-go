@@ -22,6 +22,7 @@ const (
 	DefaultCalendarColor = "#0082c9"
 	RecurUntilMS         = int64(4102444800000) // 2100-01-01
 	ComponentVEVENT      = "VEVENT"
+	ComponentVTODO       = "VTODO"
 )
 
 // Calendar is a CalDAV calendar collection.

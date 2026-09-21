@@ -32,8 +32,8 @@ func (d *DAV) Report(ctx context.Context, user, p string, req webdav.ReportReque
 	}
 	switch kind {
 	case "calendar-query":
-		start, end := parseTimeRange(req.Body)
-		return d.query(ctx, u.ID, calURI, start, end)
+		comp, start, end := parseCompFilter(req.Body)
+		return d.query(ctx, u.ID, calURI, comp, start, end)
 	case "calendar-multiget":
 		return d.multiget(ctx, user, u.ID, req.Body)
 	default:
@@ -41,7 +41,7 @@ func (d *DAV) Report(ctx context.Context, user, p string, req webdav.ReportReque
 	}
 }
 
-func (d *DAV) query(ctx context.Context, userID int64, calURI string, start, end time.Time) ([]*webdav.Entry, error) {
+func (d *DAV) query(ctx context.Context, userID int64, calURI, component string, start, end time.Time) ([]*webdav.Entry, error) {
 	var cals []Calendar
 	if calURI == "" {
 		listed, err := d.Store.ListCalendars(ctx, userID)
@@ -63,6 +63,9 @@ func (d *DAV) query(ctx context.Context, userID int64, calURI string, start, end
 			return nil, mapErr(err)
 		}
 		for j := range objs {
+			if component != "" && objs[j].Component != component {
+				continue
+			}
 			out = append(out, objectEntry(cals[i].URI, &objs[j]))
 		}
 	}
@@ -106,30 +109,48 @@ func reportName(body []byte) string {
 	}
 }
 
-func parseTimeRange(body []byte) (start, end time.Time) {
+// parseCompFilter returns the innermost comp-filter component name
+// (e.g. VEVENT, VTODO) and the time-range of a calendar-query body.
+// An empty component means no component filter (all components match).
+func parseCompFilter(body []byte) (component string, start, end time.Time) {
 	dec := xml.NewDecoder(bytes.NewReader(body))
+	depth := 0
 	for {
 		tok, err := dec.Token()
 		if err != nil {
-			return start, end
+			return component, start, end
 		}
-		se, ok := tok.(xml.StartElement)
-		if !ok || se.Name.Local != "time-range" {
-			continue
-		}
-		for _, a := range se.Attr {
-			switch a.Name.Local {
-			case "start":
-				if t, err := time.Parse("20060102T150405Z", a.Value); err == nil {
-					start = t.UTC()
+		switch e := tok.(type) {
+		case xml.StartElement:
+			switch e.Name.Local {
+			case "comp-filter":
+				depth++
+				if depth >= 2 {
+					for _, a := range e.Attr {
+						if a.Name.Local == "name" {
+							component = strings.ToUpper(a.Value)
+						}
+					}
 				}
-			case "end":
-				if t, err := time.Parse("20060102T150405Z", a.Value); err == nil {
-					end = t.UTC()
+			case "time-range":
+				for _, a := range e.Attr {
+					switch a.Name.Local {
+					case "start":
+						if t, err := time.Parse("20060102T150405Z", a.Value); err == nil {
+							start = t.UTC()
+						}
+					case "end":
+						if t, err := time.Parse("20060102T150405Z", a.Value); err == nil {
+							end = t.UTC()
+						}
+					}
 				}
 			}
+		case xml.EndElement:
+			if e.Name.Local == "comp-filter" && depth > 0 {
+				depth--
+			}
 		}
-		return start, end
 	}
 }
 

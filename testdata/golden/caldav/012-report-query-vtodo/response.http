@@ -1,0 +1,13 @@
+HTTP/1.1 207 Multi-Status
+Server: nginx
+Content-Type: application/xml; charset=utf-8
+Feature-Policy: autoplay 'self';camera 'none';fullscreen 'self';geolocation 'none';microphone 'none';payment 'none'
+Referrer-Policy: no-referrer
+X-Content-Type-Options: nosniff
+X-Frame-Options: SAMEORIGIN
+X-Permitted-Cross-Domain-Policies: none
+X-Robots-Tag: noindex, nofollow
+X-Xss-Protection: 1; mode=block
+
+<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns" xmlns:cal="urn:ietf:params:xml:ns:caldav" xmlns:cs="http://calendarserver.org/ns/" xmlns:apple="http://apple.com/ns/ical/"><d:response><d:href>/remote.php/dav/calendars/admin/personal/ncgo-todo-001.ics</d:href><d:propstat><d:prop><d:getetag>&quot;4e4f1dca95d41f45d2e3d38a81c045a05c033987&quot;</d:getetag><cal:calendar-data>BEGIN:VCALENDAR&#xA;VERSION:2.0&#xA;PRODID:-//nextcloud-go//EN&#xA;BEGIN:VTODO&#xA;UID:ncgo-todo-001&#xA;DTSTAMP:20250501T120000Z&#xA;DTSTART:20250502T090000Z&#xA;DUE:20250504T180000Z&#xA;SUMMARY:Phase 3e1&#xA;END:VTODO&#xA;END:VCALENDAR&#xA;</cal:calendar-data></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>
