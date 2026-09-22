@@ -112,6 +112,127 @@ func TestSQLStoreGroups(t *testing.T) {
 	}
 }
 
+func TestSQLStoreSetEnabledListDelete(t *testing.T) {
+	ctx := context.Background()
+	store := NewSQLStore(testDB(t))
+	for _, uid := range []string{"alice", "bob", "carol"} {
+		if err := store.Create(ctx, &User{UID: uid, DisplayName: uid, PasswordHash: "x", Enabled: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SetEnabled(ctx, "bob", false); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetByUID(ctx, "bob")
+	if err != nil || got.Enabled {
+		t.Fatalf("after disable = %+v %v", got, err)
+	}
+	if err := store.SetEnabled(ctx, "bob", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetEnabled(ctx, "missing", true); !errors.Is(err, ErrNotFound) {
+		t.Errorf("set enabled missing = %v", err)
+	}
+
+	all, err := store.List(ctx, 0, 0)
+	if err != nil || len(all) != 3 {
+		t.Fatalf("list all = %v %v", all, err)
+	}
+	if all[0].UID != "alice" || all[2].UID != "carol" {
+		t.Errorf("list order = %v", all)
+	}
+	page, err := store.List(ctx, 1, 1)
+	if err != nil || len(page) != 1 || page[0].UID != "bob" {
+		t.Fatalf("list page = %v %v", page, err)
+	}
+
+	if err := store.CreateGroup(ctx, &Group{GID: "team"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddGroupMember(ctx, "team", "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(ctx, "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetByUID(ctx, "bob"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("after delete = %v", err)
+	}
+	members, err := store.GroupMembers(ctx, "team", 0)
+	if err != nil || len(members) != 0 {
+		t.Fatalf("members after delete = %v %v", members, err)
+	}
+	if err := store.Delete(ctx, "bob"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("delete missing = %v", err)
+	}
+}
+
+func TestSQLStoreGroupOps(t *testing.T) {
+	ctx := context.Background()
+	store := NewSQLStore(testDB(t))
+	for _, uid := range []string{"alice", "bob", "carol"} {
+		if err := store.Create(ctx, &User{UID: uid, DisplayName: uid, PasswordHash: "x", Enabled: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.CreateGroup(ctx, &Group{GID: "team", DisplayName: "Team"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateGroup(ctx, &Group{GID: "ops"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, uid := range []string{"carol", "alice", "bob"} {
+		if err := store.AddGroupMember(ctx, "team", uid); err != nil {
+			t.Fatal(err)
+		}
+	}
+	members, err := store.GroupMembers(ctx, "team", 0)
+	if err != nil || len(members) != 3 || members[0] != "alice" || members[2] != "carol" {
+		t.Fatalf("members = %v %v", members, err)
+	}
+	limited, err := store.GroupMembers(ctx, "team", 2)
+	if err != nil || len(limited) != 2 {
+		t.Fatalf("limited members = %v %v", limited, err)
+	}
+	if _, err := store.GroupMembers(ctx, "missing", 0); !errors.Is(err, ErrNotFound) {
+		t.Errorf("members of missing group = %v", err)
+	}
+
+	if err := store.RemoveGroupMember(ctx, "team", "carol"); err != nil {
+		t.Fatal(err)
+	}
+	members, err = store.GroupMembers(ctx, "team", 0)
+	if err != nil || len(members) != 2 {
+		t.Fatalf("members after remove = %v %v", members, err)
+	}
+	if err := store.RemoveGroupMember(ctx, "team", "carol"); err != nil {
+		t.Errorf("removing non-member = %v", err)
+	}
+	if err := store.RemoveGroupMember(ctx, "missing", "alice"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("remove from missing group = %v", err)
+	}
+
+	groups, err := store.ListGroups(ctx, 0, 0)
+	if err != nil || len(groups) != 2 || groups[0].GID != "ops" || groups[1].GID != "team" {
+		t.Fatalf("list groups = %v %v", groups, err)
+	}
+	page, err := store.ListGroups(ctx, 1, 1)
+	if err != nil || len(page) != 1 || page[0].GID != "team" {
+		t.Fatalf("list groups page = %v %v", page, err)
+	}
+
+	if err := store.DeleteGroup(ctx, "team"); err != nil {
+		t.Fatal(err)
+	}
+	gids, err := store.UserGroupGIDs(ctx, "alice")
+	if err != nil || len(gids) != 0 {
+		t.Fatalf("alice gids after group delete = %v %v", gids, err)
+	}
+	if err := store.DeleteGroup(ctx, "team"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("delete missing group = %v", err)
+	}
+}
+
 func TestPasswordVerifier(t *testing.T) {
 	ctx := context.Background()
 	store := NewSQLStore(testDB(t))

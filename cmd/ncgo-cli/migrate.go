@@ -7,7 +7,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/PhantomMatthew/nextcloud-go/internal/config"
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
 	"github.com/PhantomMatthew/nextcloud-go/internal/migrations"
 )
@@ -73,17 +72,11 @@ func newMigrate() *cobra.Command {
 }
 
 func withDB(ctx context.Context, fn func(context.Context, database.DB) error) error {
-	cfg, err := config.Load(config.LoadOptions{Path: cfgPath})
+	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
-	db, err := database.Open(ctx, database.Config{
-		Driver:          database.Dialect(cfg.Database.Driver),
-		DSN:             cfg.Database.DSN,
-		MaxOpenConns:    cfg.Database.MaxOpenConns,
-		MaxIdleConns:    cfg.Database.MaxIdleConns,
-		ConnMaxLifetime: cfg.Database.ConnMaxLifetime,
-	})
+	db, err := openDB(ctx, cfg)
 	if err != nil {
 		return err
 	}

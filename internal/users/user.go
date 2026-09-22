@@ -41,9 +41,16 @@ type Store interface {
 	Search(ctx context.Context, term string, limit int) ([]User, error)
 	SearchGroups(ctx context.Context, term string, limit int) ([]Group, error)
 	UpdatePasswordHash(ctx context.Context, id int64, hash string) error
+	SetEnabled(ctx context.Context, uid string, enabled bool) error
+	Delete(ctx context.Context, uid string) error
+	List(ctx context.Context, limit, offset int) ([]User, error)
 	Count(ctx context.Context) (int64, error)
 	CreateGroup(ctx context.Context, g *Group) error
 	GetGroupByGID(ctx context.Context, gid string) (*Group, error)
 	AddGroupMember(ctx context.Context, gid, uid string) error
+	RemoveGroupMember(ctx context.Context, gid, uid string) error
 	UserGroupGIDs(ctx context.Context, uid string) ([]string, error)
+	GroupMembers(ctx context.Context, gid string, limit int) ([]string, error)
+	DeleteGroup(ctx context.Context, gid string) error
+	ListGroups(ctx context.Context, limit, offset int) ([]Group, error)
 }

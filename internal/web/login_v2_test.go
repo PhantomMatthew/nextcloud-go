@@ -339,12 +339,25 @@ func (stubUserStore) SearchGroups(context.Context, string, int) ([]users.Group, 
 	return nil, nil
 }
 func (stubUserStore) UpdatePasswordHash(context.Context, int64, string) error { return nil }
+func (stubUserStore) SetEnabled(context.Context, string, bool) error          { return nil }
+func (stubUserStore) Delete(context.Context, string) error                    { return nil }
+func (stubUserStore) List(context.Context, int, int) ([]users.User, error)    { return nil, nil }
 func (stubUserStore) Count(context.Context) (int64, error)                    { return 1, nil }
 func (stubUserStore) CreateGroup(context.Context, *users.Group) error         { return nil }
 func (stubUserStore) GetGroupByGID(context.Context, string) (*users.Group, error) {
 	return nil, users.ErrNotFound
 }
-func (stubUserStore) AddGroupMember(context.Context, string, string) error { return nil }
+func (stubUserStore) AddGroupMember(context.Context, string, string) error    { return nil }
+func (stubUserStore) RemoveGroupMember(context.Context, string, string) error { return nil }
+func (stubUserStore) DeleteGroup(context.Context, string) error               { return nil }
+func (stubUserStore) ListGroups(context.Context, int, int) ([]users.Group, error) {
+	return nil, nil
+}
+
+func (stubUserStore) GroupMembers(context.Context, string, int) ([]string, error) {
+	return nil, nil
+}
+
 func (stubUserStore) UserGroupGIDs(context.Context, string) ([]string, error) {
 	return nil, nil
 }

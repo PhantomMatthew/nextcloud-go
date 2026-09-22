@@ -73,17 +73,64 @@ FROM users WHERE email = ?`, email)
 }
 
 func (s *SQLStore) getUser(ctx context.Context, q string, arg any) (*User, error) {
-	row := s.db.QueryRow(ctx, q, arg)
+	u, err := scanUserRow(s.db.QueryRow(ctx, q, arg))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, database.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("users: get: %w", err)
+	}
+	return u, nil
+}
+
+// SetEnabled flips the enabled flag for uid; unknown uids yield ErrNotFound.
+func (s *SQLStore) SetEnabled(ctx context.Context, uid string, enabled bool) error {
+	v := 0
+	if enabled {
+		v = 1
+	}
+	res, err := s.db.Exec(ctx, `UPDATE users SET enabled = ?, updated_at = ? WHERE uid = ?`,
+		v, time.Now().UTC().UnixMilli(), uid)
+	if err != nil {
+		return fmt.Errorf("users: set enabled: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// Delete removes the user row and their group memberships. Files, shares, and
+// other owned data are NOT cascaded; reassigning or purging them is the
+// operator's responsibility (mirroring occ user:delete warnings).
+func (s *SQLStore) Delete(ctx context.Context, uid string) error {
+	u, err := s.GetByUID(ctx, uid)
+	if err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM group_members WHERE user_id = ?`, u.ID); err != nil {
+		return fmt.Errorf("users: delete memberships: %w", err)
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM users WHERE id = ?`, u.ID); err != nil {
+		return fmt.Errorf("users: delete: %w", err)
+	}
+	return nil
+}
+
+const userColumns = `id, uid, display_name, email, password_hash, quota_bytes, enabled, created_at, updated_at`
+
+func scanUserRow(row interface{ Scan(...any) error }) (*User, error) {
 	var u User
 	var email sql.NullString
 	var quota sql.NullInt64
 	var enabled int
 	var created, updated int64
 	if err := row.Scan(&u.ID, &u.UID, &u.DisplayName, &email, &u.PasswordHash, &quota, &enabled, &created, &updated); err != nil {
-		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, database.ErrNoRows) {
-			return nil, ErrNotFound
-		}
-		return nil, fmt.Errorf("users: get: %w", err)
+		return nil, err
 	}
 	u.Email = email.String
 	if quota.Valid {
@@ -94,6 +141,35 @@ func (s *SQLStore) getUser(ctx context.Context, q string, arg any) (*User, error
 	u.CreatedAt = time.UnixMilli(created).UTC()
 	u.UpdatedAt = time.UnixMilli(updated).UTC()
 	return &u, nil
+}
+
+func (s *SQLStore) scanUsers(rows database.Rows) ([]User, error) {
+	defer rows.Close()
+	var out []User
+	for rows.Next() {
+		u, err := scanUserRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *u)
+	}
+	return out, rows.Err()
+}
+
+// List returns users ordered by uid, including disabled accounts. A
+// limit <= 0 returns all users; offset skips that many rows.
+func (s *SQLStore) List(ctx context.Context, limit, offset int) ([]User, error) {
+	q := `SELECT ` + userColumns + ` FROM users ORDER BY uid`
+	args := []any{}
+	if limit > 0 {
+		q += ` LIMIT ? OFFSET ?`
+		args = append(args, limit, offset)
+	}
+	rows, err := s.db.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("users: list: %w", err)
+	}
+	return s.scanUsers(rows)
 }
 
 func (s *SQLStore) UpdatePasswordHash(ctx context.Context, id int64, hash string) error {
@@ -205,6 +281,96 @@ WHERE m.user_id = ? ORDER BY g.gid`, u.ID)
 	return out, rows.Err()
 }
 
+// GroupMembers returns the uids of the members of gid, ordered by uid. A
+// limit <= 0 returns all members. Unknown gids yield ErrNotFound.
+func (s *SQLStore) GroupMembers(ctx context.Context, gid string, limit int) ([]string, error) {
+	g, err := s.GetGroupByGID(ctx, gid)
+	if err != nil {
+		return nil, err
+	}
+	q := `
+SELECT u.uid FROM users u
+INNER JOIN group_members m ON m.user_id = u.id
+WHERE m.group_id = ? ORDER BY u.uid`
+	args := []any{g.ID}
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("users: group members: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var uid string
+		if err := rows.Scan(&uid); err != nil {
+			return nil, err
+		}
+		out = append(out, uid)
+	}
+	return out, rows.Err()
+}
+
+// RemoveGroupMember drops uid from gid; unknown users or groups yield
+// ErrNotFound, a missing membership is not an error.
+func (s *SQLStore) RemoveGroupMember(ctx context.Context, gid, uid string) error {
+	g, err := s.GetGroupByGID(ctx, gid)
+	if err != nil {
+		return err
+	}
+	u, err := s.GetByUID(ctx, uid)
+	if err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM group_members WHERE group_id = ? AND user_id = ?`, g.ID, u.ID); err != nil {
+		return fmt.Errorf("users: remove member: %w", err)
+	}
+	return nil
+}
+
+// DeleteGroup removes the group row and its memberships. Unknown gids yield
+// ErrNotFound.
+func (s *SQLStore) DeleteGroup(ctx context.Context, gid string) error {
+	g, err := s.GetGroupByGID(ctx, gid)
+	if err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM group_members WHERE group_id = ?`, g.ID); err != nil {
+		return fmt.Errorf("users: delete group memberships: %w", err)
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM groups WHERE id = ?`, g.ID); err != nil {
+		return fmt.Errorf("users: delete group: %w", err)
+	}
+	return nil
+}
+
+// ListGroups returns groups ordered by gid. A limit <= 0 returns all groups;
+// offset skips that many rows.
+func (s *SQLStore) ListGroups(ctx context.Context, limit, offset int) ([]Group, error) {
+	q := `SELECT id, gid, display_name FROM groups ORDER BY gid`
+	args := []any{}
+	if limit > 0 {
+		q += ` LIMIT ? OFFSET ?`
+		args = append(args, limit, offset)
+	}
+	rows, err := s.db.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("users: list groups: %w", err)
+	}
+	defer rows.Close()
+	var out []Group
+	for rows.Next() {
+		var g Group
+		if err := rows.Scan(&g.ID, &g.GID, &g.DisplayName); err != nil {
+			return nil, fmt.Errorf("users: list groups scan: %w", err)
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
 func nullEmail(s string) any {
 	if s == "" {
 		return nil
@@ -230,33 +396,15 @@ func (s *SQLStore) Search(ctx context.Context, term string, limit int) ([]User, 
 	}
 	like := "%" + term + "%"
 	rows, err := s.db.Query(ctx, fmt.Sprintf(`
-SELECT id, uid, display_name, email, password_hash, quota_bytes, enabled, created_at, updated_at
-FROM users WHERE enabled = 1 AND (uid %s ? OR display_name %s ?) ORDER BY uid LIMIT ?`, op, op), like, like, limit)
+SELECT %s FROM users WHERE enabled = 1 AND (uid %s ? OR display_name %s ?) ORDER BY uid LIMIT ?`, userColumns, op, op), like, like, limit)
 	if err != nil {
 		return nil, fmt.Errorf("users: search: %w", err)
 	}
-	defer rows.Close()
-	var out []User
-	for rows.Next() {
-		var u User
-		var email sql.NullString
-		var quota sql.NullInt64
-		var enabled int
-		var created, updated int64
-		if err := rows.Scan(&u.ID, &u.UID, &u.DisplayName, &email, &u.PasswordHash, &quota, &enabled, &created, &updated); err != nil {
-			return nil, fmt.Errorf("users: search scan: %w", err)
-		}
-		u.Email = email.String
-		if quota.Valid {
-			q := quota.Int64
-			u.QuotaBytes = &q
-		}
-		u.Enabled = enabled != 0
-		u.CreatedAt = time.UnixMilli(created).UTC()
-		u.UpdatedAt = time.UnixMilli(updated).UTC()
-		out = append(out, u)
+	out, err := s.scanUsers(rows)
+	if err != nil {
+		return nil, fmt.Errorf("users: search scan: %w", err)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // SearchGroups returns groups whose gid or display name contains term,

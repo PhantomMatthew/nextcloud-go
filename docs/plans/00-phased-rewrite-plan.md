@@ -191,6 +191,27 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4d2: `ncgo-cli` operational parity for the
+  `user`, `group`, and `config` occ command families (ADR-0047). New
+  commands: `user list|enable|disable|delete --yes|reset-password`,
+  `group list|add|delete --yes|adduser|removeuser|members`, and
+  `config get|set|delete` over the `appconfig` table (plugin config is
+  appid `plugin`, key `<plugin_id>.<key>` — the v1 mechanism the Phase 4d
+  webhook-forwarder README pointed at; that README's "CLI is a follow-up"
+  gap is now closed). `users.SQLStore` gained `SetEnabled`, `Delete`,
+  `List`, `GroupMembers`, `RemoveGroupMember`, `DeleteGroup`, and
+  `ListGroups`. Notable decisions (full rationale in ADR-0047): deletes
+  cascade to group memberships only — files/shares are NOT cascaded,
+  matching occ's `user:delete` warnings; destructive commands require an
+  explicit `--yes` (no TTY-prompt precedent in the repo); a dedicated
+  `List` was added rather than reusing `Search` (which excludes disabled
+  users and caps at 20); no auth changes were needed since disabled
+  accounts are already rejected on password verify, bearer lookup, and
+  session middleware. `cmd/ncgo-cli/cli_test.go` establishes the
+  previously missing CLI test pattern (temp sqlite + minimal config file +
+  `newRoot()` with captured output). Deferred occ families: maintenance
+  mode toggle (needs an appconfig-backed runtime flag, not just a CLI
+  writer), background-job inspection, app passwords, theming/branding.
 - **2026-09-22** — Phase 4d: reference plugins shipped as buildable
   examples — `examples/file-tagger` (spec §10 walkthrough made real:
   `files.uploaded` subscriber that DDL-creates its `file_tags` table in
