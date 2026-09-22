@@ -43,6 +43,24 @@ func TestIntegrationRedis(t *testing.T) {
 	if err != nil || n != 5 {
 		t.Fatalf("incr = %d %v", n, err)
 	}
+	// DeleteByPrefix removes only keys under the prefix; the control keys
+	// with different prefixes survive.
+	pfx := key + ":sub:"
+	for _, k := range []string{pfx + "a", pfx + "b"} {
+		if err := r.Set(ctx, k, []byte("v"), time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = r.Delete(ctx, k) })
+	}
+	if n, err := r.DeleteByPrefix(ctx, pfx); err != nil || n != 2 {
+		t.Fatalf("deletebyprefix = %d %v", n, err)
+	}
+	if _, err := r.Get(ctx, pfx+"a"); !errors.Is(err, ErrMiss) {
+		t.Fatalf("deleted key = %v", err)
+	}
+	if got, err := r.Get(ctx, incrKey); err != nil || string(got) != "5" {
+		t.Fatalf("control key lost = %q %v", got, err)
+	}
 	if err := r.Delete(ctx, key); err != nil {
 		t.Fatal(err)
 	}

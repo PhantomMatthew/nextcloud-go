@@ -606,6 +606,19 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-22** — Phase 4m closed the cache-cleanup follow-up Phase 4j left
+  open ("cache keys under `plugin:<id>:` are NOT removed on uninstall
+  (`cache.Cache` has no prefix delete)"). `cache.Cache` gains
+  `DeleteByPrefix(ctx, prefix) (int64, error)` (ADR-0058) with an
+  empty-prefix guard, implemented for Memory (tracked-key index over
+  ristretto, which has no key iteration), Redis (SCAN + glob-escaped MATCH +
+  non-blocking UNLINK), and Tiered (both layers, L2-authoritative count).
+  `Installer.Uninstall` now purges the plugin's `plugin:<id>:` namespace
+  after the appconfig step and logs the count; `ncgo-cli` injects a Redis
+  cache for this step only when `cache.redis_addr` is configured — with a
+  memory-only deployment the residue dies with the server restart uninstalls
+  already require. The ABI itself is unchanged; `cache_*` key namespacing
+  (§5) already used the `plugin:<id>:` prefix this step deletes by.
 - **2026-09-22** — Phase 4l closed the §13 private-IP egress gap (ADR-0057).
   The `http.outbound` allowlist is hostname-based, so literal internal IPs
   (e.g. the cloud metadata endpoint 169.254.169.254) and DNS rebinding (a

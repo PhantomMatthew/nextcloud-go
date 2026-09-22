@@ -191,6 +191,24 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4m: `cache.DeleteByPrefix` + plugin uninstall cache
+  cleanup (ADR-0058), closing the ADR-0056 Deferred item 1. `cache.Cache`
+  gains `DeleteByPrefix(ctx, prefix) (int64, error)` — empty prefix rejected
+  (`ErrEmptyPrefix`, no `MATCH *` footgun) — with all three implementations:
+  Memory keeps a `keys` index beside the `Increment` mutex (ristretto has no
+  key iteration and its callbacks report only the hashed key, so values now
+  carry their key string; `OnEvict`/`OnReject` untrack, `Set` tracks before
+  entering the set buffer), Redis runs a SCAN cursor loop with the prefix
+  glob-escaped (`\ * ? [ ]`) plus batched non-blocking UNLINK, and Tiered
+  sweeps both layers reporting the L2 count (layers mirror one keyspace, so
+  summing would double-count). `Installer.Uninstall` now purges
+  `plugin:<id>:` keys right after the appconfig step via a prefix helper
+  shared with the write path, logging the count; the CLI injects a
+  `cache.Redis` only when `cache.redis_addr` is configured (memory-only
+  residue dies with the server restart uninstalls already require). The
+  actual hazard was Redis L2 surviving restarts: a reinstalled plugin would
+  have read the previous generation's keys. Spec and wasm-plugin-abi Change
+  Logs updated.
 - **2026-09-22** — Phase 4l: plugin HTTP egress private-IP guard (SSRF,
   ADR-0057), the ADR-0043 follow-up that checks spec §13's last unchecked
   egress item. Plugin `http_*` outbound dials now run a

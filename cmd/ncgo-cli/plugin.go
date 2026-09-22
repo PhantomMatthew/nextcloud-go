@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/appconfig"
+	"github.com/PhantomMatthew/nextcloud-go/internal/cache"
 	"github.com/PhantomMatthew/nextcloud-go/internal/config"
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
 	"github.com/PhantomMatthew/nextcloud-go/internal/events"
@@ -349,7 +350,30 @@ func pluginInstaller(cmd *cobra.Command) (*plugins.Installer, func(), error) {
 		SystemStorage: st,
 		SystemPrefix:  "appdata_" + cliInstanceID(cfg) + "/plugins",
 	}
+	// Only a Redis-backed deployment gets cache cleanup from the CLI: the
+	// shared L2 survives server restarts, so a reinstalled plugin would see
+	// the previous generation's keys. A memory-only cache dies with the
+	// server process, and uninstalls take effect on restart anyway (same
+	// semantics as enable/disable) — a CLI-local Memory would be an empty
+	// shell. The install host's Cache stays deliberately nil (ADR-0056 G1).
+	var rc *cache.Redis
+	if cfg.Cache.RedisAddr != "" {
+		rc, err = cache.NewRedis(cache.RedisConfig{
+			Addr:     cfg.Cache.RedisAddr,
+			Password: cfg.Cache.RedisPassword,
+			DB:       cfg.Cache.RedisDB,
+		})
+		if err != nil {
+			_ = h.Close(ctx)
+			_ = db.Close()
+			return nil, nil, err
+		}
+		in.Cache = rc
+	}
 	cleanup := func() {
+		if rc != nil {
+			_ = rc.Close()
+		}
 		_ = h.Close(ctx)
 		_ = db.Close()
 	}

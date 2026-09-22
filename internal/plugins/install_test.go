@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/appconfig"
+	"github.com/PhantomMatthew/nextcloud-go/internal/cache"
 	"github.com/PhantomMatthew/nextcloud-go/internal/jobs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/plugins/internal/wasmgen"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage"
@@ -371,8 +372,8 @@ routes.register = ["/apps/com.example.inst/*"]
 }
 
 // TestUninstallCleanup proves G3: uninstall removes the plugin's queued job
-// rows, its appconfig keys, and its system-storage tree — not just the
-// registry row, routes, and install dir.
+// rows, its appconfig keys, its "plugin:<id>:" cache keys, and its
+// system-storage tree — not just the registry row, routes, and install dir.
 func TestUninstallCleanup(t *testing.T) {
 	pub, priv, err := GenerateKey()
 	if err != nil {
@@ -387,6 +388,11 @@ func TestUninstallCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	mc, err := cache.NewMemory(cache.MemoryConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mc.Close)
 	const prefix = "appdata_octest/plugins"
 	h, err := NewHost(ctx, HostConfig{}, slog.New(slog.DiscardHandler))
 	if err != nil {
@@ -403,6 +409,7 @@ func TestUninstallCleanup(t *testing.T) {
 		AppConfig:     acfg,
 		SystemStorage: st,
 		SystemPrefix:  prefix,
+		Cache:         mc,
 	}
 	raw := buildArchive(t, installManifest("1.0.0", ""), priv)
 	if _, err := in.Install(ctx, raw, InstallOptions{}); err != nil {
@@ -426,6 +433,18 @@ func TestUninstallCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := acfg.Set(ctx, "core", "com.example.inst.fake", "keep"); err != nil {
+		t.Fatal(err)
+	}
+	// Cache fixtures: keys under the plugin's namespace plus a
+	// prefix-boundary control ("com.example.inst2" must not match) and a
+	// counter entry. Literals pin the cache-key namespace on disk.
+	if err := mc.Set(ctx, "plugin:com.example.inst:foo", []byte("v"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := mc.Set(ctx, "plugin:com.example.inst2:bar", []byte("keep"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mc.Increment(ctx, "plugin:com.example.inst:hits", 3); err != nil {
 		t.Fatal(err)
 	}
 	writeFile := func(p, content string) {
@@ -474,6 +493,15 @@ func TestUninstallCleanup(t *testing.T) {
 	}
 	if _, err := st.Stat(ctx, prefix+"/com.example.inst"); !errors.Is(err, storage.ErrNotFound) {
 		t.Fatalf("system storage tree survives uninstall: %v", err)
+	}
+	if _, err := mc.Get(ctx, "plugin:com.example.inst:foo"); !errors.Is(err, cache.ErrMiss) {
+		t.Fatalf("plugin cache key survives uninstall: %v", err)
+	}
+	if v, err := mc.Increment(ctx, "plugin:com.example.inst:hits", 0); err != nil || v != 0 {
+		t.Fatalf("plugin cache counter survives uninstall: %d %v", v, err)
+	}
+	if val, err := mc.Get(ctx, "plugin:com.example.inst2:bar"); err != nil || string(val) != "keep" {
+		t.Fatalf("prefix-boundary cache key lost: %q %v", val, err)
 	}
 	if _, err := reg.Get(ctx, "com.example.inst"); !errors.Is(err, ErrPluginNotFound) {
 		t.Fatalf("registry row survives uninstall: %v", err)

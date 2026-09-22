@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/appconfig"
+	"github.com/PhantomMatthew/nextcloud-go/internal/cache"
 	"github.com/PhantomMatthew/nextcloud-go/internal/jobs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage"
 )
@@ -31,14 +32,15 @@ type Installer struct {
 
 	// Uninstall cleanup dependencies. Any nil one skips its cleanup step:
 	// JobStore drops the plugin's queued plugin.<id> job rows, AppConfig
-	// drops the plugin's "<id>.*" config rows, and SystemStorage +
+	// drops the plugin's "<id>.*" config rows, SystemStorage +
 	// SystemPrefix remove the plugin's system-storage tree
-	// (<SystemPrefix>/<id>). Cache keys are NOT cleaned: cache.Cache has no
-	// prefix delete (documented limitation, ADR-0056).
+	// (<SystemPrefix>/<id>), and Cache drops the plugin's "plugin:<id>:"
+	// cache keys (ADR-0058).
 	JobStore      jobs.Store
 	AppConfig     *appconfig.Store
 	SystemStorage storage.Storage
 	SystemPrefix  string
+	Cache         cache.Cache
 }
 
 // InstallOptions controls install-time policy.
@@ -211,11 +213,11 @@ func (in *Installer) Install(ctx context.Context, raw []byte, opts InstallOption
 
 // Uninstall runs the on_uninstall hook best-effort, then removes everything
 // the plugin persisted: route and WebDAV prop records, queued job rows, its
-// appconfig keys, its system-storage tree, the registry record, and the
-// stored archive. Without the jobs/appconfig/storage steps an uninstalled
-// plugin left rows the jobs runner retried forever and state it could never
-// reclaim. cache.Cache keys are NOT removed (the interface has no prefix
-// delete; ADR-0056).
+// appconfig keys, its "plugin:<id>:" cache keys, its system-storage tree,
+// the registry record, and the stored archive. Without the
+// jobs/appconfig/cache/storage steps an uninstalled plugin left rows the
+// jobs runner retried forever, state it could never reclaim, and (in a
+// Redis-backed cache) stale keys a reinstalled plugin would read.
 func (in *Installer) Uninstall(ctx context.Context, id string) error {
 	row, err := in.Registry.Get(ctx, id)
 	if err != nil {
@@ -249,6 +251,16 @@ func (in *Installer) Uninstall(ctx context.Context, id string) error {
 	if in.AppConfig != nil {
 		if err := in.AppConfig.DeleteByPrefix(ctx, configAppID, id+"."); err != nil {
 			return err
+		}
+	}
+	if in.Cache != nil {
+		n, err := in.Cache.DeleteByPrefix(ctx, cacheKeyPrefix(id))
+		if err != nil {
+			return err
+		}
+		if n > 0 && in.Logger != nil {
+			in.Logger.InfoContext(ctx, "plugins: uninstall purged cache keys",
+				slog.String("plugin.id", id), slog.Int64("cache.deleted", n))
 		}
 	}
 	if in.SystemStorage != nil && in.SystemPrefix != "" {

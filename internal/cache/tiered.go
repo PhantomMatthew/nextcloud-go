@@ -60,6 +60,20 @@ func (t *Tiered) Delete(ctx context.Context, key string) error {
 	return err2
 }
 
+func (t *Tiered) DeleteByPrefix(ctx context.Context, prefix string) (int64, error) {
+	n1, err1 := t.l1.DeleteByPrefix(ctx, prefix)
+	if t.l2 == nil {
+		return n1, err1
+	}
+	n2, err2 := t.l2.DeleteByPrefix(ctx, prefix)
+	if err1 != nil {
+		return n1, err1
+	}
+	// Both layers mirror the same keyspace, so summing n1+n2 would
+	// double-count; l2 is the authority when present.
+	return n2, err2
+}
+
 func (t *Tiered) Increment(ctx context.Context, key string, delta int64) (int64, error) {
 	if t.l2 != nil {
 		n, err := t.l2.Increment(ctx, key, delta)

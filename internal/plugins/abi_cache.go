@@ -12,6 +12,11 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/pkg/pluginsdk"
 )
 
+// cacheKeyPrefix namespaces all of plugin id's cache keys under plugin:<id>:.
+func cacheKeyPrefix(id string) string {
+	return "plugin:" + id + ":"
+}
+
 // cacheKey namespaces the plugin-supplied key under plugin:<id>:.
 func cacheKey(ctx context.Context, key string) string {
 	info := callFromCtx(ctx)
@@ -19,7 +24,7 @@ func cacheKey(ctx context.Context, key string) string {
 	if info.plugin != nil {
 		id = info.plugin.manifest.Plugin.ID
 	}
-	return "plugin:" + id + ":" + key
+	return cacheKeyPrefix(id) + key
 }
 
 func (h *Host) cacheErrUnavailable() int32 {

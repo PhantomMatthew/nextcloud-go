@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -69,6 +70,51 @@ func (r *Redis) Delete(ctx context.Context, key string) error {
 		return fmt.Errorf("cache: redis del: %w", err)
 	}
 	return nil
+}
+
+func (r *Redis) DeleteByPrefix(ctx context.Context, prefix string) (int64, error) {
+	if prefix == "" {
+		return 0, ErrEmptyPrefix
+	}
+	// SCAN cursor loop with the prefix glob-escaped so it matches literally.
+	match := redisMatchPattern(prefix) + "*"
+	var cursor uint64
+	var total int64
+	for {
+		keys, next, err := r.c.Scan(ctx, cursor, match, 200).Result()
+		if err != nil {
+			return total, fmt.Errorf("cache: redis scan: %w", err)
+		}
+		if len(keys) > 0 {
+			// UNLINK (Redis >= 4) defers the actual free to a background
+			// thread, unlike blocking DEL — a large keyspace never stalls
+			// the server.
+			n, err := r.c.Unlink(ctx, keys...).Result()
+			if err != nil {
+				return total, fmt.Errorf("cache: redis unlink: %w", err)
+			}
+			total += n
+		}
+		if next == 0 {
+			return total, nil
+		}
+		cursor = next
+	}
+}
+
+// redisMatchPattern escapes the Redis glob metacharacters in prefix so a
+// SCAN MATCH treats it as a literal string.
+func redisMatchPattern(prefix string) string {
+	var sb strings.Builder
+	sb.Grow(len(prefix))
+	for _, r := range prefix {
+		switch r {
+		case '\\', '*', '?', '[', ']':
+			sb.WriteByte('\\')
+		}
+		sb.WriteRune(r)
+	}
+	return sb.String()
 }
 
 func (r *Redis) Increment(ctx context.Context, key string, delta int64) (int64, error) {
