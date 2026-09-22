@@ -30,6 +30,13 @@ empty value no static UI is served. Serving rules, cache policy, security
 constraints, and the honest API-coverage caveats are in
 [`docs/adr/0054-admin-ui-static-serving.md`](docs/adr/0054-admin-ui-static-serving.md).
 
+Browser login works end-to-end: the served SPA shell is injected with a
+per-session `requesttoken` (anonymous login nonce on the login page),
+`POST /index.php/login` and `/index.php/logout` create and destroy browser
+sessions, and session-authenticated unsafe requests are CSRF-checked by the
+auth middleware while basic/app-password/bearer clients stay exempt. See
+[`docs/adr/0064-requesttoken-csrf-browser-login.md`](docs/adr/0064-requesttoken-csrf-browser-login.md).
+
 ### Managing plugins
 
 `ncgo-cli plugin install` / `enable` / `disable` / `uninstall` update the

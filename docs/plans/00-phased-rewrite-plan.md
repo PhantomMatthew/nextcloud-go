@@ -191,6 +191,32 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4r: requesttoken + CSRF validation + SPA browser
+  login (ADR-0064), completing two ADR-0054 follow-ups. Per-session CSRF
+  tokens are derived statelessly as
+  `base64url(HMAC-SHA256(instance.secret, "ncgo-requesttoken:"+sessionID))`
+  (no schema change, constant-time compare); the anonymous login page uses a
+  double-submit `ncgo_login_nonce` cookie in a separate HMAC domain. The
+  static SPA shell (`/` and SPA fallback) is now injected with the token at
+  both upstream read paths — `<head data-requesttoken>` and
+  `window.oc_requesttoken` (conventions verified against nextcloud/server
+  templates and @nextcloud/auth) — while other assets stay byte-identical;
+  injected shells drop conditional-request negotiation (always 200,
+  no-cache). New endpoints: `POST /index.php/login` (login token check →
+  403, credential failure → 401 via the shared CacheThrottler, success →
+  session + nonce rotation + 303) and `GET|POST /index.php/logout`
+  (session-token check → delete session → 303); `GET /index.php/login`
+  serves the shell explicitly because the router 405s exact-path method
+  mismatches. CSRF validation lives in the auth middleware's session branch:
+  session-authenticated unsafe methods (safe set GET/HEAD/OPTIONS/PROPFIND/
+  REPORT) need a matching `requesttoken` header or form field (body restored
+  for downstream readers) else 403; basic/app-password/bearer/public-link
+  auth is exempt. `httpx.CSRF` defers session-cookie requests to that core
+  (new SessionCookie config) and keeps its anonymous 412 blanket; login and
+  logout paths are bypassed as self-validating. Coverage spans DAV, OCS, and
+  plugin routes since all share `auth.Middleware`. Still follow-ups: full
+  `oc_appconfig` initial-state injection, precompressed assets, embedded
+  admin console.
 - **2026-09-22** — Phase 4q2: reconciler cache purge on uninstall detection
   (ADR-0063). Hot reload (4q) broke ADR-0058's "memory L1 residue dies with
   the restart" argument — a same-process uninstall → reinstall would read

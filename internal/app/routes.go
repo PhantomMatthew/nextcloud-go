@@ -61,6 +61,8 @@ func (a *App) mountRoutes() error {
 			"/index.php/login/v2",
 			"/index.php/login/v2/poll",
 			"/index.php/login/v2/grant",
+			"/index.php/login",
+			"/index.php/logout",
 			"/remote.php/dav/",
 			"/remote.php/webdav/",
 			"/public.php/webdav",
@@ -69,6 +71,11 @@ func (a *App) mountRoutes() error {
 			"/.well-known/caldav",
 			"/.well-known/carddav",
 		},
+		// Requests carrying the session cookie defer to the auth middleware,
+		// whose session branch performs the real requesttoken check (403).
+		// /index.php/login and /index.php/logout stay path-bypassed because
+		// their handlers validate the anonymous login token themselves.
+		SessionCookie: session.CookieName,
 	}
 	baseChain := []httpx.Middleware{
 		httpx.Recover(a.Logger),
@@ -104,12 +111,14 @@ func (a *App) mountRoutes() error {
 	appPasswordVerifier := auth.NewAppPasswordVerifier(a.authStore, a.secret)
 	verifier := auth.NewChainVerifier(appPasswordVerifier, userVerifier)
 	userAccounts := authUsers{store: a.Users}
+	requestTokens := auth.NewRequestToken(a.secret)
 	authCfg := auth.MiddlewareConfig{
-		Verifier: verifier,
-		Bearer:   &auth.BearerVerifier{Store: a.authStore, Users: userAccounts, Secret: a.secret, Cache: a.Cache},
-		Sessions: &auth.SessionVerifier{Sessions: a.sessions, Users: userAccounts},
-		Throttle: auth.NewCacheThrottler(a.Cache, 8, 30*time.Second),
-		Cookie:   session.CookieName,
+		Verifier:     verifier,
+		Bearer:       &auth.BearerVerifier{Store: a.authStore, Users: userAccounts, Secret: a.secret, Cache: a.Cache},
+		Sessions:     &auth.SessionVerifier{Sessions: a.sessions, Users: userAccounts},
+		Throttle:     auth.NewCacheThrottler(a.Cache, 8, 30*time.Second),
+		Cookie:       session.CookieName,
+		RequestToken: requestTokens,
 	}
 	issuer := &appPasswordIssuer{store: a.authStore, secret: a.secret}
 
@@ -187,6 +196,17 @@ func (a *App) mountRoutes() error {
 	router.HandlePrefix(http.MethodGet, "/index.php/login/v2/flow/", http.HandlerFunc(lv2.HandleFlowToken))
 	router.Handle(http.MethodGet, "/index.php/login/v2/flow", http.HandlerFunc(lv2.HandlePicker))
 	router.Handle(http.MethodPost, "/index.php/login/v2/grant", http.HandlerFunc(lv2.HandleGrant))
+
+	browserLogin := &web.BrowserLogin{
+		Verifier: verifier,
+		Users:    a.Users,
+		Sessions: a.sessions,
+		Tokens:   requestTokens,
+		Throttle: authCfg.Throttle,
+	}
+	router.Handle(http.MethodPost, "/index.php/login", http.HandlerFunc(browserLogin.HandleLogin))
+	router.Handle(http.MethodGet, "/index.php/logout", http.HandlerFunc(browserLogin.HandleLogout))
+	router.Handle(http.MethodPost, "/index.php/logout", http.HandlerFunc(browserLogin.HandleLogout))
 
 	if a.previewGen != nil {
 		for _, p := range []string{"/index.php/core/preview", "/index.php/core/preview.png"} {
@@ -322,8 +342,15 @@ func (a *App) mountRoutes() error {
 	// Static frontend catch-all: the router's longest-prefix matching keeps
 	// every exact and prefix route above ahead of this "/" mount, so only
 	// paths nothing else claimed reach the SPA/static handler. Static GETs
-	// are safe methods, so the CSRF chain passes them unchanged.
+	// are safe methods, so the CSRF chain passes them unchanged. The SPA
+	// shell is injected with the per-session (or anonymous login) bootstrap
+	// requesttoken (ADR-0064).
 	if a.staticUI != nil {
+		a.staticUI.Shell = &web.BrowserBootstrap{Sessions: a.sessions, Tokens: requestTokens}
+		// The exact POST /index.php/login route would otherwise 405 GETs of
+		// the login page; the shell (Vue login app) is that page.
+		router.Handle(http.MethodGet, "/index.php/login", a.staticUI)
+		router.Handle(http.MethodHead, "/index.php/login", a.staticUI)
 		router.HandlePrefix(http.MethodGet, "/", a.staticUI)
 		router.HandlePrefix(http.MethodHead, "/", a.staticUI)
 	}

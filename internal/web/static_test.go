@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	indexBody  = "<!doctype html><title>ncgo</title>"
+	indexBody  = "<!doctype html><html><head><title>ncgo</title></head><body><p>ncgo</p></body></html>"
 	bundleBody = "console.log('bundle')"
 	canaryBody = "outside the root"
 )
@@ -301,5 +301,116 @@ func TestStaticRouterInterplay(t *testing.T) {
 	router.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/core/dist/main-1a2b3c4d.js", nil))
 	if w.Code != http.StatusOK || w.Body.String() != bundleBody {
 		t.Errorf("static asset through router = %d %q", w.Code, w.Body.String())
+	}
+}
+
+// stubBootstrap injects a fixed token, decoupling the injection mechanics
+// tests from sessions (login_test.go covers the session-bound wiring).
+type stubBootstrap struct{ token string }
+
+func (s stubBootstrap) RequestToken(http.ResponseWriter, *http.Request) string { return s.token }
+
+func TestStaticShellInjectsRequestToken(t *testing.T) {
+	t.Parallel()
+	ui := newStaticFixture(t)
+	ui.Shell = stubBootstrap{token: "tok-abc"}
+	for _, target := range []string{"/", "/index.html", "/apps/dashboard"} {
+		w := do(t, ui, http.MethodGet, target, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d", target, w.Code)
+		}
+		body := w.Body.String()
+		if !strings.Contains(body, `<head data-requesttoken="tok-abc">`) {
+			t.Errorf("GET %s missing head attribute: %q", target, body)
+		}
+		if !strings.Contains(body, `<script>window.oc_requesttoken="tok-abc";</script>`) {
+			t.Errorf("GET %s missing oc_requesttoken global: %q", target, body)
+		}
+		if cc := w.Header().Get("Cache-Control"); cc != "no-cache" {
+			t.Errorf("GET %s Cache-Control = %q", target, cc)
+		}
+	}
+}
+
+func TestStaticShellInjectionDisablesConditionalRequests(t *testing.T) {
+	t.Parallel()
+	ui := newStaticFixture(t)
+	ui.Shell = stubBootstrap{token: "tok-abc"}
+	w := do(t, ui, http.MethodGet, "/", nil)
+	if lm := w.Header().Get("Last-Modified"); lm != "" {
+		t.Errorf("injected shell must not emit Last-Modified, got %q", lm)
+	}
+	stale := do(t, ui, http.MethodGet, "/", map[string]string{
+		"If-Modified-Since": time.Now().UTC().Format(http.TimeFormat),
+	})
+	if stale.Code != http.StatusOK {
+		t.Errorf("If-Modified-Since on injected shell = %d, want always 200", stale.Code)
+	}
+	if !strings.Contains(stale.Body.String(), "tok-abc") {
+		t.Error("conditional shell response must carry the fresh token")
+	}
+}
+
+func TestStaticShellInjectionReplacesExistingAttribute(t *testing.T) {
+	t.Parallel()
+	ui := newStaticFixture(t)
+	writeFile(t, filepath.Join(ui.Root, "index.html"),
+		`<!doctype html><html><head data-user="alice" data-requesttoken="stale"><title>x</title></head><body/></html>`)
+	ui.Shell = stubBootstrap{token: "fresh"}
+	w := do(t, ui, http.MethodGet, "/", nil)
+	body := w.Body.String()
+	if strings.Contains(body, "stale") {
+		t.Errorf("stale token must be replaced: %q", body)
+	}
+	if got := strings.Count(body, `data-requesttoken="fresh"`); got != 1 {
+		t.Errorf("data-requesttoken occurrences = %d, want 1: %q", got, body)
+	}
+	if !strings.Contains(body, `data-user="alice"`) {
+		t.Errorf("other head attributes must survive: %q", body)
+	}
+}
+
+func TestStaticShellInjectionWithoutHeadTag(t *testing.T) {
+	t.Parallel()
+	ui := newStaticFixture(t)
+	writeFile(t, filepath.Join(ui.Root, "index.html"), `<!doctype html><title>fragment</title>`)
+	ui.Shell = stubBootstrap{token: "tok-frag"}
+	w := do(t, ui, http.MethodGet, "/", nil)
+	if !strings.HasPrefix(w.Body.String(), `<script>window.oc_requesttoken="tok-frag";</script>`) {
+		t.Errorf("headless shell must get the script prepended: %q", w.Body.String())
+	}
+}
+
+func TestStaticAssetsByteIdenticalWithInjector(t *testing.T) {
+	t.Parallel()
+	ui := newStaticFixture(t)
+	ui.Shell = stubBootstrap{token: "tok-abc"}
+	w := do(t, ui, http.MethodGet, "/core/dist/main-1a2b3c4d.js", nil)
+	if w.Body.String() != bundleBody {
+		t.Errorf("asset body changed under injection: %q", w.Body.String())
+	}
+	if w.Header().Get("Last-Modified") == "" {
+		t.Error("assets keep Last-Modified")
+	}
+	second := do(t, ui, http.MethodGet, "/core/dist/main-1a2b3c4d.js",
+		map[string]string{"If-Modified-Since": w.Header().Get("Last-Modified")})
+	if second.Code != http.StatusNotModified {
+		t.Errorf("asset If-Modified-Since = %d, want 304", second.Code)
+	}
+}
+
+func TestStaticShellHeadOmitsBody(t *testing.T) {
+	t.Parallel()
+	ui := newStaticFixture(t)
+	ui.Shell = stubBootstrap{token: "tok-abc"}
+	w := do(t, ui, http.MethodHead, "/", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("HEAD / = %d", w.Code)
+	}
+	if w.Body.Len() != 0 {
+		t.Errorf("HEAD shell body = %d bytes", w.Body.Len())
+	}
+	if cl := w.Header().Get("Content-Length"); cl == "" || cl == "0" {
+		t.Errorf("HEAD shell Content-Length = %q", cl)
 	}
 }

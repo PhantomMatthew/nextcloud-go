@@ -43,6 +43,11 @@ func IsSafeMethod(method string) bool {
 type CSRFConfig struct {
 	Validate   func(*http.Request) bool
 	PathBypass []string
+	// SessionCookie, when set, defers requests carrying that cookie to the
+	// auth middleware, where the session-authenticated branch performs the
+	// real requesttoken check (ADR-0064). The blanket 412 stays in place for
+	// unsafe requests with no session signal at all.
+	SessionCookie string
 }
 
 // CSRF returns middleware that enforces CSRF protection for unsafe
@@ -58,6 +63,12 @@ func CSRF(cfg CSRFConfig) Middleware {
 			}
 			for _, p := range cfg.PathBypass {
 				if r.URL.Path == p || (strings.HasSuffix(p, "/") && strings.HasPrefix(r.URL.Path, p)) {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+			if cfg.SessionCookie != "" {
+				if c, err := r.Cookie(cfg.SessionCookie); err == nil && c.Value != "" {
 					next.ServeHTTP(w, r)
 					return
 				}

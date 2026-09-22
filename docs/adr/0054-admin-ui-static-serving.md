@@ -138,14 +138,18 @@ Constraints shaping the design:
 - **Precompressed assets** (gzip/brotli sidecar files, `Content-Encoding`
   negotiation) — compiled bundles are large; serving `.gz`/`.br` sidecars
   when present is a straight win.
-- **`requesttoken` endpoint + CSRF token validation** so the full SPA
-  browser login and form POSTs work, not just login v2/Basic.
+- ~~**`requesttoken` endpoint + CSRF token validation** so the full SPA
+  browser login and form POSTs work, not just login v2/Basic.~~ (**resolved
+  by ADR-0064**: derived per-session requesttokens, shell injection, browser
+  login/logout endpoints, and auth-core CSRF validation.)
 - **Embedded minimal admin console** (status, users, jobs) via `embed.FS`
   as a zero-config alternative to pointing at a full Nextcloud release.
 - **Server-rendered bootstrap state** (the `oc_appconfig`/`OC` initial
   state PHP injects into `index.html`) to reduce frontend error noise on
   first load; requires templating the shell, deliberately out of v1's
-  static-only scope.
+  static-only scope. (**Partially resolved by ADR-0064**: the requesttoken
+  bootstrap is injected; the full `oc_appconfig` initial-state payload
+  remains open.)
 
 ## Verification
 

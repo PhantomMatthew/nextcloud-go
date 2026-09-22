@@ -1,9 +1,13 @@
 package auth
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -57,6 +61,11 @@ type MiddlewareConfig struct {
 	Action     string
 	OnAuthFail func(http.ResponseWriter, *http.Request, error)
 	After      func(time.Duration)
+	// RequestToken, when non-nil, arms CSRF validation for
+	// session-authenticated unsafe requests (ADR-0064). Requests proven to
+	// use basic, app-password, bearer, or public-link token credentials are
+	// inherently exempt.
+	RequestToken *RequestToken
 }
 
 func Middleware(cfg MiddlewareConfig) func(http.Handler) http.Handler {
@@ -84,6 +93,12 @@ func Middleware(cfg MiddlewareConfig) func(http.Handler) http.Handler {
 				}
 				w.Header().Set("WWW-Authenticate", `Basic realm="Authorisation Required"`)
 				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			if !checkRequestToken(r, cfg, p) {
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte("CSRF check failed\n"))
 				return
 			}
 			next.ServeHTTP(w, r.WithContext(WithUser(r.Context(), p)))
@@ -142,4 +157,61 @@ func clientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+// csrfSafeMethod reports whether m never changes server state and is exempt
+// from requesttoken validation; PROPFIND/REPORT are read-only WebDAV verbs.
+func csrfSafeMethod(m string) bool {
+	switch m {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, "PROPFIND", "REPORT":
+		return true
+	}
+	return false
+}
+
+// checkRequestToken enforces the CSRF requesttoken once a session cookie has
+// authenticated the request. The token echoes, in the requesttoken header or
+// form field, the HMAC derived from the very session ID the cookie carried —
+// a cross-site attacker cannot know it. A failure is a 403, not a fallthrough
+// to 401: the session is valid, the request is not.
+func checkRequestToken(r *http.Request, cfg MiddlewareConfig, p *Principal) bool {
+	if cfg.RequestToken == nil || p.AuthMethod != AuthMethodSession || csrfSafeMethod(r.Method) {
+		return true
+	}
+	c, err := r.Cookie(cfg.Cookie)
+	if err != nil || c.Value == "" {
+		return false
+	}
+	token := r.Header.Get(RequestTokenHeader)
+	if token == "" {
+		token = formToken(r)
+	}
+	return cfg.RequestToken.Verify(c.Value, token)
+}
+
+// maxFormTokenBytes bounds the form body buffered while looking for a
+// requesttoken field; the full stream is restored for the handler either way.
+const maxFormTokenBytes = 1 << 20
+
+// formToken extracts the requesttoken from a urlencoded form body. Unlike
+// r.FormValue it restores r.Body, because downstream handlers (e.g. the
+// sharing OCS endpoint) read the body stream directly.
+func formToken(r *http.Request) string {
+	if r.Body == nil || r.Body == http.NoBody {
+		return ""
+	}
+	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mt != "application/x-www-form-urlencoded" {
+		return ""
+	}
+	b, err := io.ReadAll(io.LimitReader(r.Body, maxFormTokenBytes))
+	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), r.Body))
+	if err != nil {
+		return ""
+	}
+	vals, err := url.ParseQuery(string(b))
+	if err != nil {
+		return ""
+	}
+	return vals.Get(RequestTokenHeader)
 }

@@ -104,3 +104,33 @@ func TestCSRF(t *testing.T) {
 		})
 	}
 }
+
+func TestCSRFSessionCookieDeferral(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	h := CSRF(CSRFConfig{SessionCookie: "nc_session_id"})(ok)
+
+	withCookie := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/foo", nil)
+	withCookie.AddCookie(&http.Cookie{Name: "nc_session_id", Value: "sid"})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, withCookie)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("session-cookie request must defer to the auth layer; got %d", rec.Code)
+	}
+
+	empty := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/foo", nil)
+	empty.AddCookie(&http.Cookie{Name: "nc_session_id", Value: ""})
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, empty)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("empty session cookie must not defer; got %d", rec.Code)
+	}
+
+	plain := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/foo", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, plain)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("anonymous unsafe request must still 412; got %d", rec.Code)
+	}
+}

@@ -2,8 +2,11 @@ package auth
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -166,4 +169,160 @@ type stubFailVerifier struct{}
 
 func (stubFailVerifier) Verify(context.Context, string, string) (*Principal, error) {
 	return nil, ErrInvalidCredentials
+}
+
+type stubPassVerifier struct{}
+
+func (stubPassVerifier) Verify(_ context.Context, user, _ string) (*Principal, error) {
+	return &Principal{UID: user, Enabled: true, AuthMethod: AuthMethodBasic}, nil
+}
+
+// csrfRig mounts the middleware with session + basic auth and requesttoken
+// enforcement over a fixture session with a known ID.
+func csrfRig(t *testing.T, next http.Handler) (http.Handler, string) {
+	t.Helper()
+	ctx := context.Background()
+	const sid = "csrf-session-id"
+	us := &memUsers{}
+	if err := us.Create(ctx, &UserInfo{ID: 1, UID: "alice", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	ms := &memSessions{byID: map[string]*session.Session{
+		sid: {ID: sid, UserID: 1, ExpiresAt: time.Now().Add(time.Hour)},
+	}}
+	mw := Middleware(MiddlewareConfig{
+		Verifier:     stubPassVerifier{},
+		Sessions:     &SessionVerifier{Sessions: ms, Users: us},
+		Cookie:       session.CookieName,
+		RequestToken: NewRequestToken("csrf-secret"),
+		OnAuthFail: func(w http.ResponseWriter, _ *http.Request, _ error) {
+			w.WriteHeader(http.StatusUnauthorized)
+		},
+	})
+	return mw(next), sid
+}
+
+func sessionRequest(t *testing.T, method, sid string, body io.Reader) *http.Request {
+	t.Helper()
+	req := httptest.NewRequestWithContext(context.Background(), method, "/x", body)
+	req.AddCookie(&http.Cookie{Name: session.CookieName, Value: sid})
+	return req
+}
+
+func TestCSRFSessionUnsafeWithoutTokenIs403(t *testing.T) {
+	t.Parallel()
+	h, sid := csrfRig(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("next must not run")
+	}))
+	for _, tc := range []struct {
+		name  string
+		token string
+	}{
+		{"missing", ""},
+		{"garbage", "not-a-token"},
+		{"other session", NewRequestToken("csrf-secret").Derive("other-session")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := sessionRequest(t, http.MethodPost, sid, nil)
+			if tc.token != "" {
+				req.Header.Set(RequestTokenHeader, tc.token)
+			}
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403", rr.Code)
+			}
+		})
+	}
+}
+
+func TestCSRFSessionUnsafeWithHeaderTokenPasses(t *testing.T) {
+	t.Parallel()
+	h, sid := csrfRig(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := sessionRequest(t, http.MethodPost, sid, nil)
+	req.Header.Set(RequestTokenHeader, NewRequestToken("csrf-secret").Derive(sid))
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+}
+
+func TestCSRFSessionFormTokenPassesAndBodyIntact(t *testing.T) {
+	t.Parallel()
+	h, sid := csrfRig(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("downstream body read: %v", err)
+		}
+		if !strings.Contains(string(b), "payload=1") {
+			t.Errorf("downstream body = %q, want full form", string(b))
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	token := NewRequestToken("csrf-secret").Derive(sid)
+	form := url.Values{"payload": {"1"}, RequestTokenHeader: {token}}.Encode()
+	req := sessionRequest(t, http.MethodPost, sid, strings.NewReader(form))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+}
+
+func TestCSRFSafeMethodsSkipToken(t *testing.T) {
+	t.Parallel()
+	h, sid := csrfRig(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	for _, m := range []string{http.MethodGet, http.MethodHead, http.MethodOptions, "PROPFIND", "REPORT"} {
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, sessionRequest(t, m, sid, nil))
+		if rr.Code != http.StatusNoContent {
+			t.Errorf("%s without token = %d, want 204", m, rr.Code)
+		}
+	}
+}
+
+func TestCSRFNonSessionAuthExempt(t *testing.T) {
+	t.Parallel()
+	h, _ := csrfRig(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/x", nil)
+	req.Header.Set("Authorization", "Basic YWxpY2U6cHc=")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("basic-auth POST = %d, want 204 (no requesttoken needed)", rr.Code)
+	}
+}
+
+func TestCSRFDisabledWhenTokenNil(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	us := &memUsers{}
+	if err := us.Create(ctx, &UserInfo{ID: 1, UID: "alice", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	ms := &memSessions{byID: map[string]*session.Session{
+		"s1": {ID: "s1", UserID: 1, ExpiresAt: time.Now().Add(time.Hour)},
+	}}
+	h := Middleware(MiddlewareConfig{
+		Sessions: &SessionVerifier{Sessions: ms, Users: us},
+		Cookie:   session.CookieName,
+		OnAuthFail: func(w http.ResponseWriter, _ *http.Request, _ error) {
+			w.WriteHeader(http.StatusUnauthorized)
+		},
+	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, sessionRequest(t, http.MethodPost, "s1", nil))
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("session POST with nil RequestToken = %d, want 204", rr.Code)
+	}
 }
