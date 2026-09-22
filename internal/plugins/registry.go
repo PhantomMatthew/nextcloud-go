@@ -163,6 +163,86 @@ func (r *Registry) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// RouteRecord is one persisted plugin HTTP route (kind "route") or OCS
+// endpoint (kind "ocs").
+type RouteRecord struct {
+	PluginID    string
+	Kind        string
+	Method      string
+	Path        string
+	HandlerName string
+}
+
+// UpsertRoute inserts or replaces one route record.
+func (r *Registry) UpsertRoute(ctx context.Context, rec *RouteRecord) error {
+	var query string
+	if r.db.Dialect() == database.DialectMySQL {
+		query = `
+INSERT INTO plugin_routes (plugin_id, kind, method, path, handler_name)
+VALUES (?, ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE
+    handler_name = VALUES(handler_name)`
+	} else {
+		query = `
+INSERT INTO plugin_routes (plugin_id, kind, method, path, handler_name)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (plugin_id, kind, method, path) DO UPDATE SET
+    handler_name = excluded.handler_name`
+	}
+	_, err := r.db.Exec(ctx, query, rec.PluginID, rec.Kind, rec.Method, rec.Path, rec.HandlerName)
+	if err != nil {
+		return fmt.Errorf("plugins: route upsert: %w", err)
+	}
+	return nil
+}
+
+// RoutesForPlugin returns one plugin's route records ordered by kind,
+// method, path.
+func (r *Registry) RoutesForPlugin(ctx context.Context, pluginID string) ([]RouteRecord, error) {
+	rows, err := r.db.Query(ctx, `
+SELECT plugin_id, kind, method, path, handler_name
+FROM plugin_routes WHERE plugin_id = ? ORDER BY kind, method, path`, pluginID)
+	if err != nil {
+		return nil, fmt.Errorf("plugins: routes for plugin: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	return scanRoutes(rows)
+}
+
+// AllRoutes returns every route record ordered by plugin id, kind, method,
+// path.
+func (r *Registry) AllRoutes(ctx context.Context) ([]RouteRecord, error) {
+	rows, err := r.db.Query(ctx, `
+SELECT plugin_id, kind, method, path, handler_name
+FROM plugin_routes ORDER BY plugin_id, kind, method, path`)
+	if err != nil {
+		return nil, fmt.Errorf("plugins: all routes: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	return scanRoutes(rows)
+}
+
+// DeleteRoutesForPlugin removes every route record of a plugin. A plugin
+// without routes is not an error.
+func (r *Registry) DeleteRoutesForPlugin(ctx context.Context, pluginID string) error {
+	if _, err := r.db.Exec(ctx, `DELETE FROM plugin_routes WHERE plugin_id = ?`, pluginID); err != nil {
+		return fmt.Errorf("plugins: routes delete: %w", err)
+	}
+	return nil
+}
+
+func scanRoutes(rows database.Rows) ([]RouteRecord, error) {
+	var out []RouteRecord
+	for rows.Next() {
+		var rec RouteRecord
+		if err := rows.Scan(&rec.PluginID, &rec.Kind, &rec.Method, &rec.Path, &rec.HandlerName); err != nil {
+			return nil, fmt.Errorf("plugins: routes scan: %w", err)
+		}
+		out = append(out, rec)
+	}
+	return out, rows.Err()
+}
+
 type registryScanner interface {
 	Scan(dest ...any) error
 }

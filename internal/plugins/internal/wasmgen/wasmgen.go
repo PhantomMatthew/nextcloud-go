@@ -26,9 +26,17 @@ const (
 	opBrIf        = 0x0d
 	opI32Load8U   = 0x2d
 	opI32Store8   = 0x3a
+	opI32LtU      = 0x49
+	opI32GtU      = 0x4b
 	opI32GeU      = 0x4f
 	opI64ShrU     = 0x88
 	opI32WrapI64  = 0xa7
+	opI32Sub      = 0x6b
+	opI32Shl      = 0x74
+	opElse        = 0x05
+	opSelect      = 0x1b
+	opMemorySize  = 0x3f
+	opMemoryGrow  = 0x40
 	opUnreachable = 0x00
 	blockVoid     = 0x40
 )
@@ -47,6 +55,7 @@ const (
 	tNullToI64  = 9  // ()->i64
 	tFourI32I64 = 10 // (i32,i32,i32,i32)->i64
 	tFiveI32I64 = 11 // (i32,i32,i32,i32,i32)->i64
+	tTwoI32I64  = 12 // (i32,i32)->i64 (ncgo_on_request)
 )
 
 func u32(n uint32) []byte {
@@ -175,6 +184,7 @@ func typeTable() []byte {
 		ft(nil, []byte{i64}),                                  // 9 ()->i64
 		ft([]byte{i32, i32, i32, i32}, []byte{i64}),           // 10 db_query
 		ft([]byte{i32, i32, i32, i32, i32}, []byte{i64}),      // 11 db_tx_query
+		ft([]byte{i32, i32}, []byte{i64}),                     // 12 ncgo_on_request
 	)
 }
 
@@ -256,7 +266,7 @@ func (s guestSpec) build() []byte {
 		exports = append(exports, export(ex.name, 0x00, base+4+uint32(i)))
 	}
 
-	allocExpr := make([]byte, 0, 24)
+	allocExpr := make([]byte, 0, 48)
 	allocExpr = append(allocExpr,
 		opGlobalGet, 0x00,
 		opLocalSet, 0x01,
@@ -268,7 +278,30 @@ func (s guestSpec) build() []byte {
 	allocExpr = append(allocExpr, s32(7)...)
 	allocExpr = append(allocExpr, opI32Add, opI32Const)
 	allocExpr = append(allocExpr, s32(-8)...)
-	allocExpr = append(allocExpr, opI32And, opGlobalSet, 0x00, opLocalGet, 0x01)
+	allocExpr = append(allocExpr, opI32And, opGlobalSet, 0x00)
+	// Grow memory (2 pages at a time) while the new bump pointer exceeds the
+	// current size; large host-driven allocations (header/body scratch
+	// buffers) exceed the single minimum page otherwise.
+	allocExpr = append(allocExpr,
+		opBlock, blockVoid,
+		opLoop, blockVoid,
+		opMemorySize, 0x00,
+		opI32Const,
+	)
+	allocExpr = append(allocExpr, s32(16)...)
+	allocExpr = append(allocExpr,
+		opI32Shl,
+		opGlobalGet, 0x00,
+		opI32GeU, opBrIf, 0x01, // size_bytes >= bump: done
+		opI32Const,
+	)
+	allocExpr = append(allocExpr, s32(2)...)
+	allocExpr = append(allocExpr,
+		opMemoryGrow, 0x00, opDrop,
+		opBr, 0x00,
+		opEnd, opEnd,
+		opLocalGet, 0x01,
+	)
 
 	codes := make([][]byte, 0, 4+len(s.extras))
 	codes = append(codes,
@@ -786,6 +819,225 @@ func EventFailListenerModule() []byte {
 func EventTrapListenerModule() []byte {
 	s := guestSpec{onInstall: i32c(0)}
 	s.extras = []extraFn{{name: "ncgo_on_event", typ: tFourI32, expr: []byte{opUnreachable}}}
+	return s.build()
+}
+
+// RouteReg is one route/ocs registration a RouteRegModule performs.
+type RouteReg struct {
+	Method  string
+	Path    string
+	Handler string
+}
+
+// RouteRegModule calls route_register (or ocs_register when ocs is true) for
+// each reg and logs "probe-ok" once per call that returns want. With hook
+// true the calls run in on_install (lifecycle-hook context); with hook false
+// they move to an exported "regprobe" function invoked outside hooks.
+func RouteRegModule(ocs, hook bool, regs []RouteReg, want int32) []byte {
+	name := "route_register"
+	if ocs {
+		name = "ocs_register"
+	}
+	s := guestSpec{
+		imports: []imp{{"log", tLog}, {name, tSixI32}},
+		data:    [][]byte{[]byte("probe-ok")},
+	}
+	for _, r := range regs {
+		s.data = append(s.data, []byte(r.Method), []byte(r.Path), []byte(r.Handler))
+	}
+	offs := s.dataOffsets()
+
+	expr := make([]byte, 0, 48*len(regs)+8)
+	for i, r := range regs {
+		mo, po, ho := offs[1+i*3], offs[2+i*3], offs[3+i*3]
+		expr = append(expr, i32c(mo)...)
+		expr = append(expr, i32c(i32n(len(r.Method)))...)
+		expr = append(expr, i32c(po)...)
+		expr = append(expr, i32c(i32n(len(r.Path)))...)
+		expr = append(expr, i32c(ho)...)
+		expr = append(expr, i32c(i32n(len(r.Handler)))...)
+		expr = append(expr, opCall, 0x01) // route_register / ocs_register
+		expr = append(expr, i32c(want)...)
+		expr = append(expr, opI32Eq, opIf, blockVoid)
+		expr = append(expr, logCall(offs[0], i32n(len("probe-ok")))...)
+		expr = append(expr, opDrop)
+		expr = append(expr, opEnd)
+	}
+	expr = append(expr, i32c(0)...)
+	if hook {
+		s.onInstall = expr
+	} else {
+		s.onInstall = i32c(0)
+		s.extras = append(s.extras, extraFn{name: "regprobe", typ: tNullToI32, expr: expr})
+	}
+	return s.build()
+}
+
+// routeRequestExpr logs the first min(reqLen, 2000) bytes of the packed
+// request at info and resets the body offset (global 1). Returns the
+// expression prefix for an ncgo_on_request body; the caller appends the i64
+// result. Import 0 must be log.
+func routeRequestExpr() []byte {
+	expr := make([]byte, 0, 32)
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opGlobalSet, 0x01) // reset body offset
+	expr = append(expr, i32c(1)...)        // log level info
+	expr = append(expr, opLocalGet, 0x00)  // req ptr
+	// n = reqLen > 2000 ? 2000 : reqLen
+	expr = append(expr, i32c(2000)...)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i32c(2000)...)
+	expr = append(expr, opI32GtU, opSelect)
+	expr = append(expr, opCall, 0x00, opDrop) // log(1, ptr, n)
+	return expr
+}
+
+// RouteOpts tunes the probe modules built by RouteModuleOpts.
+type RouteOpts struct {
+	Status       int32
+	Headers      []string
+	Body         string
+	BodyFailCode int32 // non-zero: body_read always returns this
+	HeaderCount  int32 // < 0: header_count returns this instead of len(Headers)
+	HeaderAtCode int32 // non-zero: header_at always returns this
+	StatusTraps  bool  // ncgo_response_status traps
+	CloseTraps   bool  // ncgo_response_close traps
+}
+
+// RouteModule builds an HTTP request handler probe: ncgo_on_request logs the
+// packed request bytes and returns response handle 1; the ncgo_response_*
+// exports serve status, the given "Name: Value" header lines, and body
+// (chunked; the read offset lives in a mutable global reset by
+// ncgo_response_close and each new request).
+func RouteModule(status int32, headers []string, body string) []byte {
+	return RouteModuleOpts(RouteOpts{Status: status, Headers: headers, Body: body})
+}
+
+// RouteBodyFailModule is RouteModule whose ncgo_response_body_read always
+// returns failCode, simulating a guest-side body failure.
+func RouteBodyFailModule(status int32, body string, failCode int32) []byte {
+	return RouteModuleOpts(RouteOpts{Status: status, Body: body, BodyFailCode: failCode})
+}
+
+// RouteModuleOpts is the fully configurable RouteModule.
+func RouteModuleOpts(o RouteOpts) []byte {
+	status, headers, body, bodyFailCode := o.Status, o.Headers, o.Body, o.BodyFailCode
+	s := guestSpec{
+		imports:   []imp{{"log", tLog}},
+		counter:   true,
+		onInstall: i32c(0),
+		data:      [][]byte{[]byte(body)},
+	}
+	for _, hline := range headers {
+		s.data = append(s.data, []byte(hline))
+	}
+	offs := s.dataOffsets()
+	bodyOff, bodyLen := offs[0], i32n(len(body))
+
+	onRequest := routeRequestExpr()
+	onRequest = append(onRequest, i64c(1)...) // packed: err 0, handle 1
+	s.extras = append(s.extras, extraFn{name: "ncgo_on_request", typ: tTwoI32I64, expr: onRequest})
+
+	if o.StatusTraps {
+		s.extras = append(s.extras, extraFn{name: "ncgo_response_status", typ: tAlloc, expr: []byte{opUnreachable}})
+	} else {
+		s.extras = append(s.extras, extraFn{name: "ncgo_response_status", typ: tAlloc, expr: i32c(status)})
+	}
+	headerCount := i32n(len(headers))
+	if o.HeaderCount < 0 {
+		headerCount = o.HeaderCount
+	}
+	s.extras = append(s.extras, extraFn{name: "ncgo_response_header_count", typ: tAlloc, expr: i32c(headerCount)})
+
+	// params: 0=handle 1=idx 2=outPtr 3=outMax; locals: 4=i 5=off 6=n
+	headerAt := i32c(0)
+	headerAt = append(headerAt, opLocalSet, 0x05)
+	headerAt = append(headerAt, i32c(0)...)
+	headerAt = append(headerAt, opLocalSet, 0x06)
+	for i, hline := range headers {
+		headerAt = append(headerAt, opLocalGet, 0x01)
+		headerAt = append(headerAt, i32c(i32n(i))...)
+		headerAt = append(headerAt, opI32Eq, opIf, blockVoid)
+		headerAt = append(headerAt, i32c(offs[1+i])...)
+		headerAt = append(headerAt, opLocalSet, 0x05)
+		headerAt = append(headerAt, i32c(i32n(len(hline)))...)
+		headerAt = append(headerAt, opLocalSet, 0x06)
+		headerAt = append(headerAt, opEnd)
+	}
+	headerAt = append(headerAt, memcpy([]byte{opLocalGet, 0x02}, []byte{opLocalGet, 0x05}, []byte{opLocalGet, 0x06}, 4)...)
+	headerAt = append(headerAt, opLocalGet, 0x06)
+	if o.HeaderAtCode != 0 {
+		headerAt = i32c(o.HeaderAtCode)
+	}
+	s.extras = append(s.extras, extraFn{name: "ncgo_response_header_at", typ: tFourI32, locals: 3, expr: headerAt})
+
+	// params: 0=handle 1=bufPtr 2=bufMax; locals: 3=n 4=i
+	bodyRead := make([]byte, 0, 64)
+	if bodyFailCode != 0 {
+		bodyRead = append(bodyRead, i32c(bodyFailCode)...)
+	} else {
+		bodyRead = append(bodyRead, opGlobalGet, 0x01)
+		bodyRead = append(bodyRead, i32c(bodyLen)...)
+		bodyRead = append(bodyRead, opI32GeU, opIf, i32) // EOF: offset >= bodyLen
+		bodyRead = append(bodyRead, i32c(0)...)
+		bodyRead = append(bodyRead, opElse)
+		bodyRead = append(bodyRead, i32c(bodyLen)...)
+		bodyRead = append(bodyRead, opGlobalGet, 0x01, opI32Sub, opLocalSet, 0x03) // remaining
+		bodyRead = append(bodyRead, opLocalGet, 0x02, opLocalGet, 0x03, opI32LtU, opIf, blockVoid)
+		bodyRead = append(bodyRead, opLocalGet, 0x02, opLocalSet, 0x03) // n = min(bufMax, remaining)
+		bodyRead = append(bodyRead, opEnd)
+		src := append(i32c(bodyOff), opGlobalGet, 0x01, opI32Add)
+		bodyRead = append(bodyRead, memcpy([]byte{opLocalGet, 0x01}, src, []byte{opLocalGet, 0x03}, 4)...)
+		bodyRead = append(bodyRead, opGlobalGet, 0x01, opLocalGet, 0x03, opI32Add, opGlobalSet, 0x01)
+		bodyRead = append(bodyRead, opLocalGet, 0x03)
+		bodyRead = append(bodyRead, opEnd)
+	}
+	s.extras = append(s.extras, extraFn{name: "ncgo_response_body_read", typ: tLog, locals: 2, expr: bodyRead})
+
+	if o.CloseTraps {
+		s.extras = append(s.extras, extraFn{name: "ncgo_response_close", typ: tAlloc, expr: []byte{opUnreachable}})
+		return s.build()
+	}
+	closeExpr := i32c(0)
+	closeExpr = append(closeExpr, opGlobalSet, 0x01)
+	closeExpr = append(closeExpr, i32c(0)...)
+	s.extras = append(s.extras, extraFn{name: "ncgo_response_close", typ: tAlloc, expr: closeExpr})
+	return s.build()
+}
+
+// RouteFailModule exports ncgo_on_request returning code in the high 32 bits
+// of the packed i64 (guest-side request failure).
+func RouteFailModule(code int32) []byte {
+	s := guestSpec{
+		imports:   []imp{{"log", tLog}},
+		counter:   true,
+		onInstall: i32c(0),
+	}
+	onRequest := routeRequestExpr()
+	onRequest = append(onRequest, i64c(int64(code)<<32|1)...)
+	s.extras = append(s.extras, extraFn{name: "ncgo_on_request", typ: tTwoI32I64, expr: onRequest})
+	return s.build()
+}
+
+// RouteTrapModule exports an ncgo_on_request that traps.
+func RouteTrapModule() []byte {
+	s := guestSpec{onInstall: i32c(0)}
+	s.extras = append(s.extras, extraFn{name: "ncgo_on_request", typ: tTwoI32I64, expr: []byte{opUnreachable}})
+	return s.build()
+}
+
+// RouteNoResponseModule exports ncgo_on_request (returning handle 1) but
+// none of the ncgo_response_* exports.
+func RouteNoResponseModule() []byte {
+	s := guestSpec{
+		imports:   []imp{{"log", tLog}},
+		counter:   true,
+		onInstall: i32c(0),
+	}
+	onRequest := routeRequestExpr()
+	onRequest = append(onRequest, i64c(1)...)
+	s.extras = append(s.extras, extraFn{name: "ncgo_on_request", typ: tTwoI32I64, expr: onRequest})
 	return s.build()
 }
 

@@ -15,6 +15,7 @@ import (
 	notifpkg "github.com/PhantomMatthew/nextcloud-go/internal/notifications"
 	"github.com/PhantomMatthew/nextcloud-go/internal/ocm"
 	"github.com/PhantomMatthew/nextcloud-go/internal/ocs"
+	"github.com/PhantomMatthew/nextcloud-go/internal/plugins"
 	"github.com/PhantomMatthew/nextcloud-go/internal/search"
 	"github.com/PhantomMatthew/nextcloud-go/internal/session"
 	"github.com/PhantomMatthew/nextcloud-go/internal/sharing"
@@ -289,6 +290,16 @@ func (a *App) mountRoutes() error {
 		}
 		pub := sharing.RewritePublicDAVPath(webdav.Auth(pubAuth)(pubHandler))
 		router.HandlePrefix(httpx.MethodAny, "/public.php/webdav", pub)
+	}
+
+	if len(a.Plugins) > 0 && a.pluginReg != nil {
+		if err := plugins.MountRoutes(context.Background(), router, a.Plugins, a.pluginReg,
+			webdav.Auth(authCfg),
+			httpx.Middleware(ocs.Auth(ocs.V1, authCfg)),
+			httpx.Middleware(ocs.Auth(ocs.V2, authCfg)),
+			a.Logger); err != nil {
+			return fmt.Errorf("app: plugin routes: %w", err)
+		}
 	}
 
 	a.Router = router

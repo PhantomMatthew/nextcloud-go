@@ -27,6 +27,9 @@ type HostConfig struct {
 	// Bus backs event_publish and host-to-plugin event delivery. Nil makes
 	// event_publish return ErrUnavailable and disables delivery.
 	Bus *events.Bus
+	// Registry backs route_register/ocs_register persistence. Nil makes them
+	// return ErrUnavailable.
+	Registry *Registry
 }
 
 // Host is a wazero-backed plugin runtime.

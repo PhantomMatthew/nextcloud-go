@@ -598,6 +598,16 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-22** — Phase 4c3 implemented plugin HTTP routes (ADR-0041):
+  §6.3 `route_register`/`ocs_register` are live (lifecycle-hook only,
+  per-plugin `/apps/<id>/` namespace, persisted in `plugin_routes`, upsert
+  semantics, deleted on uninstall) and §7 dispatch mounts persisted records
+  at boot on the app router — plain routes behind the DAV auth chain, OCS
+  endpoints under both `/ocs/v1.php` and `/ocs/v2.php` with JSON-body
+  envelope wrapping. **Spec deviations:** the §7 request map carries
+  `body_bytes` inline (≤ 1 MiB, 413 above) instead of `body_handle`, and
+  `ncgo_response_header_at` lines use the `"Name: Value"` format (host
+  splits on the first `": "`, ignores plugin Content-Length).
 - **2026-09-22** — Phase 4c2 implemented events (ADR-0040): §6
   `event_publish` and the §6/§10 subscription model are live — synchronous
   in-process bus, `events.subscribe` globs gate `ncgo_on_event` delivery

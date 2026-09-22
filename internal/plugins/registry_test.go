@@ -110,3 +110,59 @@ func TestRegistryCRUD(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestRegistryRoutes(t *testing.T) {
+	ctx := context.Background()
+	reg := NewRegistry(testDB(t))
+
+	rec := &RouteRecord{PluginID: "com.example.a", Kind: "route", Method: "GET", Path: "/apps/com.example.a/api", HandlerName: "handleV1"}
+	if err := reg.UpsertRoute(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	recs, err := reg.RoutesForPlugin(ctx, "com.example.a")
+	if err != nil || len(recs) != 1 || recs[0].HandlerName != "handleV1" {
+		t.Fatalf("recs = %+v %v", recs, err)
+	}
+
+	// Same key upserts the handler name.
+	rec.HandlerName = "handleV2"
+	if err := reg.UpsertRoute(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	recs, err = reg.RoutesForPlugin(ctx, "com.example.a")
+	if err != nil || len(recs) != 1 || recs[0].HandlerName != "handleV2" {
+		t.Fatalf("recs = %+v %v", recs, err)
+	}
+
+	// Second kind and second plugin.
+	if err := reg.UpsertRoute(ctx, &RouteRecord{PluginID: "com.example.a", Kind: "ocs", Method: "POST", Path: "/apps/com.example.a/ocs", HandlerName: "handleOCS"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.UpsertRoute(ctx, &RouteRecord{PluginID: "com.example.b", Kind: "route", Method: "GET", Path: "/apps/com.example.b/x", HandlerName: "h"}); err != nil {
+		t.Fatal(err)
+	}
+	recs, err = reg.RoutesForPlugin(ctx, "com.example.a")
+	if err != nil || len(recs) != 2 || recs[0].Kind != "ocs" || recs[1].Kind != "route" {
+		t.Fatalf("recs = %+v %v", recs, err)
+	}
+	all, err := reg.AllRoutes(ctx)
+	if err != nil || len(all) != 3 || all[0].PluginID != "com.example.a" || all[2].PluginID != "com.example.b" {
+		t.Fatalf("all = %+v %v", all, err)
+	}
+
+	// Delete is scoped to one plugin and tolerates none.
+	if err := reg.DeleteRoutesForPlugin(ctx, "com.example.a"); err != nil {
+		t.Fatal(err)
+	}
+	recs, err = reg.RoutesForPlugin(ctx, "com.example.a")
+	if err != nil || len(recs) != 0 {
+		t.Fatalf("recs = %+v %v", recs, err)
+	}
+	all, err = reg.AllRoutes(ctx)
+	if err != nil || len(all) != 1 {
+		t.Fatalf("all = %+v %v", all, err)
+	}
+	if err := reg.DeleteRoutesForPlugin(ctx, "com.example.missing"); err != nil {
+		t.Fatal(err)
+	}
+}

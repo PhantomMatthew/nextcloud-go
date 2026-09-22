@@ -189,6 +189,17 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4c3: plugin HTTP route + OCS endpoint registration
+  and dispatch — `route_register`/`ocs_register` implemented (hook-only,
+  capability + `/apps/<plugin_id>/` namespace enforcement, method/handler
+  validation), routes persisted in the new `plugin_routes` table (migration
+  0016, upsert, deleted on uninstall), boot-time mounting via
+  `plugins.MountRoutes` (plain routes with DAV auth, OCS under
+  `/ocs/v1.php`+`/ocs/v2.php` with `ocs.Auth`), and request dispatch through
+  the `ncgo_on_request`/`ncgo_response_*` export family with streaming
+  bodies and OCS envelope wrapping. Request bodies travel inline as
+  msgpack `body_bytes` (≤ 1 MiB) instead of spec §7 `body_handle` (see
+  ADR-0041).
 - **2026-09-22** — Phase 4c2: in-process event bus (`internal/events`,
   synchronous fan-out with re-entrant snapshot semantics) and plugin event
   delivery — `event_publish` implemented with `events.publish` glob +

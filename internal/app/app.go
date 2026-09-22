@@ -47,6 +47,8 @@ type App struct {
 	PluginHost *plugins.Host
 	Plugins    []*plugins.Plugin
 
+	pluginReg *plugins.Registry
+
 	hasher        auth.PasswordHasher
 	authStore     auth.Store
 	loginStore    login.Store
@@ -217,12 +219,15 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	}
 	a.jobs = jr
 	if cfg.Plugin.Enabled {
+		reg := plugins.NewRegistry(a.DB)
+		a.pluginReg = reg
 		ph, err := plugins.NewHost(ctx, plugins.HostConfig{
 			DefaultMemoryLimitMB: cfg.Plugin.DefaultMemoryLimitMB,
 			DefaultCallTimeout:   time.Duration(cfg.Plugin.DefaultCPUTimeoutMS) * time.Millisecond,
 			Cache:                a.Cache,
 			DB:                   a.DB,
 			Bus:                  bus,
+			Registry:             reg,
 		}, logger)
 		if err != nil {
 			if cerr := a.closeResources(ctx); cerr != nil {
@@ -231,7 +236,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 			return nil, err
 		}
 		a.PluginHost = ph
-		a.Plugins = plugins.StartEnabled(ctx, ph, plugins.NewRegistry(a.DB), logger)
+		a.Plugins = plugins.StartEnabled(ctx, ph, reg, logger)
 	}
 	a.secret = cfg.Instance.Secret
 	if a.secret == "" {

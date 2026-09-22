@@ -135,16 +135,6 @@ func TestRouteRegisterDenied(t *testing.T) {
 	}
 }
 
-func TestRouteRegisterGrantedUnsupported(t *testing.T) {
-	h, buf := testHost(t, HostConfig{})
-	m := probeManifest()
-	m.Capabilities = Capabilities{Routes: RoutesCapabilities{Register: []string{"/apps/tagger/*"}}}
-	installModule(t, h, m, wasmgen.RouteProbeModule("/apps/tagger/api", ErrCodeUnsupported))
-	if !strings.Contains(buf.String(), "probe-ok") {
-		t.Fatalf("log %q", buf.String())
-	}
-}
-
 func TestCallTimeout(t *testing.T) {
 	h, _ := testHost(t, HostConfig{DefaultCallTimeout: 50 * time.Millisecond})
 	ctx := context.Background()

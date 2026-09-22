@@ -174,6 +174,59 @@ func TestUninstall(t *testing.T) {
 	}
 }
 
+func TestUninstallDeletesRoutes(t *testing.T) {
+	pub, priv, err := GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	reg := NewRegistry(testDB(t))
+	h, err := NewHost(ctx, HostConfig{Registry: reg}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close(context.Background()) })
+	in := &Installer{
+		Host:        h,
+		Registry:    reg,
+		InstallDir:  t.TempDir(),
+		TrustedKeys: []ed25519.PublicKey{pub},
+		Logger:      slog.New(slog.DiscardHandler),
+	}
+	caps := `
+[capabilities]
+routes.register = ["/apps/com.example.inst/*"]
+`
+	members := map[string][]byte{
+		"plugin.toml": installManifest("1.0.0", caps),
+		"hello.wasm": wasmgen.RouteRegModule(false, true,
+			[]wasmgen.RouteReg{{Method: "GET", Path: "/apps/com.example.inst/api", Handler: "handleApi"}}, ErrCodeOK),
+	}
+	sig, err := SignMembers(members, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	members[SignatureFile] = sig
+	raw, err := WriteArchive(members)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := in.Install(ctx, raw, InstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	recs, err := reg.RoutesForPlugin(ctx, "com.example.inst")
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("recs = %+v %v", recs, err)
+	}
+	if err := in.Uninstall(ctx, "com.example.inst"); err != nil {
+		t.Fatal(err)
+	}
+	recs, err = reg.RoutesForPlugin(ctx, "com.example.inst")
+	if err != nil || len(recs) != 0 {
+		t.Fatalf("routes survive uninstall: %+v %v", recs, err)
+	}
+}
+
 func TestLoadTrustedKeys(t *testing.T) {
 	dir := t.TempDir()
 	pub, _, err := GenerateKey()

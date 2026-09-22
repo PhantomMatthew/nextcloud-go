@@ -9,10 +9,9 @@ import (
 )
 
 // This file holds the host functions whose backing subsystems are not yet
-// implemented (storage proxying, outbound HTTP, job wiring, route mounting,
-// plugin config store). Each validates the relevant capability so the
-// default-deny posture is exercised now, then returns ErrUnsupported until
-// its increment lands.
+// implemented (storage proxying, outbound HTTP, job wiring, plugin config
+// store). Each validates the relevant capability so the default-deny posture
+// is exercised now, then returns ErrUnsupported until its increment lands.
 
 func (h *Host) configGet(ctx context.Context, _ api.Module, _, _, _, _ int32) int32 {
 	return unsupportedGranted(pluginCaps(ctx).hasConfigRead())
@@ -81,22 +80,6 @@ func (h *Host) httpResponseClose(ctx context.Context, _ api.Module, _ int32) int
 
 func (h *Host) jobEnqueue(ctx context.Context, _ api.Module, _, _, _, _ int32, _ int64) int32 {
 	return unsupportedGranted(pluginCaps(ctx).canRegisterJobs())
-}
-
-func (h *Host) routeRegister(ctx context.Context, mod api.Module, _, _, pathPtr, pathLen, _, _ int32) int32 {
-	routePath, code := readString(mod, pathPtr, pathLen)
-	if code != pluginsdk.ErrCodeOK {
-		return code
-	}
-	return unsupportedGranted(pluginCaps(ctx).canRegisterRoute(routePath))
-}
-
-func (h *Host) ocsRegister(ctx context.Context, mod api.Module, _, _, pathPtr, pathLen, _, _ int32) int32 {
-	routePath, code := readString(mod, pathPtr, pathLen)
-	if code != pluginsdk.ErrCodeOK {
-		return code
-	}
-	return unsupportedGranted(pluginCaps(ctx).canRegisterOCS(routePath))
 }
 
 func (h *Host) webdavRegisterProp(ctx context.Context, mod api.Module, namePtr, nameLen, _, _, _, _ int32) int32 {
