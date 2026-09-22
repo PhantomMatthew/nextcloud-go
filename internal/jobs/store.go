@@ -29,6 +29,7 @@ type Store interface {
 	ClaimDue(ctx context.Context, now time.Time, limit int) ([]Row, error)
 	Complete(ctx context.Context, id int64) error
 	Fail(ctx context.Context, id int64, errText string, retryAt time.Time) error
+	DeleteByName(ctx context.Context, name string) error
 }
 
 // SQLStore is a Store backed by database.DB.
@@ -136,6 +137,16 @@ UPDATE jobs SET started_at = NULL, last_error = ?, attempts = attempts + 1, run_
 WHERE id = ?`, errText, retryAt.UTC().UnixMilli(), id)
 	if err != nil {
 		return fmt.Errorf("jobs: fail: %w", err)
+	}
+	return nil
+}
+
+// DeleteByName removes every row for a job name, pending or finished; a
+// name without rows is not an error. Plugin uninstall uses it to drop the
+// plugin.<id> rows a removed plugin left behind.
+func (s *SQLStore) DeleteByName(ctx context.Context, name string) error {
+	if _, err := s.db.Exec(ctx, `DELETE FROM jobs WHERE name = ?`, name); err != nil {
+		return fmt.Errorf("jobs: delete by name: %w", err)
 	}
 	return nil
 }

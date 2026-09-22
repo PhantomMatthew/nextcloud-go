@@ -34,10 +34,9 @@ imports, so plain `GOOS=wasip1 go build` does not work):
 make example-plugins        # or: tinygo build -o examples/file-tagger/file-tagger.wasm -target=wasm-unknown -no-debug ./examples/file-tagger
 ```
 
-Check, pack, sign, install, enable:
+Pack, sign, install, enable:
 
 ```bash
-go run ./cmd/ncgo-cli plugin check examples/file-tagger
 go run ./cmd/ncgo-cli plugin keygen -o /tmp/tagger
 go run ./cmd/ncgo-cli plugin pack examples/file-tagger -o /tmp/file-tagger.ncplugin
 go run ./cmd/ncgo-cli plugin sign /tmp/file-tagger.ncplugin --key /tmp/tagger.key
@@ -46,8 +45,13 @@ go run ./cmd/ncgo-cli plugin install /tmp/file-tagger.ncplugin
 go run ./cmd/ncgo-cli plugin enable com.example.file-tagger
 ```
 
-(`--force-unsigned` on install skips the signing steps for local
-experimentation.)
+(`plugin check` is deliberately absent: it smoke-tests compilation and ABI
+shape on an empty host — no database, registry, or storage — so hooks that
+call host services, like this plugin's `db_exec` DDL, fail there.
+`plugin install` runs the hooks with the full install-time host: DB, route/
+OCS/WebDAV-prop registry, app config, jobs, event bus, and system storage,
+so `on_install` works exactly as on the server. `--force-unsigned` on
+install skips the signing steps for local experimentation.)
 
 ## Watch it work
 
@@ -73,5 +77,6 @@ need quoting on PostgreSQL.
 - The guest imports `github.com/vmihailenco/msgpack/v5` (already a host
   dependency). Its TinyGo/`wasm-unknown` compatibility is assumed but
   unverified in this environment — TinyGo is not installed here, so the
-  committed sources are validated via the `!tinygo` stub build, `go vet`,
-  and `ncgo-cli plugin check` only.
+  committed sources are validated via the `!tinygo` stub build and
+  `go vet` only (`ncgo-cli plugin check` cannot exercise this plugin's
+  DB-touching `on_install`; see above).

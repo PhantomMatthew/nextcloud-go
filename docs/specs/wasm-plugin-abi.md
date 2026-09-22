@@ -386,7 +386,7 @@ ABI. wazero is configured with no WASI module attached.
 
 **Trap handling**: Any trap (memory OOB, division by zero, fuel exhaustion, timeout)
 → instance destroyed, error logged with plugin ID + stack trace, request fails with
-HTTP 500 (or job marked failed).
+HTTP 502 (or job marked failed).
 
 ## 9. Versioning & Compatibility
 
@@ -598,6 +598,53 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-22** — Phase 4j closed three lifecycle gaps (ADR-0056).
+  **(G1) The CLI install-time host is now the full host.** `ncgo-cli plugin
+  install`/`uninstall` construct the plugin host with every subsystem the
+  server wires in `app.New` — DB, route/OCS/WebDAV-prop registry,
+  appconfig store, jobs runner, event bus, files DAV, and system storage
+  under `appdata_<instance.id>/plugins` (with the server's ephemeral
+  `"oc"+hex` fallback when `instance.id` is unset) — so lifecycle hooks can
+  use every granted capability instead of failing with -12. Cache is
+  deliberately absent (the CLI is a management surface and cache is runtime
+  state: `cache_*` in hooks gets -12); metrics stay off. `plugin check`
+  keeps its empty host (compile/ABI smoke test only; documented in
+  `examples/file-tagger`). The CLI's jobs runner is constructed but never
+  started — hook-enqueued rows wait for the next server boot — and
+  install/upgrade now register the plugin's `plugin.<id>` job adapter
+  before the hook runs, so `job_enqueue` works at install time (previously
+  it failed with `ErrUnknownJob` until the next boot's adapter
+  registration). pluginsdk gains the missing RouteRegister/OCSRegister
+  bindings. **(G2) Upgrades run `ncgo_on_upgrade`.** Upgrade ordering is
+  *clear-then-hook*: after the signature/capability gates and BEFORE the
+  new archive is stored, the installer deletes the old version's
+  `plugin_routes`/`plugin_webdav_props` rows (upsert-only registrations no
+  longer linger from versions that stopped declaring them), starts the
+  plugin, and invokes §7's `ncgo_on_upgrade(from_version_ptr,
+  from_version_len)` as a lifecycle hook (DDL and hook-only registrations
+  permitted, exactly like `on_install`); a failing hook leaves the old
+  archive installed. Plugins without an `on_upgrade` entry point fall back
+  to `on_install`, so route-registering plugins keep working. Fresh
+  installs are unchanged (`on_install` only). **(G3) Uninstall cleans up.**
+  Uninstall now also deletes the plugin's `plugin.<id>` jobs rows
+  (`jobs.Store.DeleteByName`), its `("plugin", <id>.*)` appconfig rows
+  (`appconfig.Store.DeleteByPrefix` with LIKE wildcards escaped via
+  `ESCAPE '!'`), and its `<SystemPrefix>/<id>/` system-storage tree
+  (bounded recursive walk over List/Delete: depth ≤ 64, ≤ 100k entries,
+  missing root tolerated). Runner safety net: rows whose job name no
+  runner knows are failed-and-rescheduled at most
+  `maxUnknownJobAttempts` (3) times, then completed with a warn log —
+  ending the infinite retry loop for leftovers from before this cleanup
+  existed. **Newly confirmed deviations (from review):**
+  `runtime.fuel_per_call` is parsed but unenforced (wazero v1 has no
+  fuel-metering API; CPU budget remains wall-clock timeout only);
+  per-plugin `runtime.memory_limit_mb` is validated but not applied (memory
+  is capped host-wide via `DefaultMemoryLimitMB`); §8 trap-during-request
+  returns **502**, not 500 (deliberate — 502 marks plugin failure vs core
+  failure; §8 text corrected); the §13 private-IP egress check remains
+  pending (follow-up). **Remaining limitation:** cache keys under
+  `plugin:<id>:` are NOT removed on uninstall (`cache.Cache` has no prefix
+  delete) — follow-up.
 - **2026-09-22** — Phase 4i implemented §12 Prometheus metrics (ADR-0055):
   `ncgo_plugin_host_calls_total{plugin,function,result}` and
   `ncgo_plugin_host_call_duration_seconds{plugin,function}` are emitted for

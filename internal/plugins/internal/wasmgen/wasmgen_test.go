@@ -37,6 +37,7 @@ func TestModulesCompile(t *testing.T) {
 		{"db-denied", DBDeniedModule("SELECT id FROM users", -3)},
 		{"db-tx", DBTxModule("INSERT INTO pt_items (path) VALUES ('tx-item')", "SELECT path FROM pt_items")},
 		{"route-reg", RouteRegModule(false, true, []RouteReg{{Method: "GET", Path: "/apps/x/y", Handler: "h"}}, 0)},
+		{"upgrade", UpgradeModule("/apps/x/a", "/apps/x/b", "x:a")},
 		{"route-reg-ocs-nohook", RouteRegModule(true, false, []RouteReg{{Method: "POST", Path: "/apps/x/z", Handler: "h2"}}, -3)},
 		{"route", RouteModule(200, []string{"X-A: b"}, "body")},
 		{"route-body-fail", RouteBodyFailModule(200, "b", -5)},

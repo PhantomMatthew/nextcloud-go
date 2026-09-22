@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -11,6 +12,12 @@ const (
 	JobSharesExpire = "shares.expire"
 	JobLocksExpire  = "locks.expire"
 )
+
+// maxUnknownJobAttempts bounds how many times a row whose name no runner
+// job knows (e.g. a plugin's leftover plugin.<id> rows after uninstall) is
+// failed and rescheduled before the runner drops it as undeliverable.
+// Without the cap such rows were retried on every poll forever.
+const maxUnknownJobAttempts = 3
 
 // SQLRunner is a single-node Runner over Store.
 type SQLRunner struct {
@@ -24,6 +31,11 @@ type SQLRunner struct {
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 	started  bool
+
+	// Logger, when set, receives the warn emitted when an undeliverable
+	// (unknown-name) row is dropped after maxUnknownJobAttempts. Nil means
+	// the drop is silent.
+	Logger *slog.Logger
 }
 
 // NewRunner returns a SQLRunner.
@@ -189,6 +201,16 @@ func (r *SQLRunner) runOne(ctx context.Context, row Row) {
 	_, periodic := r.periodic[row.Name]
 	r.mu.Unlock()
 	if job == nil {
+		if row.Attempts >= maxUnknownJobAttempts {
+			if r.Logger != nil {
+				r.Logger.WarnContext(ctx, "jobs: dropping undeliverable row",
+					slog.String("job", row.Name), slog.Int64("id", row.ID), slog.Int("attempts", row.Attempts))
+			}
+			if err := r.store.Complete(ctx, row.ID); err != nil {
+				return
+			}
+			return
+		}
 		if err := r.store.Fail(ctx, row.ID, ErrUnknownJob.Error(), r.now().Add(r.poll)); err != nil {
 			return
 		}

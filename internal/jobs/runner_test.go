@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -72,5 +73,46 @@ func TestRunnerPeriodicExpireNames(t *testing.T) {
 	}
 	if n.Load() < 1 {
 		t.Fatal("periodic job never ran")
+	}
+}
+
+// TestRunnerUnknownJobDropped covers the leftover-rows safety net: a row
+// whose name no registered job knows (e.g. a plugin's plugin.<id> rows that
+// survived an uninstall from before cleanup existed) is failed and
+// rescheduled at most maxUnknownJobAttempts times, then completed (dropped)
+// instead of retried on every poll forever.
+func TestRunnerUnknownJobDropped(t *testing.T) {
+	ctx := t.Context()
+	db := testDB(t)
+	store := NewSQLStore(db)
+	const name = "plugin.com.example.gone"
+	now := time.Now().UTC()
+	if err := store.Insert(ctx, &Row{Name: name, RunAt: now.UnixMilli(), CreatedAt: now.UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRunner(store, time.Now, 1, 15*time.Millisecond)
+	if err := r.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Stop(ctx) })
+
+	var attempts int
+	var completed sql.NullInt64
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		row := db.QueryRow(ctx, `SELECT attempts, completed_at FROM jobs WHERE name = ?`, name)
+		if err := row.Scan(&attempts, &completed); err != nil {
+			t.Fatal(err)
+		}
+		if completed.Valid {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !completed.Valid {
+		t.Fatalf("unknown row never dropped (attempts = %d)", attempts)
+	}
+	if attempts != maxUnknownJobAttempts {
+		t.Fatalf("attempts = %d, want %d", attempts, maxUnknownJobAttempts)
 	}
 }

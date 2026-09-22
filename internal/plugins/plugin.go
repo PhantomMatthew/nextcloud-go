@@ -3,6 +3,7 @@ package plugins
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/tetratelabs/wazero"
@@ -97,7 +98,7 @@ func (p *Plugin) Start(ctx context.Context) error {
 
 // Install starts the plugin and runs on_install if set.
 func (p *Plugin) Install(ctx context.Context) error {
-	if err := p.Start(ctx); err != nil {
+	if err := p.startForHook(ctx); err != nil {
 		return err
 	}
 	on := p.manifest.EntryPoints.OnInstall
@@ -105,6 +106,40 @@ func (p *Plugin) Install(ctx context.Context) error {
 		return nil
 	}
 	return p.callEntry(ctx, on, true)
+}
+
+// Upgrade starts the plugin and runs its upgrade hook: on_upgrade with the
+// previous version string when the manifest declares it, else on_install so
+// plugins without an upgrade hook re-run their setup (route/prop
+// registrations re-register after the installer cleared them).
+func (p *Plugin) Upgrade(ctx context.Context, fromVersion string) error {
+	if err := p.startForHook(ctx); err != nil {
+		return err
+	}
+	if on := p.manifest.EntryPoints.OnUpgrade; on != "" {
+		return p.invokeHookEntry(ctx, on, []byte(fromVersion))
+	}
+	on := p.manifest.EntryPoints.OnInstall
+	if on == "" {
+		return nil
+	}
+	return p.callEntry(ctx, on, true)
+}
+
+// startForHook starts the plugin and registers its job adapter so lifecycle
+// hooks can enqueue jobs (otherwise job_enqueue fails with ErrUnknownJob
+// until the next server boot registers the adapter). Registration failures
+// are logged and tolerated, mirroring startOne.
+func (p *Plugin) startForHook(ctx context.Context) error {
+	if err := p.Start(ctx); err != nil {
+		return err
+	}
+	if err := p.host.registerPluginJob(p); err != nil && p.host.logger != nil {
+		p.host.logger.WarnContext(ctx, "plugins: job registration failed",
+			slog.String("plugin.id", p.manifest.Plugin.ID),
+			slog.String("error", err.Error()))
+	}
+	return nil
 }
 
 // Uninstall runs on_uninstall if set and releases all instances.

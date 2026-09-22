@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
 )
@@ -62,6 +63,26 @@ ON CONFLICT (appid, configkey) DO UPDATE SET
 func (s *Store) Delete(ctx context.Context, appid, key string) error {
 	if _, err := s.db.Exec(ctx, `DELETE FROM appconfig WHERE appid = ? AND configkey = ?`, appid, key); err != nil {
 		return fmt.Errorf("appconfig: delete: %w", err)
+	}
+	return nil
+}
+
+// likeEscape escapes LIKE wildcard characters so the prefix is matched
+// literally. '!' is the escape character (declared via ESCAPE '!') because
+// it needs no quoting dance in any supported dialect's string literals.
+func likeEscape(s string) string {
+	return strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(s)
+}
+
+// DeleteByPrefix removes every row under appid whose key starts with
+// keyPrefix; LIKE wildcards in the prefix are escaped, so it always matches
+// literally. No matching rows is not an error. Plugin uninstall uses it to
+// drop the plugin's "<id>.*" config keys.
+func (s *Store) DeleteByPrefix(ctx context.Context, appid, keyPrefix string) error {
+	if _, err := s.db.Exec(ctx,
+		`DELETE FROM appconfig WHERE appid = ? AND configkey LIKE ? ESCAPE '!'`,
+		appid, likeEscape(keyPrefix)+"%"); err != nil {
+		return fmt.Errorf("appconfig: delete by prefix: %w", err)
 	}
 	return nil
 }

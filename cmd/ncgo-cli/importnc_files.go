@@ -14,9 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/PhantomMatthew/nextcloud-go/internal/database"
 	"github.com/PhantomMatthew/nextcloud-go/internal/files"
-	"github.com/PhantomMatthew/nextcloud-go/internal/storage"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
 )
@@ -88,7 +86,7 @@ func newImportNCFiles(f *importNCFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			dav := importFilesDAV(st, db)
+			dav := filesDAV(st, db)
 			r := newImportReport()
 			if err := importNCFiles(ctx, ff.datadir, dav, dav.Users, ff.users, f.dryRun, ff.verbose, r, cmd.OutOrStdout()); err != nil {
 				return err
@@ -100,20 +98,6 @@ func newImportNCFiles(f *importNCFlags) *cobra.Command {
 	cmd.Flags().StringArrayVar(&ff.users, "user", nil, "import only this user (repeatable; default: all users found under --datadir)")
 	cmd.Flags().BoolVar(&ff.verbose, "verbose", false, "print one line per imported file")
 	return cmd
-}
-
-// importFilesDAV wires the files DAV the same way production does in
-// app.New (storage, filecache, props, locks, trash, versions) so imported
-// files pass through the same invariants; shares/incoming/remote/events are
-// irrelevant to writes and stay nil (the DAV nil-guards them).
-func importFilesDAV(st storage.Storage, db database.DB) *files.DAV {
-	us := users.NewSQLStore(db)
-	dav := files.NewDAV(st, files.NewSQLStore(db), us)
-	dav.Props = files.NewSQLPropertyStore(db)
-	dav.Locks = files.NewSQLLockStore(db)
-	dav.Trash = files.NewTrash(st, files.NewSQLTrashStore(db), dav, us)
-	dav.Versions = files.NewVersions(st, files.NewSQLVersionStore(db), dav, us)
-	return dav
 }
 
 // importNCFiles walks <datadir>/<uid>/files per selected user and ingests

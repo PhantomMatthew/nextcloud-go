@@ -83,7 +83,18 @@ func (p *Plugin) deliverEvent(ctx context.Context, topic string, payload []byte)
 // (alloc/write/call/free). A trap anywhere destroys the instance via
 // release(true); a non-zero i32 result comes back as a *PluginError.
 func (p *Plugin) invokeEntry(ctx context.Context, entry string, args ...[]byte) error {
-	callCtx, cancel := context.WithTimeout(withCall(ctx, p, false), p.callTimeout())
+	return p.invokeEntryMode(ctx, entry, false, args...)
+}
+
+// invokeHookEntry is invokeEntry in lifecycle-hook context: on_upgrade runs
+// with inHook set so DDL and hook-only registrations are permitted, exactly
+// like on_install.
+func (p *Plugin) invokeHookEntry(ctx context.Context, entry string, args ...[]byte) error {
+	return p.invokeEntryMode(ctx, entry, true, args...)
+}
+
+func (p *Plugin) invokeEntryMode(ctx context.Context, entry string, inHook bool, args ...[]byte) error {
+	callCtx, cancel := context.WithTimeout(withCall(ctx, p, inHook), p.callTimeout())
 	defer cancel()
 
 	inst, release, err := p.manager.acquire(callCtx)

@@ -191,6 +191,32 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4j: plugin lifecycle gap fixes (ADR-0056), from a
+  strict review of the Phase 4 stack. (G1) `ncgo-cli plugin install` no
+  longer uses an empty host: the CLI now builds the full install-time
+  plugin host (DB, route/OCS/WebDAV-prop registry, appconfig, jobs runner,
+  event bus, files DAV via a helper shared with `import-nextcloud files`,
+  system storage under `appdata_<instance.id>/plugins`), so the shipped
+  file-tagger example — and any hook using db/config/jobs/storage/routes —
+  actually installs; cache stays nil deliberately (management surface,
+  runtime state) and `plugin check` keeps its empty-host smoke-test role.
+  pluginsdk gained the missing RouteRegister/OCSRegister bindings, and
+  install/upgrade register the `plugin.<id>` job adapter before hooks run
+  so hook-time `job_enqueue` works. (G2) `ncgo_on_upgrade` is no longer
+  dead: upgrades follow clear-then-hook ordering (delete the old version's
+  route/prop rows, then invoke on_upgrade with the from-version string as a
+  lifecycle hook, before storing the new archive), with an on_install
+  fallback for plugins without an upgrade hook. (G3) uninstall now removes
+  the plugin's jobs rows, `<id>.*` appconfig rows, and system-storage tree
+  (bounded recursive delete), and the jobs runner drops unknown-name rows
+  after 3 failed attempts instead of rescheduling them forever — plus a
+  one-line `app.Close` fix that no longer discards earlier close errors
+  when the plugin host closes. Newly confirmed spec deviations recorded in
+  the spec Change Log: `fuel_per_call` parsed-but-unenforced, per-plugin
+  `memory_limit_mb` not applied, trap-during-request is 502 (spec text
+  corrected), §13 private-IP egress check still pending; cache-key cleanup
+  on uninstall remains a documented follow-up (cache.Cache has no prefix
+  delete).
 - **2026-09-22** — Phase 4i: Prometheus metrics for the plugin system
   (ADR-0055), completing the Phase 4 feature set. A minimal stdlib-only
   Prometheus text-exposition registry (`internal/observability.Registry`,

@@ -129,7 +129,7 @@ func openTargetDAV(t *testing.T, cfgPath string) *files.DAV {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return importFilesDAV(st, db)
+	return filesDAV(st, db)
 }
 
 func countRows(t *testing.T, cfgPath, table string) int {

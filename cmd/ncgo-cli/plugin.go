@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"errors"
@@ -11,12 +12,17 @@ import (
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/PhantomMatthew/nextcloud-go/internal/appconfig"
 	"github.com/PhantomMatthew/nextcloud-go/internal/config"
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
+	"github.com/PhantomMatthew/nextcloud-go/internal/events"
+	"github.com/PhantomMatthew/nextcloud-go/internal/jobs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/plugins"
+	"github.com/PhantomMatthew/nextcloud-go/internal/storage"
 )
 
 func newPlugin() *cobra.Command {
@@ -277,22 +283,51 @@ func newPluginVerify() *cobra.Command {
 	return cmd
 }
 
-// pluginInstaller wires config, DB, host, and trusted keys for install-time
-// commands.
+// installHostConfig assembles the full install-time plugin host
+// configuration: every subsystem the server wires in app.New, so lifecycle
+// hooks (on_install/on_upgrade/on_uninstall) can use every capability —
+// route/OCS/WebDAV-prop registration, db_*, config_*, job_enqueue,
+// storage_*, event_publish. Cache is deliberately nil: the CLI is a
+// management surface and cache is runtime state, so cache_* hooks get -12
+// (ADR-0056). Metrics stays nil (no listener in the CLI). The jobs runner
+// is constructed but never started — Enqueue only inserts rows, which the
+// server picks up on next boot.
+func installHostConfig(cfg *config.Config, db database.DB, st storage.Storage) plugins.HostConfig {
+	return plugins.HostConfig{
+		DB:            db,
+		Bus:           events.NewBus(slog.New(slog.DiscardHandler)),
+		Registry:      plugins.NewRegistry(db),
+		Files:         filesDAV(st, db),
+		SystemStorage: st,
+		SystemPrefix:  "appdata_" + cliInstanceID(cfg) + "/plugins",
+		AppConfig:     appconfig.NewStore(db),
+		Jobs:          jobs.NewRunner(jobs.NewSQLStore(db), nil, 1, time.Minute),
+	}
+}
+
+// newInstallHost builds the install-time plugin host from installHostConfig.
+func newInstallHost(ctx context.Context, cfg *config.Config, db database.DB, st storage.Storage) (*plugins.Host, error) {
+	return plugins.NewHost(ctx, installHostConfig(cfg, db, st), slog.New(slog.DiscardHandler))
+}
+
+// pluginInstaller wires config, DB, storage, host, and trusted keys for
+// install-time commands.
 func pluginInstaller(cmd *cobra.Command) (*plugins.Installer, func(), error) {
 	cfg, err := config.Load(config.LoadOptions{Path: cfgPath})
 	if err != nil {
 		return nil, nil, err
 	}
 	ctx := cmd.Context()
-	db, err := database.Open(ctx, database.Config{
-		Driver: database.Dialect(cfg.Database.Driver),
-		DSN:    cfg.Database.DSN,
-	})
+	db, err := openDB(ctx, cfg)
 	if err != nil {
 		return nil, nil, err
 	}
-	h, err := plugins.NewHost(ctx, plugins.HostConfig{}, slog.New(slog.DiscardHandler))
+	st, err := openStorage(cfg)
+	if err != nil {
+		_ = db.Close()
+		return nil, nil, err
+	}
+	h, err := newInstallHost(ctx, cfg, db, st)
 	if err != nil {
 		_ = db.Close()
 		return nil, nil, err
@@ -304,11 +339,15 @@ func pluginInstaller(cmd *cobra.Command) (*plugins.Installer, func(), error) {
 		return nil, nil, err
 	}
 	in := &plugins.Installer{
-		Host:        h,
-		Registry:    plugins.NewRegistry(db),
-		InstallDir:  cfg.Plugin.InstallDir,
-		TrustedKeys: keys,
-		Logger:      slog.New(slog.DiscardHandler),
+		Host:          h,
+		Registry:      plugins.NewRegistry(db),
+		InstallDir:    cfg.Plugin.InstallDir,
+		TrustedKeys:   keys,
+		Logger:        slog.New(slog.DiscardHandler),
+		JobStore:      jobs.NewSQLStore(db),
+		AppConfig:     appconfig.NewStore(db),
+		SystemStorage: st,
+		SystemPrefix:  "appdata_" + cliInstanceID(cfg) + "/plugins",
 	}
 	cleanup := func() {
 		_ = h.Close(ctx)

@@ -915,6 +915,72 @@ type RouteReg struct {
 	Handler string
 }
 
+// UpgradeModule builds a lifecycle probe exercising the upgrade path:
+// ncgo_on_install registers routeA (GET, handler "h") and the read-only
+// WebDAV prop propName (getter "getA"), logging "install-ok" when both
+// succeed; ncgo_on_upgrade registers routeB and, when that succeeds, logs
+// "upgrade <from-version>" so tests can assert the from-version string the
+// host passed in.
+func UpgradeModule(routeA, routeB, propName string) []byte {
+	const upgradePrefix = "upgrade "
+	s := guestSpec{
+		imports: []imp{{"log", tLog}, {"route_register", tSixI32}, {"webdav_register_prop", tSixI32}},
+		data: [][]byte{
+			[]byte("install-ok"), []byte(upgradePrefix), []byte("GET"), []byte("h"),
+			[]byte(routeA), []byte(routeB), []byte(propName), []byte("getA"),
+		},
+	}
+	offs := s.dataOffsets()
+	allocIdx := uint32(len(s.imports)) + 1 //nolint:gosec // G115: test modules have few imports
+
+	// regCall emits route_register("GET", route, "h"); the result stays on
+	// the stack.
+	regCall := func(routeOff, routeLen int32) []byte {
+		e := i32c(offs[2])
+		e = append(e, i32c(3)...)
+		e = append(e, i32c(routeOff)...)
+		e = append(e, i32c(routeLen)...)
+		e = append(e, i32c(offs[3])...)
+		e = append(e, i32c(1)...)
+		return append(e, opCall, 0x01)
+	}
+
+	install := regCall(offs[4], i32n(len(routeA)))
+	install = append(install, opI32Eqz, opIf, blockVoid)
+	install = append(install, i32c(offs[6])...)
+	install = append(install, i32c(i32n(len(propName)))...)
+	install = append(install, i32c(offs[7])...)
+	install = append(install, i32c(4)...)
+	install = append(install, i32c(0)...) // setter ""
+	install = append(install, i32c(0)...)
+	install = append(install, opCall, 0x02, opI32Eqz, opIf, blockVoid) // webdav_register_prop
+	install = append(install, logCall(offs[0], i32n(len("install-ok")))...)
+	install = append(install, opDrop)
+	install = append(install, opEnd)
+	install = append(install, opEnd)
+	install = append(install, i32c(0)...)
+	s.onInstall = install
+
+	// params: 0=fromPtr 1=fromLen; locals: 2=dst 3=i 4=total
+	upgrade := regCall(offs[5], i32n(len(routeB)))
+	upgrade = append(upgrade, opI32Eqz, opIf, blockVoid)
+	upgrade = append(upgrade, i32c(int32(len(upgradePrefix)))...)
+	upgrade = append(upgrade, opLocalGet, 0x01, opI32Add, opLocalSet, 0x04)
+	upgrade = append(upgrade, opLocalGet, 0x04, opCall)
+	upgrade = append(upgrade, u32(allocIdx)...)
+	upgrade = append(upgrade, opLocalSet, 0x02) // dst = alloc(total)
+	upgrade = append(upgrade, memcpy([]byte{opLocalGet, 0x02}, i32c(offs[1]), i32c(int32(len(upgradePrefix))), 3)...)
+	dst := append([]byte{opLocalGet, 0x02}, i32c(int32(len(upgradePrefix)))...)
+	dst = append(dst, opI32Add)
+	upgrade = append(upgrade, memcpy(dst, []byte{opLocalGet, 0x00}, []byte{opLocalGet, 0x01}, 3)...)
+	upgrade = append(upgrade, i32c(1)...)
+	upgrade = append(upgrade, opLocalGet, 0x02, opLocalGet, 0x04, opCall, 0x00, opDrop) // log "upgrade <from>"
+	upgrade = append(upgrade, opEnd)
+	upgrade = append(upgrade, i32c(0)...)
+	s.extras = append(s.extras, extraFn{name: "ncgo_on_upgrade", typ: tOutMax, locals: 3, expr: upgrade})
+	return s.build()
+}
+
 // RouteRegModule calls route_register (or ocs_register when ocs is true) for
 // each reg and logs "probe-ok" once per call that returns want. With hook
 // true the calls run in on_install (lifecycle-hook context); with hook false

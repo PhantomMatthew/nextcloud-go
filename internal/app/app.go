@@ -196,6 +196,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	dav.Versions = ver
 	a.versionsFS = ver
 	jr := jobs.NewRunner(jobs.NewSQLStore(db), time.Now, cfg.Jobs.Workers, cfg.Jobs.PollInterval)
+	jr.Logger = logger
 	if err := jr.Register(sharing.NewExpireJob(dav.Shares, dav.Clock)); err != nil {
 		if cerr := a.closeResources(ctx); cerr != nil {
 			return nil, errors.Join(err, cerr)
@@ -342,7 +343,7 @@ func (a *App) closeResources(ctx context.Context) error {
 	}
 	a.Plugins = nil
 	if a.PluginHost != nil {
-		err = a.PluginHost.Close(ctx)
+		err = joinErr(err, a.PluginHost.Close(ctx))
 		a.PluginHost = nil
 	}
 	if a.redisCache != nil {

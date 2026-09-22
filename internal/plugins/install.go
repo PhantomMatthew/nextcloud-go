@@ -11,6 +11,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/PhantomMatthew/nextcloud-go/internal/appconfig"
+	"github.com/PhantomMatthew/nextcloud-go/internal/jobs"
+	"github.com/PhantomMatthew/nextcloud-go/internal/storage"
 )
 
 // ErrCapsChanged is returned when an upgrade changes the capability set and
@@ -24,6 +28,17 @@ type Installer struct {
 	InstallDir  string
 	TrustedKeys []ed25519.PublicKey
 	Logger      *slog.Logger
+
+	// Uninstall cleanup dependencies. Any nil one skips its cleanup step:
+	// JobStore drops the plugin's queued plugin.<id> job rows, AppConfig
+	// drops the plugin's "<id>.*" config rows, and SystemStorage +
+	// SystemPrefix remove the plugin's system-storage tree
+	// (<SystemPrefix>/<id>). Cache keys are NOT cleaned: cache.Cache has no
+	// prefix delete (documented limitation, ADR-0056).
+	JobStore      jobs.Store
+	AppConfig     *appconfig.Store
+	SystemStorage storage.Storage
+	SystemPrefix  string
 }
 
 // InstallOptions controls install-time policy.
@@ -128,14 +143,39 @@ func (in *Installer) Install(ctx context.Context, raw []byte, opts InstallOption
 
 	id := a.Manifest.Plugin.ID
 	existing, err := in.Registry.Get(ctx, id)
+	upgrade := false
+	fromVersion := ""
 	switch {
 	case err == nil:
 		if !opts.ApproveCaps && capsChanged(existing.Capabilities, &a.Manifest.Capabilities) {
 			return nil, fmt.Errorf("%w: %s", ErrCapsChanged, id)
 		}
+		upgrade = true
+		fromVersion = existing.Version
 	case errors.Is(err, ErrPluginNotFound):
 	default:
 		return nil, err
+	}
+
+	// Upgrade ordering (ADR-0056): after the signature/capability gates and
+	// BEFORE storing the new archive, clear the previous version's persisted
+	// route/prop registrations and run the upgrade hook. Upsert-only
+	// registrations would otherwise linger when the new version no longer
+	// declares them. on_upgrade receives the from-version string; without an
+	// on_upgrade entry point the installer falls back to on_install so
+	// route-registering plugins keep working. A failing hook leaves the old
+	// archive installed (its registrations are re-created on the next
+	// successful install).
+	if upgrade {
+		if err := in.Registry.DeleteRoutesForPlugin(ctx, id); err != nil {
+			return nil, err
+		}
+		if err := in.Registry.DeletePropsForPlugin(ctx, id); err != nil {
+			return nil, err
+		}
+		if err := p.Upgrade(ctx, fromVersion); err != nil {
+			return nil, err
+		}
 	}
 
 	dir := filepath.Join(in.InstallDir, id)
@@ -147,9 +187,11 @@ func (in *Installer) Install(ctx context.Context, raw []byte, opts InstallOption
 		return nil, fmt.Errorf("plugins: store archive: %w", err)
 	}
 
-	if err := p.Install(ctx); err != nil {
-		_ = os.Remove(archivePath)
-		return nil, err
+	if !upgrade {
+		if err := p.Install(ctx); err != nil {
+			_ = os.Remove(archivePath)
+			return nil, err
+		}
 	}
 
 	row := &RegistryRow{
@@ -167,8 +209,13 @@ func (in *Installer) Install(ctx context.Context, raw []byte, opts InstallOption
 	return row, nil
 }
 
-// Uninstall runs the on_uninstall hook best-effort, then removes the
-// registry record and the stored archive.
+// Uninstall runs the on_uninstall hook best-effort, then removes everything
+// the plugin persisted: route and WebDAV prop records, queued job rows, its
+// appconfig keys, its system-storage tree, the registry record, and the
+// stored archive. Without the jobs/appconfig/storage steps an uninstalled
+// plugin left rows the jobs runner retried forever and state it could never
+// reclaim. cache.Cache keys are NOT removed (the interface has no prefix
+// delete; ADR-0056).
 func (in *Installer) Uninstall(ctx context.Context, id string) error {
 	row, err := in.Registry.Get(ctx, id)
 	if err != nil {
@@ -193,6 +240,21 @@ func (in *Installer) Uninstall(ctx context.Context, id string) error {
 	}
 	if err := in.Registry.DeletePropsForPlugin(ctx, id); err != nil {
 		return err
+	}
+	if in.JobStore != nil {
+		if err := in.JobStore.DeleteByName(ctx, pluginJobName(id)); err != nil {
+			return err
+		}
+	}
+	if in.AppConfig != nil {
+		if err := in.AppConfig.DeleteByPrefix(ctx, configAppID, id+"."); err != nil {
+			return err
+		}
+	}
+	if in.SystemStorage != nil && in.SystemPrefix != "" {
+		if err := deleteTree(ctx, in.SystemStorage, in.SystemPrefix+"/"+id); err != nil {
+			return err
+		}
 	}
 	if err := in.Registry.Delete(ctx, id); err != nil {
 		return err
