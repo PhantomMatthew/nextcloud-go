@@ -191,6 +191,16 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4e1: `ncgo-cli import-nextcloud` scaffolding plus
+  the `users` subcommand, importing users, groups, and group memberships
+  directly from a PHP Nextcloud database (`oc_users`/`oc_groups`/
+  `oc_group_user`, prefix configurable) into the configured ncgo DB
+  (ADR-0048). Argon2id PHC hashes import verbatim (PHP `password_hash`
+  format is what ncgo's verifier parses); other hash formats get a
+  never-verifying sentinel plus a must-reset warning. Idempotent and
+  resumable (existing rows skipped), `--dry-run` supported. Sessions and
+  app passwords are deliberately NOT imported (source-secret-bound tokens);
+  files, shares, and dav follow as 4e2–4e4 sibling subcommands.
 - **2026-09-22** — Phase 4d2: `ncgo-cli` operational parity for the
   `user`, `group`, and `config` occ command families (ADR-0047). New
   commands: `user list|enable|disable|delete --yes|reset-password`,
