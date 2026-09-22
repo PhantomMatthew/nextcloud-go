@@ -39,7 +39,7 @@ func newImportNextcloud() *cobra.Command {
 			"run can simply be repeated):\n" +
 			"  users   users, groups, and group memberships\n" +
 			"  files   user files from a Nextcloud data directory\n" +
-			"  shares  internal and public-link shares (planned)\n" +
+			"  shares  internal and public-link shares\n" +
 			"  dav     calendars and contacts (planned)\n\n" +
 			"Sessions and app passwords are NOT imported: Nextcloud authtokens are\n" +
 			"cryptographically bound to the source instance secret, so users must log\n" +
@@ -63,7 +63,7 @@ func newImportNextcloud() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&f.sourceDSN, "source-dsn", "", "source database DSN (required)")
 	cmd.PersistentFlags().StringVar(&f.tablePrefix, "table-prefix", "oc_", "source table prefix")
 	cmd.PersistentFlags().BoolVar(&f.dryRun, "dry-run", false, "scan and count without writing to the target")
-	cmd.AddCommand(newImportNCUsers(f), newImportNCFiles(f))
+	cmd.AddCommand(newImportNCUsers(f), newImportNCFiles(f), newImportNCShares(f))
 	return cmd
 }
 

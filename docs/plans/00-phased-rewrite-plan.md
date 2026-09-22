@@ -191,6 +191,23 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4e3: `ncgo-cli import-nextcloud shares` imports
+  internal (user/group) and public-link shares from a PHP Nextcloud database,
+  resolving each share's path through `oc_filecache` + `oc_storages`
+  (home storages only; external-storage shares skip with a warning)
+  (ADR-0050). Link tokens import verbatim so existing `/s/<token>` URLs keep
+  working; argon2id PHC link passwords import byte-identical and verify
+  through ncgo's public-link check, while any other hash format (bcrypt etc.)
+  skips the share rather than importing it unprotected. Remote/federated/
+  circle shares (types 4/6/7) are skipped for later OCM re-creation;
+  user/group shares get freshly generated tokens (Nextcloud stores none,
+  ncgo requires one). Permission bitmasks are identical in both systems and
+  import verbatim; stime→ms and UTC expiration→ms are converted, with
+  unparseable expirations skipped (never silently extend validity).
+  Preconditions (owner/recipient/target file present) skip with pointers to
+  the earlier subcommands; idempotent on owner+path+type+recipient or token;
+  share notes are dropped with one summary warning (no ncgo field). Dav (4e4)
+  follows.
 - **2026-09-22** — Phase 4e2: `ncgo-cli import-nextcloud files` imports user
   file trees from a PHP Nextcloud data directory (`--datadir`, `--user`
   repeatable, `--verbose`, inherited `--dry-run`) into the configured ncgo
