@@ -49,6 +49,14 @@ type HostConfig struct {
 	SystemPrefix string
 	// MaxSpoolBytes caps user-scope write spools; <= 0 means 1 GiB.
 	MaxSpoolBytes int64
+	// PluginSystemQuotaBytes caps the total byte size of one plugin's
+	// system-scope storage tree (<SystemPrefix>/<id>/...), enforced on
+	// storage_create against the declared size and on storage_stream_close
+	// against the actual bytes (ADR-0061); refusals return
+	// ErrCodeQuotaExceeded. <= 0 means 1 GiB. Enforcement is best-effort:
+	// the check and the commit are not transactional. User-scope quotas are
+	// per-user data (users.quota_bytes), not host config.
+	PluginSystemQuotaBytes int64
 	// DBMaxConcurrentPerPlugin bounds one plugin's in-flight DB statements —
 	// the db Query/Exec/Begin calls executing at the same moment, aggregated
 	// across all of the plugin's pooled instances (ADR-0060). Exhaustion
@@ -135,6 +143,9 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 	}
 	if cfg.MaxSpoolBytes <= 0 {
 		cfg.MaxSpoolBytes = defaultMaxSpoolBytes
+	}
+	if cfg.PluginSystemQuotaBytes <= 0 {
+		cfg.PluginSystemQuotaBytes = defaultPluginSystemQuotaBytes
 	}
 	if cfg.DBMaxConcurrentPerPlugin <= 0 {
 		cfg.DBMaxConcurrentPerPlugin = defaultDBMaxConcurrentPerPlugin

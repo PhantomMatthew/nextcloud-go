@@ -307,6 +307,9 @@ func installHostConfig(cfg *config.Config, db database.DB, st storage.Storage) p
 		MaxHTTPResponseBytes: int64(cfg.Plugin.MaxHTTPResponseMB) << 20,
 		// Hooks run DDL/DML through db_*, so the quota applies here too.
 		DBMaxConcurrentPerPlugin: cfg.Plugin.DBMaxConcurrentPerPlugin,
+		// Hooks can write system storage (storage_*), so the tree quota
+		// applies here too.
+		PluginSystemQuotaBytes: int64(cfg.Plugin.SystemStorageQuotaMB) << 20,
 	}
 }
 

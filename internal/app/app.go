@@ -260,6 +260,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 			HTTPRatePerMinute:        cfg.Plugin.HTTPRatePerMinute,
 			MaxHTTPResponseBytes:     int64(cfg.Plugin.MaxHTTPResponseMB) << 20,
 			DBMaxConcurrentPerPlugin: cfg.Plugin.DBMaxConcurrentPerPlugin,
+			PluginSystemQuotaBytes:   int64(cfg.Plugin.SystemStorageQuotaMB) << 20,
 			Cache:                    a.Cache,
 			DB:                       a.DB,
 			Bus:                      bus,

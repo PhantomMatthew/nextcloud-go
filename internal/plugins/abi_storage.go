@@ -33,11 +33,13 @@ type storageEntry struct {
 
 // storageTarget is a resolved plugin storage path: the scope, the
 // normalized scope-relative path, the calling user (user scope), and the
-// backend path (system scope).
+// backend paths (system scope: root is the plugin's tree root, full the
+// target inside it).
 type storageTarget struct {
 	system bool
 	path   string
 	user   string
+	root   string
 	full   string
 }
 
@@ -86,7 +88,8 @@ func (h *Host) resolveStorage(ctx context.Context, mod api.Module, ptr, length i
 			return storageTarget{}, pluginsdk.ErrCodeUnavailable
 		}
 		// The capability grant above implies a non-nil plugin.
-		t.full = path.Join(h.cfg.SystemPrefix, info.plugin.manifest.Plugin.ID, strings.TrimPrefix(np, "/"))
+		t.root = path.Join(h.cfg.SystemPrefix, info.plugin.manifest.Plugin.ID)
+		t.full = path.Join(t.root, strings.TrimPrefix(np, "/"))
 		return t, pluginsdk.ErrCodeOK
 	}
 	if h.cfg.Files == nil {
@@ -172,8 +175,64 @@ func (h *Host) commitSpool(ctx context.Context, s *storageWriteSpool) (code int3
 	if s.plugin != nil {
 		commitCtx = withCall(commitCtx, s.plugin, false)
 	}
+	// Quota backstop against the actual spooled bytes (ADR-0061); the
+	// create-time check only saw the declared size. Best-effort: usage can
+	// move between this check and the DAV.Write below, which has no
+	// transactional quota of its own.
+	if code := h.checkUserStorageQuota(commitCtx, storageTarget{path: s.path, user: s.user}, s.written); code != pluginsdk.ErrCodeOK {
+		return code
+	}
 	if _, _, err := h.cfg.Files.Write(commitCtx, s.user, s.path, s.f, nil); err != nil {
 		return h.mapStorageErr(ctx, "stream_close", err)
+	}
+	return pluginsdk.ErrCodeOK
+}
+
+// systemQuotaWriter wraps a system-scope create stream, counting written
+// bytes so stream_close can enforce the plugin tree quota against the
+// actual (not declared) size. tree and old are the quota inputs captured at
+// create time, before the backend started the write.
+type systemQuotaWriter struct {
+	wc      io.WriteCloser
+	full    string
+	tree    int64
+	old     int64
+	written int64
+}
+
+func (w *systemQuotaWriter) Write(p []byte) (int, error) {
+	n, err := w.wc.Write(p)
+	w.written += int64(n)
+	return n, err
+}
+
+// Close delegates to the wrapped stream. storageStreamClose intercepts the
+// wrapper (commitSystemWrite) before this is reached, so a Close here is
+// the instance-cleanup path, which commits the partial content exactly like
+// an unwrapped stream.
+func (w *systemQuotaWriter) Close() error { return w.wc.Close() }
+
+// commitSystemWrite closes a system-scope create stream, enforcing the
+// plugin tree quota against the actual written bytes (ADR-0061). The
+// refusal removes the just-committed content on a best-effort basis:
+// backend creates are atomic (localfs renames on Close), so by the time the
+// quota is known the write has already replaced any pre-existing target.
+// Best-effort like the user scope: the tree can move between the create-time
+// capture and this check.
+func (h *Host) commitSystemWrite(ctx context.Context, w *systemQuotaWriter) int32 {
+	if err := w.wc.Close(); err != nil {
+		return h.mapStorageErr(ctx, "stream_close", err)
+	}
+	quota := h.cfg.PluginSystemQuotaBytes
+	if w.tree-w.old+w.written > quota {
+		if err := h.cfg.SystemStorage.Delete(ctx, w.full); err != nil && !errors.Is(err, storage.ErrNotFound) {
+			if h.logger != nil {
+				h.logger.WarnContext(ctx, "plugins: quota-refused system write cleanup failed",
+					slog.String("path", w.full), slog.String("error", err.Error()))
+			}
+		}
+		h.warnStorageQuota(ctx, "system", w.full, quota, w.tree, w.written)
+		return pluginsdk.ErrCodeQuotaExceeded
 	}
 	return pluginsdk.ErrCodeOK
 }
@@ -248,16 +307,36 @@ func (h *Host) storageCreate(ctx context.Context, mod api.Module, pathPtr, pathL
 		return packI64(pluginsdk.ErrCodeInvalidArgument, 0)
 	}
 	if t.system {
+		// System-scope quota (ADR-0061): capture the tree size and the
+		// pre-existing target size once, refuse early when the declared size
+		// alone would overflow, and carry the pair to the stream_close
+		// backstop via the counting writer. A declared size <= 0 means the
+		// guest does not know it; only the close-time check applies then.
+		tree, old, err := systemTreeUsage(ctx, h.cfg.SystemStorage, t.root, t.full)
+		if err != nil {
+			return packI64(h.mapStorageErr(ctx, "quota_tree", err), 0)
+		}
+		if size > 0 && tree-old+size > h.cfg.PluginSystemQuotaBytes {
+			h.warnStorageQuota(ctx, "system", t.path, h.cfg.PluginSystemQuotaBytes, tree, size)
+			return packI64(pluginsdk.ErrCodeQuotaExceeded, 0)
+		}
 		wc, err := h.cfg.SystemStorage.Create(ctx, t.full, size)
 		if err != nil {
 			return packI64(h.mapStorageErr(ctx, "create", err), 0)
 		}
-		handle, err := tabs.add(handleStream, wc)
+		handle, err := tabs.add(handleStream, &systemQuotaWriter{wc: wc, full: t.full, tree: tree, old: old})
 		if err != nil {
 			_ = wc.Close()
 			return packI64(pluginsdk.ErrCodeUnavailable, 0)
 		}
 		return packI64(pluginsdk.ErrCodeOK, handle)
+	}
+	// User-scope quota (ADR-0061): refuse early when the declared size alone
+	// would overflow; commitSpool re-checks against the actual spooled bytes.
+	if size > 0 {
+		if code := h.checkUserStorageQuota(ctx, t, size); code != pluginsdk.ErrCodeOK {
+			return packI64(code, 0)
+		}
 	}
 	// User scope spools to a temp file; stream_close commits via DAV.Write.
 	f, err := os.CreateTemp("", "ncgo-plugin-spool-*")
@@ -354,6 +433,9 @@ func (h *Host) storageStreamClose(ctx context.Context, mod api.Module, handle in
 	}
 	if spool, ok := v.(*storageWriteSpool); ok {
 		return h.commitSpool(ctx, spool)
+	}
+	if qw, ok := v.(*systemQuotaWriter); ok {
+		return h.commitSystemWrite(ctx, qw)
 	}
 	closer, ok := v.(io.Closer)
 	if !ok {

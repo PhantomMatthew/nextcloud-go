@@ -614,6 +614,29 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-22** — Phase 4p closed the ADR-0042 "quota checks" follow-up
+  (ADR-0061): both `storage_*` write paths now enforce quotas at two
+  checkpoints — `storage_create` against the declared size (skipped when the
+  guest passes a size `<= 0`, meaning unknown) and `storage_stream_close`
+  against the actual bytes. User scope checks the calling user's
+  `users.quota_bytes` (NULL = unlimited) against the filecache usage via the
+  new `files.DAV.Usage` pass-through; system scope checks the plugin's
+  `<SystemPrefix>/<id>` tree against `HostConfig.PluginSystemQuotaBytes`
+  (default 1 GiB, operator-tunable via `plugin.system_storage_quota_mb`, 0 =
+  host default, negatives rejected), with the tree size recomputed per
+  create by a bounded recursive `List` walk. Overwrites pay only the delta:
+  the refusing condition is `usage - oldSize + newBytes > quota` with the
+  pre-existing target's `Stat` size as `oldSize` (0 when absent). Refusals
+  return -8 (`ErrQuotaExceeded`) plus a warn log naming the plugin — the
+  4n/4o posture, classified into the existing bounded `result` label with no
+  new metric families — and a system-scope refusal at close additionally
+  removes the just-committed partial content (backend creates are atomic;
+  an overwrite refusal loses the replaced old content, so guests must treat
+  -8 from `storage_stream_close` as "the write did not happen"). Enforcement
+  is best-effort: check and commit are not transactional, and the core DAV
+  write path itself remains quota-free for non-plugin callers — core DAV
+  quota enforcement is a documented follow-up alongside chunked/resumable
+  writes, per-plugin storage byte metrics, and a mkdir host function.
 - **2026-09-22** — Phase 4o closed the ADR-0039 "per-plugin connection
   pools/quotas" follow-up in its quota form (ADR-0060): the five
   connection-consuming `db_*` entries (`db_query`, `db_exec`, `db_tx_query`,

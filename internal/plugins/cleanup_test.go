@@ -67,7 +67,7 @@ func TestDeleteTreeDepthCap(t *testing.T) {
 	// truncation.
 	var b strings.Builder
 	b.WriteString("root")
-	for range maxDeleteTreeDepth + 2 {
+	for range maxStorageTreeDepth + 2 {
 		b.WriteString("/d")
 	}
 	writeTreeFile(t, st, b.String()+"/leaf.txt", "x")

@@ -56,6 +56,8 @@ func TestModulesCompile(t *testing.T) {
 		{"storage-op-create", StorageOpProbeModule("create", "user:/a", "", -3)},
 		{"storage-op-delete", StorageOpProbeModule("delete", "user:/a", "", -3)},
 		{"storage-op-rename", StorageOpProbeModule("rename", "user:/a", "user:/b", -3)},
+		{"storage-create-size-probe", StorageCreateSizeProbeModule("user:/a", 20, -8)},
+		{"storage-write-close-probe", StorageWriteCloseProbeModule("user:/a", "c", -8)},
 		{"http-outbound", HTTPOutboundModule([]byte{0x90}, []byte{0x90}, "X-Test", 200, -3)},
 		{"http-outbound-no-denied", HTTPOutboundModule([]byte{0x90}, nil, "X-Test", 200, 0)},
 		{"http-probe", HTTPProbeModule([]byte{0x90}, -3)},

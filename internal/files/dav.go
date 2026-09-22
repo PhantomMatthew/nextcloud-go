@@ -73,6 +73,22 @@ func (d *DAV) resolveUser(ctx context.Context, uid string) (*users.User, error) 
 	return u, nil
 }
 
+// Usage returns the user's filecache usage in bytes (sum of file sizes,
+// directories excluded) together with the configured quota (nil means
+// unlimited). Plugin storage writes check the pair (ADR-0061); the core DAV
+// write path itself does not enforce quotas.
+func (d *DAV) Usage(ctx context.Context, user string) (int64, *int64, error) {
+	u, err := d.resolveUser(ctx, user)
+	if err != nil {
+		return 0, nil, err
+	}
+	n, err := d.Meta.Usage(ctx, u.ID)
+	if err != nil {
+		return 0, nil, err
+	}
+	return n, u.QuotaBytes, nil
+}
+
 func (d *DAV) ensureHome(ctx context.Context, uid string) error {
 	_, err := d.Storage.Stat(ctx, uid)
 	if err == nil {

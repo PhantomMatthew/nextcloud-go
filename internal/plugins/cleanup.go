@@ -8,11 +8,12 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage"
 )
 
-// Bounds for deleteTree: a hostile or corrupt backend must not stall
-// uninstall forever. Hitting a bound is an error, never silent truncation.
+// Bounds for plugin storage tree walks (deleteTree, systemTreeUsage): a
+// hostile or corrupt backend must not stall uninstall or a quota check
+// forever. Hitting a bound is an error, never silent truncation.
 const (
-	maxDeleteTreeDepth   = 64
-	maxDeleteTreeEntries = 100_000
+	maxStorageTreeDepth   = 64
+	maxStorageTreeEntries = 100_000
 )
 
 // deleteTree recursively removes the storage subtree at root using only
@@ -23,8 +24,8 @@ func deleteTree(ctx context.Context, st storage.Storage, root string) error {
 	entries := 0
 	var walk func(dir string, depth int) error
 	walk = func(dir string, depth int) error {
-		if depth > maxDeleteTreeDepth {
-			return fmt.Errorf("plugins: storage cleanup: depth cap (%d) at %s", maxDeleteTreeDepth, dir)
+		if depth > maxStorageTreeDepth {
+			return fmt.Errorf("plugins: storage cleanup: depth cap (%d) at %s", maxStorageTreeDepth, dir)
 		}
 		infos, err := st.List(ctx, dir)
 		if errors.Is(err, storage.ErrNotFound) {
@@ -35,8 +36,8 @@ func deleteTree(ctx context.Context, st storage.Storage, root string) error {
 		}
 		for _, fi := range infos {
 			entries++
-			if entries > maxDeleteTreeEntries {
-				return fmt.Errorf("plugins: storage cleanup: entry cap (%d)", maxDeleteTreeEntries)
+			if entries > maxStorageTreeEntries {
+				return fmt.Errorf("plugins: storage cleanup: entry cap (%d)", maxStorageTreeEntries)
 			}
 			if fi.IsDir {
 				if err := walk(fi.Path, depth+1); err != nil {

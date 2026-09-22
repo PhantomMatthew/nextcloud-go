@@ -1710,6 +1710,94 @@ func StorageOpProbeModule(op, path, dst string, want int32) []byte {
 	return s.build()
 }
 
+// StorageCreateSizeProbeModule calls storage_create with the given declared
+// size and logs "probe-ok" when the returned error code equals want — the
+// create-time quota probe. A successful create is closed again so no handle
+// (or empty file) leaks.
+func StorageCreateSizeProbeModule(path string, size int64, want int32) []byte {
+	s := guestSpec{
+		imports: []imp{
+			{"log", tLog},                  // 0
+			{"storage_create", tCreateI64}, // 1
+			{"storage_stream_close", tAlloc},
+		},
+		data: [][]byte{[]byte(path), []byte("probe-ok")},
+	}
+	offs := s.dataOffsets()
+
+	// locals: 0 unused handle slot, 1 = packed (i64)
+	expr := make([]byte, 0, 48)
+	expr = append(expr, i32c(offs[0])...)
+	expr = append(expr, i32c(i32n(len(path)))...)
+	expr = append(expr, i64c(size)...)
+	expr = append(expr, opCall, 0x01, opLocalSet, 0x01)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i64c(32)...)
+	expr = append(expr, opI64ShrU, opI32WrapI64, opI32Eqz, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x01, opI32WrapI64, opCall, 0x02, opDrop) // close
+	expr = append(expr, opEnd)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i64c(32)...)
+	expr = append(expr, opI64ShrU, opI32WrapI64)
+	expr = append(expr, i32c(want)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, logCall(offs[1], i32n(len("probe-ok")))...)
+	expr = append(expr, opDrop)
+	expr = append(expr, opEnd)
+	expr = append(expr, i32c(0)...)
+	s.onInstall = expr
+	s.onInstallLocals = 1
+	s.onInstallLocals64 = 1
+	return s.build()
+}
+
+// StorageWriteCloseProbeModule creates path (declared size unknown), streams
+// content, then closes and logs "close-ok" when the close result equals
+// wantClose — the commit-time quota probe. A failed create or short write
+// returns without logging.
+func StorageWriteCloseProbeModule(path, content string, wantClose int32) []byte {
+	s := guestSpec{
+		imports: []imp{
+			{"log", tLog},                  // 0
+			{"storage_create", tCreateI64}, // 1
+			{"storage_stream_write", tLog}, // 2
+			{"storage_stream_close", tAlloc},
+		},
+		data: [][]byte{[]byte(path), []byte(content), []byte("close-ok")},
+	}
+	offs := s.dataOffsets()
+
+	// locals: 0 = handle (i32), 1 = packed (i64)
+	expr := make([]byte, 0, 64)
+	expr = append(expr, i32c(offs[0])...)
+	expr = append(expr, i32c(i32n(len(path)))...)
+	expr = append(expr, i64c(-1)...)
+	expr = append(expr, opCall, 0x01, opLocalSet, 0x01)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i64c(32)...)
+	expr = append(expr, opI64ShrU, opI32WrapI64, opI32Eqz, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x01, opI32WrapI64, opLocalSet, 0x00)
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i32c(offs[1])...)
+	expr = append(expr, i32c(i32n(len(content)))...)
+	expr = append(expr, opCall, 0x02) // stream_write
+	expr = append(expr, i32c(i32n(len(content)))...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x00, opCall, 0x03) // close (commit)
+	expr = append(expr, i32c(wantClose)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, logCall(offs[2], i32n(len("close-ok")))...)
+	expr = append(expr, opDrop)
+	expr = append(expr, opEnd)
+	expr = append(expr, opEnd)
+	expr = append(expr, opEnd)
+	expr = append(expr, i32c(0)...)
+	s.onInstall = expr
+	s.onInstallLocals = 1
+	s.onInstallLocals64 = 1
+	return s.build()
+}
+
 // httpImports are the host imports every outbound-HTTP probe module uses:
 // log plus the http_* family (subset per module).
 const (

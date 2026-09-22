@@ -191,6 +191,38 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4p: plugin storage quotas (ADR-0061), closing the
+  ADR-0042 "quota checks" follow-up (chunked/resumable writes, per-plugin
+  storage byte metrics, a mkdir host function, and core-DAV quota
+  enforcement remain follow-ups). Both `storage_*` write scopes check at
+  `storage_create` (declared size; skipped when the guest declares <= 0) and
+  again at `storage_stream_close` against the actual bytes. User scope
+  refuses when `usage - oldSize + newBytes > users.quota_bytes` (NULL =
+  unlimited) using the filecache `Store.Usage` sum through a new
+  `files.DAV.Usage` pass-through — no new config key, quota stays user data
+  managed by the existing CLI user commands. System scope captures the
+  plugin tree size at create via a bounded recursive `List` walk
+  (`systemTreeUsage`, sharing deleteTree's depth/entry caps after the
+  constants were generalized) and wraps the create stream in a counting
+  `systemQuotaWriter` so close enforces the actual byte count, deleting the
+  just-committed partial content on refusal. Overwrites pay only the delta
+  (`oldSize` from Stat, 0 when absent). Refusals return -8 plus a warn log
+  naming the plugin, scope, and numbers — never routed through
+  `mapStorageErr`, so a denial is never flattened to -1 — and classify into
+  the existing `result` label. New `HostConfig.PluginSystemQuotaBytes` (<= 0
+  defaults to 1 GiB, matching the per-file spool cap) wired to
+  `plugin.system_storage_quota_mb` (default 1024, negatives rejected) and
+  passed through by `internal/app` and the `ncgo-cli` install host (install
+  hooks write system storage). wasmgen gains `StorageCreateSizeProbeModule`
+  and `StorageWriteCloseProbeModule` (registered in `TestModulesCompile`) —
+  the existing probes pass declared size -1 and drop the close result, so
+  neither checkpoint was observable. Tests: tree-walk unit tests (nested,
+  empty, missing root/target, dir target), HostConfig defaulting, user
+  create/commit refusal + warn, nil-quota unlimited, overwrite delta
+  (success and refusal leaving the old file), system create/commit refusal
+  with partial-file and backend-temp cleanup; config defaults snapshot,
+  full parse, negative validation. Spec Change Log and Phase 0 blueprint
+  config YAML updated.
 - **2026-09-22** — Phase 4o: per-plugin DB concurrency quota for the plugin
   host (ADR-0060), closing the ADR-0039 "per-plugin connection
   pools/quotas" follow-up in its quota form (per-plugin pools and
