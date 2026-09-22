@@ -91,6 +91,8 @@ func defaultFlat() map[string]any {
 		"storage.default_backend":           "local",
 		"storage.backends.local.type":       "localfs",
 		"storage.backends.local.root":       "/var/lib/ncgo/data",
+		"encryption.enabled":                false,
+		"encryption.master_key_path":        "",
 		"auth.session_ttl":                  24 * time.Hour,
 		"auth.app_password_ttl":             time.Duration(0),
 		"auth.password_hash":                "argon2id",

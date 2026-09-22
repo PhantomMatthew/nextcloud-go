@@ -8,6 +8,7 @@ type Config struct {
 	Database      DatabaseConfig      `koanf:"database"`
 	Cache         CacheConfig         `koanf:"cache"`
 	Storage       StorageConfig       `koanf:"storage"`
+	Encryption    EncryptionConfig    `koanf:"encryption"`
 	Auth          AuthConfig          `koanf:"auth"`
 	Jobs          JobsConfig          `koanf:"jobs"`
 	Plugin        PluginConfig        `koanf:"plugin"`
@@ -66,6 +67,15 @@ type BackendConfig struct {
 	AccessKeyID     string `koanf:"access_key_id"`
 	SecretAccessKey string `koanf:"secret_access_key"`
 	Region          string `koanf:"region"`
+}
+
+// EncryptionConfig controls transparent server-side encryption at rest
+// (ADR-0052). MasterKeyPath points at an operator-created file holding the
+// base64-encoded 32-byte master key (see ncgo-cli encryption init); the key
+// is never generated or stored by the server itself.
+type EncryptionConfig struct {
+	Enabled       bool   `koanf:"enabled"`
+	MasterKeyPath string `koanf:"master_key_path"`
 }
 
 // AuthConfig covers sessions, app passwords, hashing, and bootstrap admin.

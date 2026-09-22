@@ -71,5 +71,9 @@ func (c *Config) Validate() error {
 		errs = append(errs, &ValidationError{Field: "storage.default_backend", Reason: "must exist in storage.backends"})
 	}
 
+	if c.Encryption.Enabled && strings.TrimSpace(c.Encryption.MasterKeyPath) == "" {
+		errs = append(errs, &ValidationError{Field: "encryption.master_key_path", Reason: "required when encryption is enabled"})
+	}
+
 	return errors.Join(errs...)
 }

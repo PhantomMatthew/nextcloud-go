@@ -191,6 +191,29 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4f: transparent server-side encryption at rest
+  (ADR-0052). A `storage.Storage` decorator (`internal/storage/encrypt`)
+  seals file contents with chunked AES-256-GCM: 64 KiB plaintext chunks, a
+  40-byte header (magic `NCGOENC1` + 32-byte random salt), a per-file data
+  key derived as HMAC-SHA256(masterKey, salt), and per-chunk counter
+  nonces — stdlib crypto only, no new dependencies. Reads auto-detect the
+  magic, so encrypted files decrypt transparently while legacy plaintext
+  passes through untouched: enabling encryption on an existing instance is
+  mixed-state by design, and old files are sealed as they are rewritten
+  (DAV writes always stream through `Storage.Create`). Stat/List report
+  plaintext sizes so the filecache stays consistent; every chunk read
+  verifies the GCM tag and tamper/wrong-key/truncation fail loudly
+  (`ErrIntegrity`). The master key is 32 random bytes, base64 in an
+  operator-created 0600 key file from `encryption.master_key_path`
+  (validated when `encryption.enabled`); the server fails closed at
+  startup on key problems and never generates or logs key material.
+  `ncgo-cli encryption init` writes the key file (refuses overwrite
+  without `--force`) and `encryption status` reports enabled state plus
+  key health. Threat model: protects against backend compromise, not
+  server compromise; names/dirs/sizes stay plaintext in v1; E2EE folders
+  remain opaque pass-through blobs with no server-side processing
+  guarantees. Follow-ups: key rotation, per-user keys, encrypt-all sweep,
+  filename encryption, SSE-C.
 - **2026-09-22** — Phase 4e4: `ncgo-cli import-nextcloud dav` imports
   calendars, calendar objects, address books, and cards from a PHP Nextcloud
   database (`oc_calendars`/`oc_calendarobjects`/`oc_addressbooks`/`oc_cards`)

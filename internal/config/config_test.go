@@ -203,6 +203,7 @@ func TestValidateRules(t *testing.T) {
 		{"plugin_mem", func(c *Config) { c.Plugin.DefaultMemoryLimitMB = 257 }, "plugin.default_memory_limit_mb"},
 		{"plugin_timeout", func(c *Config) { c.Plugin.DefaultCPUTimeoutMS = 30001 }, "plugin.default_cpu_timeout_ms"},
 		{"storage_backend", func(c *Config) { c.Storage.DefaultBackend = "s3" }, "storage.default_backend"},
+		{"encryption_no_key", func(c *Config) { c.Encryption.Enabled = true }, "encryption.master_key_path"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

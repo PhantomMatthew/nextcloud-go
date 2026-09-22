@@ -26,7 +26,7 @@ func newRoot() *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.PersistentFlags().StringVar(&cfgPath, "config", "", "path to YAML config")
-	root.AddCommand(newMigrate(), newUser(), newGroup(), newConfigCmd(), newPlugin(), newImportNextcloud(), newVersion())
+	root.AddCommand(newMigrate(), newUser(), newGroup(), newConfigCmd(), newPlugin(), newImportNextcloud(), newEncryption(), newVersion())
 	return root
 }
 

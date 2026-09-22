@@ -31,6 +31,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/session"
 	"github.com/PhantomMatthew/nextcloud-go/internal/sharing"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage"
+	"github.com/PhantomMatthew/nextcloud-go/internal/storage/encrypt"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage/localfs"
 	s3store "github.com/PhantomMatthew/nextcloud-go/internal/storage/s3"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
@@ -355,12 +356,28 @@ func openStorage(cfg *config.Config) (storage.Storage, error) {
 	if !ok {
 		return nil, fmt.Errorf("app: storage backend %q not configured", name)
 	}
+	var st storage.Storage
+	var err error
 	switch b.Type {
 	case "localfs":
-		return localfs.New(b.Root)
+		st, err = localfs.New(b.Root)
 	case "s3":
-		return s3store.New(b)
+		st, err = s3store.New(b)
 	default:
 		return nil, fmt.Errorf("app: storage backend %q type %q unsupported", name, b.Type)
 	}
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Encryption.Enabled {
+		key, err := encrypt.LoadMasterKey(cfg.Encryption.MasterKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("app: encryption: %w", err)
+		}
+		st, err = encrypt.New(key, st)
+		if err != nil {
+			return nil, fmt.Errorf("app: encryption: %w", err)
+		}
+	}
+	return st, nil
 }
