@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/activity"
+	"github.com/PhantomMatthew/nextcloud-go/internal/appconfig"
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
 	"github.com/PhantomMatthew/nextcloud-go/internal/cache"
 	caldav "github.com/PhantomMatthew/nextcloud-go/internal/calendar"
@@ -239,6 +240,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 			Files:                dav,
 			SystemStorage:        st,
 			SystemPrefix:         "appdata_" + a.instanceID + "/plugins",
+			AppConfig:            appconfig.NewStore(a.DB),
 		}, logger)
 		if err != nil {
 			if cerr := a.closeResources(ctx); cerr != nil {

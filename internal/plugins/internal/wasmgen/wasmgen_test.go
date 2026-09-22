@@ -59,6 +59,10 @@ func TestModulesCompile(t *testing.T) {
 		{"http-stale", HTTPStaleModule([]byte{0x90})},
 		{"http-absent-header", HTTPAbsentHeaderModule([]byte{0x90}, "X-Missing")},
 		{"http-leak", HTTPLeakModule([]byte{0x90})},
+		{"config", ConfigModule("tokens.x", "v", "tokens.x", "tokens.miss", "other", -3)},
+		{"config-read-only", ConfigModule("", "", "", "foo", "", 0)},
+		{"config-get-probe", ConfigGetProbeModule("foo", 4096, -3)},
+		{"config-set-probe", ConfigSetProbeModule("foo", 65537, -11)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			compiled, err := r.CompileModule(ctx, tc.bin)

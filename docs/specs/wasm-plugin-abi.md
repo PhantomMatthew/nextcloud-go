@@ -598,6 +598,19 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-22** — Phase 4c6 implemented plugin config (ADR-0044): the §6.3
+  `config_get` / `config_set` pair is live. Storage is a generic
+  `appconfig(appid, configkey, configvalue)` table (migration `0017`; the
+  `oc_appconfig` analogue, reusable by core/Admin UI); plugin rows use
+  `appid = "plugin"` and the `plugin.<plugin_id>.` namespace is realised as
+  `configkey = <plugin_id>.<key>`, so cross-plugin reads are impossible
+  even with a `*` grant. **Semantics (v1):** capability globs match the
+  plugin-local key; empty key → -2; missing key → -4 (`ErrCodeNotFound`,
+  same as cache/storage misses); nil store → -12; values are capped at
+  64KiB (`maxStringArg`) on set → -11, and `config_get` into a too-small
+  buffer → -11 with nothing written. HostConfig gains AppConfig; pluginsdk
+  gains ConfigGet/ConfigSet bindings. Follow-ups: `config_delete`,
+  list/keys, uninstall row cleanup, encryption-at-rest for secrets.
 - **2026-09-22** — Phase 4c5 implemented outbound HTTP (ADR-0043): the
   §6.3 `http_*` family is live. `http_request` takes the MessagePack
   `{method, url, headers, body_bytes, timeout_ms}` map; method must be

@@ -11,6 +11,7 @@ import (
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
 
+	"github.com/PhantomMatthew/nextcloud-go/internal/appconfig"
 	"github.com/PhantomMatthew/nextcloud-go/internal/cache"
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
 	"github.com/PhantomMatthew/nextcloud-go/internal/events"
@@ -51,6 +52,9 @@ type HostConfig struct {
 	// against the calling plugin's allowlist on a shallow copy, never on the
 	// shared client.
 	HTTPClient *http.Client
+	// AppConfig backs the config_* host functions. Nil makes them return
+	// ErrUnavailable.
+	AppConfig *appconfig.Store
 }
 
 // Host is a wazero-backed plugin runtime.

@@ -189,6 +189,15 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4c6: `config.*` host functions implemented — a new
+  generic `appconfig` store (migration `0017_appconfig`, all three
+  dialects; the Nextcloud `oc_appconfig` analogue) backs `config_get` /
+  `config_set` under `appid = "plugin"` with keys namespaced
+  `<plugin_id>.<key>`; `config.read` / `config.write` grants are per-key
+  globs matched against the plugin-local key (-3), empty keys are -2,
+  missing keys -4, a nil store -12, and values are capped at 64KiB (-11,
+  get with a too-small buffer also -11). HostConfig gains AppConfig;
+  pluginsdk gains ConfigGet/ConfigSet (see ADR-0044).
 - **2026-09-22** — Phase 4c5: outbound `http.*` host functions implemented —
   `http_request` validates method/scheme and enforces the `http.outbound`
   allowlist with default-port normalization (grant `example.com` covers

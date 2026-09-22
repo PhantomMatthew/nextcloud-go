@@ -148,6 +148,14 @@ func (c *Capabilities) hasConfigRead() bool {
 	return c != nil && len(c.Config.Read) > 0
 }
 
-func (c *Capabilities) hasConfigWrite() bool {
-	return c != nil && len(c.Config.Write) > 0
+// canConfigRead reports whether the plugin holds any config.read grant
+// covering the plugin-local key (pre-namespace).
+func (c *Capabilities) canConfigRead(key string) bool {
+	return c != nil && globAny(c.Config.Read, key)
+}
+
+// canConfigWrite reports whether the plugin holds any config.write grant
+// covering the plugin-local key (pre-namespace).
+func (c *Capabilities) canConfigWrite(key string) bool {
+	return c != nil && globAny(c.Config.Write, key)
 }

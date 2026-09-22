@@ -1874,3 +1874,150 @@ func HTTPLeakModule(reqBytes []byte) []byte {
 	s.onInstallLocals64 = 1
 	return s.build()
 }
+
+// configImports are the host imports the config probe modules use: log plus
+// config_set / config_get.
+const (
+	configImpLog = iota
+	configImpSet
+	configImpGet
+)
+
+var configAllImports = []imp{
+	{"log", tLog},
+	{"config_set", tFourI32},
+	{"config_get", tFourI32},
+}
+
+// ConfigModule builds a config round-trip probe. The exported do_config
+// entry: sets setKey to setVal (logging "set-ok" on 0; skipped when setKey is
+// empty), reads getKey back logging the value and "get-ok" (skipped when
+// getKey is empty), reads missingKey expecting -4 ("missing-ok"; skipped when
+// missingKey is empty), and writes deniedKey expecting deniedWant
+// ("denied-ok"; skipped when deniedKey is empty). Markers appear only on the
+// expected host answers.
+func ConfigModule(setKey, setVal, getKey, missingKey, deniedKey string, deniedWant int32) []byte {
+	const (
+		outBuf = 8192
+		outMax = 4096
+	)
+	s := guestSpec{
+		imports: configAllImports,
+		data: [][]byte{
+			[]byte(setKey), []byte(setVal), []byte(getKey), []byte(missingKey), []byte(deniedKey), []byte("x"),
+			[]byte("set-ok"), []byte("get-ok"), []byte("missing-ok"), []byte("denied-ok"),
+		},
+		onInstall: i32c(0),
+	}
+	offs := s.dataOffsets()
+	marker := func(i int) []byte {
+		m := s.data[6+i]
+		e := logCall(offs[6+i], i32n(len(m)))
+		return append(e, opDrop)
+	}
+
+	// local 0 = n
+	expr := make([]byte, 0, 128)
+	if setKey != "" {
+		expr = append(expr, i32c(offs[0])...)
+		expr = append(expr, i32c(i32n(len(setKey)))...)
+		expr = append(expr, i32c(offs[1])...)
+		expr = append(expr, i32c(i32n(len(setVal)))...)
+		expr = append(expr, opCall, configImpSet, opI32Eqz, opIf, blockVoid)
+		expr = append(expr, marker(0)...)
+		expr = append(expr, opEnd)
+	}
+	if getKey != "" {
+		expr = append(expr, i32c(offs[2])...)
+		expr = append(expr, i32c(i32n(len(getKey)))...)
+		expr = append(expr, i32c(outBuf)...)
+		expr = append(expr, i32c(outMax)...)
+		expr = append(expr, opCall, configImpGet, opLocalSet, 0x00)
+		expr = append(expr, opLocalGet, 0x00)
+		expr = append(expr, i32c(0)...)
+		expr = append(expr, opI32GtS, opIf, blockVoid)
+		expr = append(expr, i32c(1)...)
+		expr = append(expr, i32c(outBuf)...)
+		expr = append(expr, opLocalGet, 0x00, opCall, configImpLog, opDrop) // log value
+		expr = append(expr, marker(1)...)
+		expr = append(expr, opEnd)
+	}
+	if missingKey != "" {
+		expr = append(expr, i32c(offs[3])...)
+		expr = append(expr, i32c(i32n(len(missingKey)))...)
+		expr = append(expr, i32c(outBuf)...)
+		expr = append(expr, i32c(outMax)...)
+		expr = append(expr, opCall, configImpGet)
+		expr = append(expr, i32c(-4)...)
+		expr = append(expr, opI32Eq, opIf, blockVoid)
+		expr = append(expr, marker(2)...)
+		expr = append(expr, opEnd)
+	}
+	if deniedKey != "" {
+		expr = append(expr, i32c(offs[4])...)
+		expr = append(expr, i32c(i32n(len(deniedKey)))...)
+		expr = append(expr, i32c(offs[5])...)
+		expr = append(expr, i32c(1)...)
+		expr = append(expr, opCall, configImpSet)
+		expr = append(expr, i32c(deniedWant)...)
+		expr = append(expr, opI32Eq, opIf, blockVoid)
+		expr = append(expr, marker(3)...)
+		expr = append(expr, opEnd)
+	}
+	expr = append(expr, i32c(0)...)
+	s.extras = append(s.extras, extraFn{name: "do_config", typ: tNullToI32, locals: 1, expr: expr})
+	return s.build()
+}
+
+// ConfigGetProbeModule reads key via config_get on install (out buffer at
+// scratch address 8192 with capacity outMax) and logs "probe-ok" when the
+// host returns want (a byte count or a negative error code).
+func ConfigGetProbeModule(key string, outMax, want int32) []byte {
+	s := guestSpec{
+		imports: []imp{{"log", tLog}, {"config_get", tFourI32}},
+		data:    [][]byte{[]byte(key), []byte("probe-ok")},
+	}
+	offs := s.dataOffsets()
+
+	expr := make([]byte, 0, 48)
+	expr = append(expr, i32c(offs[0])...)
+	expr = append(expr, i32c(i32n(len(key)))...)
+	expr = append(expr, i32c(8192)...)
+	expr = append(expr, i32c(outMax)...)
+	expr = append(expr, opCall, 0x01)
+	expr = append(expr, i32c(want)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, logCall(offs[1], i32n(len("probe-ok")))...)
+	expr = append(expr, opDrop)
+	expr = append(expr, opEnd)
+	expr = append(expr, i32c(0)...)
+	s.onInstall = expr
+	return s.build()
+}
+
+// ConfigSetProbeModule writes valLen bytes from scratch address 4096 under
+// key via config_set on install and logs "probe-ok" when the host returns
+// want. The host validates the value length before touching memory, so an
+// oversized probe (-11) needs no real payload.
+func ConfigSetProbeModule(key string, valLen, want int32) []byte {
+	s := guestSpec{
+		imports: []imp{{"log", tLog}, {"config_set", tFourI32}},
+		data:    [][]byte{[]byte(key), []byte("probe-ok")},
+	}
+	offs := s.dataOffsets()
+
+	expr := make([]byte, 0, 48)
+	expr = append(expr, i32c(offs[0])...)
+	expr = append(expr, i32c(i32n(len(key)))...)
+	expr = append(expr, i32c(4096)...)
+	expr = append(expr, i32c(valLen)...)
+	expr = append(expr, opCall, 0x01)
+	expr = append(expr, i32c(want)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, logCall(offs[1], i32n(len("probe-ok")))...)
+	expr = append(expr, opDrop)
+	expr = append(expr, opEnd)
+	expr = append(expr, i32c(0)...)
+	s.onInstall = expr
+	return s.build()
+}
