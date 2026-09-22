@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 	"time"
 )
@@ -33,9 +32,6 @@ func TestDefaultSnapshot(t *testing.T) {
 	local, ok := got.Storage.Backends["local"]
 	if !ok || local.Type != "localfs" || local.Root != "/var/lib/ncgo/data" {
 		t.Errorf("local backend = %+v ok=%v", local, ok)
-	}
-	if got.Auth.SessionTTL != 24*time.Hour || got.Auth.PasswordHash != "argon2id" {
-		t.Errorf("auth defaults: %+v", got.Auth)
 	}
 	if got.Auth.Argon2id != (Argon2idConfig{MemoryKB: 65536, Iterations: 3, Parallelism: 4}) {
 		t.Errorf("argon2id = %+v", got.Auth.Argon2id)
@@ -80,9 +76,6 @@ func TestLoadFullFile(t *testing.T) {
 	}
 	if cfg.Server.Listen != "127.0.0.1:9000" {
 		t.Errorf("listen = %q", cfg.Server.Listen)
-	}
-	if !reflect.DeepEqual(cfg.Server.TrustedProxies, []string{"10.0.0.0/8"}) {
-		t.Errorf("trusted_proxies = %#v", cfg.Server.TrustedProxies)
 	}
 	if cfg.Cache.RedisAddr != "redis:6379" || cfg.Cache.RedisPassword != "s3cret" {
 		t.Errorf("cache redis = %+v", cfg.Cache)
@@ -181,6 +174,28 @@ func TestLoadMissingFile(t *testing.T) {
 	_, err := Load(LoadOptions{Path: filepath.Join(t.TempDir(), "nope.yaml"), EnvPrefix: unusedEnvPrefix})
 	if err == nil {
 		t.Fatal("expected error for missing file")
+	}
+}
+
+// TestLoadUnknownKeysIgnored pins the lenient unmarshal contract: keys
+// removed in Phase 4k (server.trusted_proxies, observability.metrics_listen,
+// observability.otel_endpoint, ...) may still sit in existing config files
+// and must not fail startup — they are silently ignored.
+func TestLoadUnknownKeysIgnored(t *testing.T) {
+	cfg, err := Load(LoadOptions{
+		EnvPrefix: unusedEnvPrefix,
+		Overrides: map[string]any{
+			"server.trusted_proxies":       []string{"10.0.0.0/8"},
+			"auth.session_ttl":             "24h",
+			"observability.metrics_listen": "127.0.0.1:9090",
+			"observability.otel_endpoint":  "http://otel:4317",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.Listen != "0.0.0.0:8080" {
+		t.Errorf("listen = %q", cfg.Server.Listen)
 	}
 }
 

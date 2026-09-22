@@ -34,6 +34,7 @@ go run ./cmd/ncgo-cli plugin check examples/webhook-forwarder
 go run ./cmd/ncgo-cli plugin pack examples/webhook-forwarder -o /tmp/webhook-forwarder.ncplugin
 go run ./cmd/ncgo-cli plugin install --force-unsigned /tmp/webhook-forwarder.ncplugin
 go run ./cmd/ncgo-cli plugin enable com.example.webhook-forwarder
+# restart the server: the enabled plugin set is read once at boot
 ```
 
 (Sign with `plugin keygen` / `plugin sign` like the file-tagger README for a

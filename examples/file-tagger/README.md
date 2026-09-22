@@ -43,6 +43,7 @@ go run ./cmd/ncgo-cli plugin sign /tmp/file-tagger.ncplugin --key /tmp/tagger.ke
 cp /tmp/tagger.pub <plugin-install-dir>/trusted-keys/   # see plugin.install_dir in config
 go run ./cmd/ncgo-cli plugin install /tmp/file-tagger.ncplugin
 go run ./cmd/ncgo-cli plugin enable com.example.file-tagger
+# restart the server: the enabled plugin set is read once at boot
 ```
 
 (`plugin check` is deliberately absent: it smoke-tests compilation and ABI

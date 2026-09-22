@@ -27,12 +27,9 @@ type SharingConfig struct {
 	LookupServer string `koanf:"lookup_server"`
 }
 
-// ServerConfig controls the HTTP listener and trusted network identity.
+// ServerConfig controls the HTTP listener.
 type ServerConfig struct {
-	Listen         string   `koanf:"listen"`
-	TrustedProxies []string `koanf:"trusted_proxies"`
-	TrustedDomains []string `koanf:"trusted_domains"`
-	BaseURL        string   `koanf:"base_url"`
+	Listen string `koanf:"listen"`
 }
 
 // DatabaseConfig selects the SQL driver and pool parameters.
@@ -95,11 +92,8 @@ type WebConfig struct {
 	StaticRoot string `koanf:"static_root"`
 }
 
-// AuthConfig covers sessions, app passwords, hashing, and bootstrap admin.
+// AuthConfig covers password hashing and bootstrap admin.
 type AuthConfig struct {
-	SessionTTL     time.Duration        `koanf:"session_ttl"`
-	AppPasswordTTL time.Duration        `koanf:"app_password_ttl"`
-	PasswordHash   string               `koanf:"password_hash"`
 	Argon2id       Argon2idConfig       `koanf:"argon2id"`
 	BootstrapAdmin BootstrapAdminConfig `koanf:"bootstrap_admin"`
 }
@@ -139,10 +133,8 @@ type PluginConfig struct {
 type ObservabilityConfig struct {
 	LogLevel       string `koanf:"log_level"`
 	LogFormat      string `koanf:"log_format"`
-	MetricsListen  string `koanf:"metrics_listen"`
 	MetricsEnabled bool   `koanf:"metrics_enabled"`
 	MetricsToken   string `koanf:"metrics_token"`
-	OTELEndpoint   string `koanf:"otel_endpoint"`
 }
 
 // MaintenanceConfig mirrors Nextcloud's maintenance and upgrade flags.

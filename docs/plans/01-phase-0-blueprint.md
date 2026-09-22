@@ -196,9 +196,6 @@ type Module interface {
 
 server:
   listen: "0.0.0.0:8080"
-  trusted_proxies: ["10.0.0.0/8"]
-  trusted_domains: ["cloud.example.com"]
-  base_url: "https://cloud.example.com"
 
 database:
   driver: "postgres"   # postgres | mysql | sqlite
@@ -227,9 +224,6 @@ storage:
       region: "us-east-1"
 
 auth:
-  session_ttl: "24h"
-  app_password_ttl: "0"   # 0 = never expires
-  password_hash: "argon2id"
   argon2id:
     memory_kb: 65536
     iterations: 3
@@ -248,8 +242,6 @@ plugin:
 observability:
   log_level: "info"        # debug | info | warn | error
   log_format: "json"       # json | text
-  metrics_listen: "127.0.0.1:9090"
-  otel_endpoint: ""        # empty = disabled
 ```
 
 ## Initial DB Schema (`migrations/0001_init.sql`)

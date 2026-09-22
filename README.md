@@ -30,6 +30,12 @@ empty value no static UI is served. Serving rules, cache policy, security
 constraints, and the honest API-coverage caveats are in
 [`docs/adr/0054-admin-ui-static-serving.md`](docs/adr/0054-admin-ui-static-serving.md).
 
+### Managing plugins
+
+`ncgo-cli plugin install` / `enable` / `disable` / `uninstall` update the
+plugin registry in the database; the running server reads that set once at
+boot, so every change takes effect only after a server restart.
+
 ## Project Goals
 
 1. **Wire compatibility** — existing Nextcloud clients (desktop sync, iOS, Android,

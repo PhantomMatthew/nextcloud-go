@@ -191,6 +191,27 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4k: dead config key removal + plugin restart doc
+  sync, from the same strict review line as Phase 4j. Eight keys were
+  defined in `internal/config`, given defaults, and documented but never
+  read by any non-test code — operators could set them and nothing
+  happened (silent no-ops). Removed (re-introduce with the feature that
+  consumes them): `server.trusted_proxies`, `server.trusted_domains`,
+  `server.base_url`, `auth.session_ttl`, `auth.app_password_ttl`,
+  `auth.password_hash`, `observability.metrics_listen`, and
+  `observability.otel_endpoint`. The last two were the ADR-0055
+  acknowledgments (separate metrics listener unwired, OTel deferred); the
+  ADR now records their removal and that both return when the separate
+  listener / OTel SDK land. **Removal is NOT a breaking change for
+  existing YAML files**: `config.Load` unmarshals leniently (koanf's
+  default mapstructure decoder does not set `ErrorUnused`, and `Validate`
+  has no unknown-key rule), so files still setting these keys load without
+  error and the values are silently ignored — the same practical effect
+  they always had; `TestLoadUnknownKeysIgnored` pins that contract. Also
+  from the review: `ncgo-cli plugin enable|disable` help now states a
+  server restart is required (the running server reads the enabled plugin
+  set once at boot via `plugins.StartEnabled`), with matching notes in
+  README.md and the file-tagger / webhook-forwarder example READMEs.
 - **2026-09-22** — Phase 4j: plugin lifecycle gap fixes (ADR-0056), from a
   strict review of the Phase 4 stack. (G1) `ncgo-cli plugin install` no
   longer uses an empty host: the CLI now builds the full install-time

@@ -30,9 +30,7 @@ func Default() *Config {
 func hardcodedDefault() *Config {
 	return &Config{
 		Server: ServerConfig{
-			Listen:         "0.0.0.0:8080",
-			TrustedProxies: []string{},
-			TrustedDomains: []string{},
+			Listen: "0.0.0.0:8080",
 		},
 		Database: DatabaseConfig{
 			Driver:       "postgres",
@@ -53,9 +51,7 @@ func hardcodedDefault() *Config {
 		},
 		Previews: PreviewsConfig{Enabled: true, MaxDimension: 2048},
 		Auth: AuthConfig{
-			SessionTTL:   24 * time.Hour,
-			PasswordHash: "argon2id",
-			Argon2id:     Argon2idConfig{MemoryKB: 65536, Iterations: 3, Parallelism: 4},
+			Argon2id: Argon2idConfig{MemoryKB: 65536, Iterations: 3, Parallelism: 4},
 		},
 		Jobs: JobsConfig{Workers: 4, PollInterval: 5 * time.Second},
 		Plugin: PluginConfig{
@@ -65,9 +61,8 @@ func hardcodedDefault() *Config {
 			DefaultCPUTimeoutMS:  5000,
 		},
 		Observability: ObservabilityConfig{
-			LogLevel:      "info",
-			LogFormat:     "json",
-			MetricsListen: "127.0.0.1:9090",
+			LogLevel:  "info",
+			LogFormat: "json",
 		},
 	}
 }
@@ -75,9 +70,6 @@ func hardcodedDefault() *Config {
 func defaultFlat() map[string]any {
 	return map[string]any{
 		"server.listen":                     "0.0.0.0:8080",
-		"server.trusted_proxies":            []string{},
-		"server.trusted_domains":            []string{},
-		"server.base_url":                   "",
 		"database.driver":                   "postgres",
 		"database.dsn":                      defaultPostgresDSN,
 		"database.max_open_conns":           50,
@@ -97,9 +89,6 @@ func defaultFlat() map[string]any {
 		"previews.enabled":                  true,
 		"previews.max_dimension":            2048,
 		"web.static_root":                   "",
-		"auth.session_ttl":                  24 * time.Hour,
-		"auth.app_password_ttl":             time.Duration(0),
-		"auth.password_hash":                "argon2id",
 		"auth.argon2id.memory_kb":           uint32(65536),
 		"auth.argon2id.iterations":          uint32(3),
 		"auth.argon2id.parallelism":         uint8(4),
@@ -114,10 +103,8 @@ func defaultFlat() map[string]any {
 		"plugin.default_cpu_timeout_ms":     5000,
 		"observability.log_level":           "info",
 		"observability.log_format":          "json",
-		"observability.metrics_listen":      "127.0.0.1:9090",
 		"observability.metrics_enabled":     false,
 		"observability.metrics_token":       "",
-		"observability.otel_endpoint":       "",
 		"maintenance.enabled":               false,
 		"maintenance.needs_db_upgrade":      false,
 		"instance.id":                       "",

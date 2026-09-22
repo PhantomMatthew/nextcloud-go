@@ -210,7 +210,6 @@ Notes:
 ```
 [server]
 listen_addr = ":8080"
-trusted_proxies = []
 behind_tls_terminator = false
 
 [server.tls]

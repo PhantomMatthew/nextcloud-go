@@ -99,6 +99,9 @@ hundred lines of stdlib Go.
   wazero memory introspection not yet wired.
 - **Guest entry-point call metrics** (`Plugin.call` latency/errors): only
   host calls are instrumented in this increment.
-- The pre-existing `observability.metrics_listen` config (a separate
-  listener address) remains unwired; `/metrics` is served on the main
-  listener behind the token.
+- The pre-existing `observability.metrics_listen` (a separate listener
+  address) and `observability.otel_endpoint` config keys were never read by
+  any code and were **removed** in Phase 4k (2026-09-22) — defined-but-dead
+  keys are silent no-ops for operators. `/metrics` is served on the main
+  listener behind the token; both keys return when the separate listener
+  and the OTel SDK land.

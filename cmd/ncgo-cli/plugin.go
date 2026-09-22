@@ -444,8 +444,11 @@ func newPluginEnable(use string, enabled bool) *cobra.Command {
 	verb := strings.Split(use, " ")[0]
 	return &cobra.Command{
 		Use:   use,
-		Short: verb + " an installed plugin",
-		Args:  cobra.ExactArgs(1),
+		Short: verb + " an installed plugin (takes effect on server restart)",
+		Long: verb + " an installed plugin by flipping its enabled flag in the registry.\n\n" +
+			"The running server reads the enabled plugin set once at boot, so a\n" +
+			"SERVER RESTART is required for the change to take effect.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(config.LoadOptions{Path: cfgPath})
 			if err != nil {
