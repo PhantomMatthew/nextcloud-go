@@ -191,6 +191,28 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4e4: `ncgo-cli import-nextcloud dav` imports
+  calendars, calendar objects, address books, and cards from a PHP Nextcloud
+  database (`oc_calendars`/`oc_calendarobjects`/`oc_addressbooks`/`oc_cards`)
+  — **completing the 4e import-nextcloud series** (users → files → shares →
+  dav) (ADR-0051). Objects are written through the production
+  `PutObject` store path, so UID/component/occurrence indexes, size, and
+  etag (SHA-1 of the verbatim ICS/vCard bytes) are computed exactly as a
+  client PUT computes them; Nextcloud's pre-computed columns are not
+  trusted. etags, synctokens, and lastmodified are regenerated (ncgo assigns
+  fresh ctags, bumped per object) — DAV clients must do one full resync
+  after migration, the accepted trade-off of the series. Calendar
+  color/order/timezone/displayname/description are preserved; the
+  per-calendar components list and transparent flag are dropped with summary
+  warnings. Calendar sharing (`oc_calendarshares`/`oc_dav_shares`) is
+  deferred with a counted warning (invite-state mapping is out of scope;
+  re-share after migration). Principals must be `principals/users/<uid>`
+  with the user already in the target; unknown owners, non-user principals,
+  empty object data, and owner+uri collisions with differently-propertied
+  collections are explicit skips (collisions skip the source collection
+  wholesale). Idempotent and resumable: equivalent existing collections are
+  skipped while missing objects still import, so an interrupted run can
+  simply be repeated; `--dry-run` writes nothing.
 - **2026-09-22** — Phase 4e3: `ncgo-cli import-nextcloud shares` imports
   internal (user/group) and public-link shares from a PHP Nextcloud database,
   resolving each share's path through `oc_filecache` + `oc_storages`

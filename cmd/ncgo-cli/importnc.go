@@ -19,7 +19,7 @@ import (
 const noPasswordSentinel = "!"
 
 // importNCFlags holds the persistent flags of import-nextcloud, shared by the
-// 4e-series subcommands (users now; files, shares, dav later).
+// 4e-series subcommands (users, files, shares, dav).
 type importNCFlags struct {
 	sourceDriver string
 	sourceDSN    string
@@ -40,7 +40,7 @@ func newImportNextcloud() *cobra.Command {
 			"  users   users, groups, and group memberships\n" +
 			"  files   user files from a Nextcloud data directory\n" +
 			"  shares  internal and public-link shares\n" +
-			"  dav     calendars and contacts (planned)\n\n" +
+			"  dav     calendars, calendar objects, address books, and contacts\n\n" +
 			"Sessions and app passwords are NOT imported: Nextcloud authtokens are\n" +
 			"cryptographically bound to the source instance secret, so users must log\n" +
 			"in again and reissue app passwords after migrating.",
@@ -63,7 +63,7 @@ func newImportNextcloud() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&f.sourceDSN, "source-dsn", "", "source database DSN (required)")
 	cmd.PersistentFlags().StringVar(&f.tablePrefix, "table-prefix", "oc_", "source table prefix")
 	cmd.PersistentFlags().BoolVar(&f.dryRun, "dry-run", false, "scan and count without writing to the target")
-	cmd.AddCommand(newImportNCUsers(f), newImportNCFiles(f), newImportNCShares(f))
+	cmd.AddCommand(newImportNCUsers(f), newImportNCFiles(f), newImportNCShares(f), newImportNCDAV(f))
 	return cmd
 }
 
