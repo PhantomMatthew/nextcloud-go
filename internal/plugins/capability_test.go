@@ -79,6 +79,33 @@ func TestStorageScopeGrants(t *testing.T) {
 	}
 }
 
+func TestCanHTTPOutbound(t *testing.T) {
+	var nilCaps *Capabilities
+	if nilCaps.canHTTPOutbound("example.com") {
+		t.Fatal("nil capabilities must deny outbound HTTP")
+	}
+	c := &Capabilities{HTTP: HTTPCapabilities{Outbound: []string{"example.com", "api.other.test:8443"}}}
+	for _, tc := range []struct {
+		hostport string
+		want     bool
+	}{
+		{"example.com", true},
+		{"EXAMPLE.com", true},       // case-insensitive
+		{"example.com:80", false},   // host-only grant covers no explicit port form
+		{"example.com:8080", false}, // non-default port needs its own grant
+		{"sub.example.com", false},  // subdomains are not implied
+		{"otherexample.com", false}, // no suffix matching
+		{"api.other.test:8443", true},
+		{"api.other.test", false}, // host:port grant covers no port-less form
+		{"api.other.test:443", false},
+		{"unlisted.test", false},
+	} {
+		if got := c.canHTTPOutbound(tc.hostport); got != tc.want {
+			t.Errorf("canHTTPOutbound(%q) = %v, want %v", tc.hostport, got, tc.want)
+		}
+	}
+}
+
 func TestCanSubscribeEvent(t *testing.T) {
 	var nilCaps *Capabilities
 	if nilCaps.canSubscribeEvent("demo.x") {

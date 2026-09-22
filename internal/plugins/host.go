@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -45,6 +46,11 @@ type HostConfig struct {
 	SystemPrefix string
 	// MaxSpoolBytes caps user-scope write spools; <= 0 means 1 GiB.
 	MaxSpoolBytes int64
+	// HTTPClient backs the http_* host functions. Nil means a default client
+	// with a 30s timeout; per-request redirects are always re-validated
+	// against the calling plugin's allowlist on a shallow copy, never on the
+	// shared client.
+	HTTPClient *http.Client
 }
 
 // Host is a wazero-backed plugin runtime.
@@ -75,6 +81,9 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 	}
 	if cfg.MaxSpoolBytes <= 0 {
 		cfg.MaxSpoolBytes = defaultMaxSpoolBytes
+	}
+	if cfg.HTTPClient == nil {
+		cfg.HTTPClient = &http.Client{Timeout: maxHTTPTimeout}
 	}
 	mb := cfg.DefaultMemoryLimitMB
 	if mb < 1 {

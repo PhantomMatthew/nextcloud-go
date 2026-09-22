@@ -94,6 +94,24 @@ func (c *Capabilities) hasHTTPOutbound() bool {
 	return c != nil && len(c.HTTP.Outbound) > 0
 }
 
+// canHTTPOutbound reports whether hostport ("host" or "host:port", already
+// default-port-normalized by the caller) is covered by the http.outbound
+// grants. Matching is exact and case-insensitive: a host-only grant covers
+// the scheme-default ports only, a host:port grant matches that port only,
+// and a grant never implies subdomains.
+func (c *Capabilities) canHTTPOutbound(hostport string) bool {
+	if c == nil {
+		return false
+	}
+	hostport = strings.ToLower(hostport)
+	for _, g := range c.HTTP.Outbound {
+		if strings.ToLower(g) == hostport {
+			return true
+		}
+	}
+	return false
+}
+
 // canPublishEvent reports whether the plugin may publish to topic. core.*
 // topics are reserved for the host and never publishable.
 func (c *Capabilities) canPublishEvent(topic string) bool {

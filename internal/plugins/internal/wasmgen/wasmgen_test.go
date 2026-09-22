@@ -52,6 +52,13 @@ func TestModulesCompile(t *testing.T) {
 		{"storage-op-create", StorageOpProbeModule("create", "user:/a", "", -3)},
 		{"storage-op-delete", StorageOpProbeModule("delete", "user:/a", "", -3)},
 		{"storage-op-rename", StorageOpProbeModule("rename", "user:/a", "user:/b", -3)},
+		{"http-outbound", HTTPOutboundModule([]byte{0x90}, []byte{0x90}, "X-Test", 200, -3)},
+		{"http-outbound-no-denied", HTTPOutboundModule([]byte{0x90}, nil, "X-Test", 200, 0)},
+		{"http-probe", HTTPProbeModule([]byte{0x90}, -3)},
+		{"http-open-loop", HTTPOpenLoopModule([]byte{0x90}, 17, -12)},
+		{"http-stale", HTTPStaleModule([]byte{0x90})},
+		{"http-absent-header", HTTPAbsentHeaderModule([]byte{0x90}, "X-Missing")},
+		{"http-leak", HTTPLeakModule([]byte{0x90})},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			compiled, err := r.CompileModule(ctx, tc.bin)

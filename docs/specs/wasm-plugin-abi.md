@@ -598,6 +598,25 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-22** — Phase 4c5 implemented outbound HTTP (ADR-0043): the
+  §6.3 `http_*` family is live. `http_request` takes the MessagePack
+  `{method, url, headers, body_bytes, timeout_ms}` map; method must be
+  GET/HEAD/POST/PUT/DELETE/PATCH/OPTIONS and the URL `http`/`https` with
+  a non-empty host (else -2). **Allowlist semantics (v1):** the target is
+  normalized to lowercase `host` when the port is the scheme default
+  (80/443) or absent, else `host:port`; grants match exactly and
+  case-insensitively — `example.com` covers default ports only,
+  `example.com:8080` matches exactly, subdomains are never implied.
+  Every redirect target is re-validated against the same allowlist on a
+  per-request shallow client copy (-3 on a non-granted hop); plugin
+  `Host` headers are dropped; `timeout_ms` ≤ 0 defaults to 10s and is
+  clamped to 30s (deadline → -6, cancel → -7, other network errors → -1).
+  Responses stream through per-instance handles on the 16-entry
+  `handleHTTP` budget (-12 beyond): `http_response_status` returns the
+  status code, `http_response_header` joins values with `", "` (absent →
+  0 bytes), `http_response_body_read` returns 0 at EOF,
+  `http_response_close` releases the body; stale handles → -4 and leaked
+  responses are closed by handle-table cleanup.
 - **2026-09-22** — Phase 4c4 implemented storage (ADR-0042): the §6.3
   `storage_*` family is live. **Path convention (v1):** plugin storage
   paths carry a scheme prefix — `user:/path` addresses the calling user's

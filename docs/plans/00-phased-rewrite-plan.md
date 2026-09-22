@@ -189,6 +189,18 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4c5: outbound `http.*` host functions implemented —
+  `http_request` validates method/scheme and enforces the `http.outbound`
+  allowlist with default-port normalization (grant `example.com` covers
+  default ports only, `example.com:8080` matches exactly, no subdomain
+  implication, case-insensitive), every redirect target is re-validated on
+  a shallow client copy (non-granted → -3), timeouts default to 10s and
+  clamp to 30s (deadline → -6), plugin-supplied `Host` headers are dropped,
+  and responses stream through per-instance handles on the 16-response
+  budget with closeAll cleanup (status / header joined with `", `", absent
+  header → 0 bytes / body_read EOF → 0 / close; stale handles → -4).
+  HostConfig gains HTTPClient (nil = default 30s client); pluginsdk gains
+  the HTTPDo + HTTPResponse bindings (see ADR-0043).
 - **2026-09-22** — Phase 4c4: `storage.*` host functions implemented —
   scheme-prefix path routing (`user:` = calling user's files via the files
   DAV, `system:` = per-plugin namespace under

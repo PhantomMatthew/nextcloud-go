@@ -30,7 +30,7 @@ const (
 	opI32GtU      = 0x4b
 	opI32GeU      = 0x4f
 	opI32Eqz      = 0x45
-	opI32GtS      = 0x4e
+	opI32GtS      = 0x4a
 	opI64ShrU     = 0x88
 	opI32WrapI64  = 0xa7
 	opI32Sub      = 0x6b
@@ -1576,5 +1576,301 @@ func StorageOpProbeModule(op, path, dst string, want int32) []byte {
 	expr = append(expr, opEnd)
 	expr = append(expr, i32c(0)...)
 	s.onInstall = expr
+	return s.build()
+}
+
+// httpImports are the host imports every outbound-HTTP probe module uses:
+// log plus the http_* family (subset per module).
+const (
+	httpImpLog = iota
+	httpImpRequest
+	httpImpStatus
+	httpImpHeader
+	httpImpBodyRead
+	httpImpClose
+)
+
+var httpAllImports = []imp{
+	{"log", tLog},                      // 0
+	{"http_request", tTwoI32I64},       // 1
+	{"http_response_status", tAlloc},   // 2
+	{"http_response_header", tFiveI32}, // 3
+	{"http_response_body_read", tLog},  // 4
+	{"http_response_close", tAlloc},    // 5
+}
+
+// HTTPOutboundModule builds an outbound-HTTP round-trip probe. The exported
+// do_http entry calls http_request with reqBytes (MessagePack), and on
+// success logs "req-ok", checks the status (wantStatus → "status-ok"), reads
+// headerName (logging the value and "header-ok"), streams the body in a read
+// loop logging each chunk ("body-ok" at EOF), and closes ("close-ok"). It
+// then issues deniedReqBytes expecting high32 == deniedWant ("denied-ok");
+// a nil deniedReqBytes skips the second request.
+func HTTPOutboundModule(reqBytes, deniedReqBytes []byte, headerName string, wantStatus, deniedWant int32) []byte {
+	const (
+		outBuf = 8192
+		outMax = 4096
+	)
+	s := guestSpec{
+		imports:   httpAllImports,
+		data:      [][]byte{reqBytes, []byte(headerName), []byte("req-ok"), []byte("status-ok"), []byte("header-ok"), []byte("body-ok"), []byte("close-ok"), []byte("denied-ok")},
+		onInstall: i32c(0),
+	}
+	if deniedReqBytes != nil {
+		s.data = append(s.data, deniedReqBytes)
+	}
+	offs := s.dataOffsets()
+	reqOff, reqLen := offs[0], i32n(len(reqBytes))
+	nameOff, nameLen := offs[1], i32n(len(headerName))
+	marker := func(i int) []byte {
+		m := s.data[2+i]
+		e := logCall(offs[2+i], i32n(len(m)))
+		return append(e, opDrop)
+	}
+
+	// locals: 0 = handle (i32), 1 = n (i32), 2 = packed (i64)
+	expr := make([]byte, 0, 192)
+	expr = append(expr, i32c(reqOff)...)
+	expr = append(expr, i32c(reqLen)...)
+	expr = append(expr, opCall, httpImpRequest, opLocalSet, 0x02)
+	expr = append(expr, opLocalGet, 0x02)
+	expr = append(expr, i64c(32)...)
+	expr = append(expr, opI64ShrU, opI32WrapI64, opI32Eqz, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x02, opI32WrapI64, opLocalSet, 0x00)
+	expr = append(expr, marker(0)...) // req-ok
+	// status
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, opCall, httpImpStatus)
+	expr = append(expr, i32c(wantStatus)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, marker(1)...) // status-ok
+	expr = append(expr, opEnd)
+	// header
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i32c(nameOff)...)
+	expr = append(expr, i32c(nameLen)...)
+	expr = append(expr, i32c(outBuf)...)
+	expr = append(expr, i32c(outMax)...)
+	expr = append(expr, opCall, httpImpHeader, opLocalSet, 0x01)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opI32GtS, opIf, blockVoid)
+	expr = append(expr, i32c(1)...)
+	expr = append(expr, i32c(outBuf)...)
+	expr = append(expr, opLocalGet, 0x01, opCall, httpImpLog, opDrop) // log header value
+	expr = append(expr, marker(2)...)                                 // header-ok
+	expr = append(expr, opEnd)
+	// body read loop: log each chunk, exit when n <= 0
+	expr = append(expr, opBlock, blockVoid, opLoop, blockVoid)
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i32c(outBuf)...)
+	expr = append(expr, i32c(outMax)...)
+	expr = append(expr, opCall, httpImpBodyRead, opLocalSet, 0x01)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opI32GtS, opI32Eqz, opBrIf, 0x01)
+	expr = append(expr, i32c(1)...)
+	expr = append(expr, i32c(outBuf)...)
+	expr = append(expr, opLocalGet, 0x01, opCall, httpImpLog, opDrop) // log chunk
+	expr = append(expr, opBr, 0x00)
+	expr = append(expr, opEnd, opEnd)
+	expr = append(expr, marker(3)...) // body-ok
+	// close
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, opCall, httpImpClose, opI32Eqz, opIf, blockVoid)
+	expr = append(expr, marker(4)...) // close-ok
+	expr = append(expr, opEnd)
+	expr = append(expr, opEnd)
+	if deniedReqBytes != nil {
+		dOff, dLen := offs[8], i32n(len(deniedReqBytes))
+		expr = append(expr, i32c(dOff)...)
+		expr = append(expr, i32c(dLen)...)
+		expr = append(expr, opCall, httpImpRequest)
+		expr = append(expr, i64c(32)...)
+		expr = append(expr, opI64ShrU, opI32WrapI64)
+		expr = append(expr, i32c(deniedWant)...)
+		expr = append(expr, opI32Eq, opIf, blockVoid)
+		expr = append(expr, marker(5)...) // denied-ok
+		expr = append(expr, opEnd)
+	}
+	expr = append(expr, i32c(0)...)
+	s.extras = append(s.extras, extraFn{name: "do_http", typ: tNullToI32, locals: 2, locals64: 1, expr: expr})
+	return s.build()
+}
+
+// HTTPProbeModule issues reqBytes via http_request on install and logs
+// "probe-ok" when the high-32 code equals want (e.g. -3 denied, -2 invalid,
+// -6 timeout).
+func HTTPProbeModule(reqBytes []byte, want int32) []byte {
+	s := guestSpec{
+		imports: []imp{{"log", tLog}, {"http_request", tTwoI32I64}},
+		data:    [][]byte{reqBytes, []byte("probe-ok")},
+	}
+	offs := s.dataOffsets()
+
+	expr := make([]byte, 0, 48)
+	expr = append(expr, i32c(offs[0])...)
+	expr = append(expr, i32c(i32n(len(reqBytes)))...)
+	expr = append(expr, opCall, 0x01)
+	expr = append(expr, i64c(32)...)
+	expr = append(expr, opI64ShrU, opI32WrapI64) // high32 = error code
+	expr = append(expr, i32c(want)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, logCall(offs[1], i32n(len("probe-ok")))...)
+	expr = append(expr, opDrop)
+	expr = append(expr, opEnd)
+	expr = append(expr, i32c(0)...)
+	s.onInstall = expr
+	return s.build()
+}
+
+// HTTPOpenLoopModule issues reqBytes count times on install without closing
+// and logs "budget-ok" when the last call's high-32 code equals want (e.g.
+// -12 once the 16-response budget is exhausted).
+func HTTPOpenLoopModule(reqBytes []byte, count int, want int32) []byte {
+	s := guestSpec{
+		imports: []imp{{"log", tLog}, {"http_request", tTwoI32I64}},
+		data:    [][]byte{reqBytes, []byte("budget-ok")},
+	}
+	offs := s.dataOffsets()
+
+	// locals: 0 = i (i32), 1 = packed (i64)
+	expr := make([]byte, 0, 64)
+	expr = append(expr, opBlock, blockVoid, opLoop, blockVoid)
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i32c(i32n(count))...)
+	expr = append(expr, opI32GeU, opBrIf, 0x01)
+	expr = append(expr, i32c(offs[0])...)
+	expr = append(expr, i32c(i32n(len(reqBytes)))...)
+	expr = append(expr, opCall, 0x01, opLocalSet, 0x01) // packed = http_request
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i32c(i32n(count-1))...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i64c(32)...)
+	expr = append(expr, opI64ShrU, opI32WrapI64)
+	expr = append(expr, i32c(want)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, logCall(offs[1], i32n(len("budget-ok")))...)
+	expr = append(expr, opDrop)
+	expr = append(expr, opEnd)
+	expr = append(expr, opEnd)
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i32c(1)...)
+	expr = append(expr, opI32Add, opLocalSet, 0x00)
+	expr = append(expr, opBr, 0x00)
+	expr = append(expr, opEnd, opEnd)
+	expr = append(expr, i32c(0)...)
+	s.onInstall = expr
+	s.onInstallLocals = 1
+	s.onInstallLocals64 = 1
+	return s.build()
+}
+
+// HTTPStaleModule issues reqBytes on install, closes the response, then
+// re-reads its status, logging "stale-ok" when the closed handle answers
+// -4 (not found).
+func HTTPStaleModule(reqBytes []byte) []byte {
+	s := guestSpec{
+		imports: []imp{
+			{"log", tLog},
+			{"http_request", tTwoI32I64},
+			{"http_response_status", tAlloc},
+			{"http_response_close", tAlloc},
+		},
+		data: [][]byte{reqBytes, []byte("stale-ok")},
+	}
+	offs := s.dataOffsets()
+
+	// locals: 0 = handle (i32), 1 = packed (i64)
+	expr := make([]byte, 0, 48)
+	expr = append(expr, i32c(offs[0])...)
+	expr = append(expr, i32c(i32n(len(reqBytes)))...)
+	expr = append(expr, opCall, 0x01, opLocalSet, 0x01)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i64c(32)...)
+	expr = append(expr, opI64ShrU, opI32WrapI64, opI32Eqz, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x01, opI32WrapI64, opLocalSet, 0x00)
+	expr = append(expr, opLocalGet, 0x00, opCall, 0x03, opDrop) // close
+	expr = append(expr, opLocalGet, 0x00, opCall, 0x02)         // status on closed handle
+	expr = append(expr, i32c(-4)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, logCall(offs[1], i32n(len("stale-ok")))...)
+	expr = append(expr, opDrop)
+	expr = append(expr, opEnd)
+	expr = append(expr, opEnd)
+	expr = append(expr, i32c(0)...)
+	s.onInstall = expr
+	s.onInstallLocals = 1
+	s.onInstallLocals64 = 1
+	return s.build()
+}
+
+// HTTPAbsentHeaderModule issues reqBytes on install and reads the header
+// name, logging "absent-ok" when the host writes 0 bytes (absent header),
+// then closes the response.
+func HTTPAbsentHeaderModule(reqBytes []byte, name string) []byte {
+	s := guestSpec{
+		imports: []imp{
+			{"log", tLog},
+			{"http_request", tTwoI32I64},
+			{"http_response_header", tFiveI32},
+			{"http_response_close", tAlloc},
+		},
+		data: [][]byte{reqBytes, []byte(name), []byte("absent-ok")},
+	}
+	offs := s.dataOffsets()
+
+	// locals: 0 = handle (i32), 1 = packed (i64)
+	expr := make([]byte, 0, 64)
+	expr = append(expr, i32c(offs[0])...)
+	expr = append(expr, i32c(i32n(len(reqBytes)))...)
+	expr = append(expr, opCall, 0x01, opLocalSet, 0x01)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i64c(32)...)
+	expr = append(expr, opI64ShrU, opI32WrapI64, opI32Eqz, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x01, opI32WrapI64, opLocalSet, 0x00)
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i32c(offs[1])...)
+	expr = append(expr, i32c(i32n(len(name)))...)
+	expr = append(expr, i32c(8192)...)
+	expr = append(expr, i32c(4096)...)
+	expr = append(expr, opCall, 0x02, opI32Eqz, opIf, blockVoid) // header read → 0
+	expr = append(expr, logCall(offs[2], i32n(len("absent-ok")))...)
+	expr = append(expr, opDrop)
+	expr = append(expr, opEnd)
+	expr = append(expr, opLocalGet, 0x00, opCall, 0x03, opDrop) // close
+	expr = append(expr, opEnd)
+	expr = append(expr, i32c(0)...)
+	s.onInstall = expr
+	s.onInstallLocals = 1
+	s.onInstallLocals64 = 1
+	return s.build()
+}
+
+// HTTPLeakModule issues reqBytes on install without closing the response,
+// logging "leak-ok" on success. The test destroys the instance to verify
+// closeAll cleanup closes the response body.
+func HTTPLeakModule(reqBytes []byte) []byte {
+	s := guestSpec{
+		imports: []imp{{"log", tLog}, {"http_request", tTwoI32I64}},
+		data:    [][]byte{reqBytes, []byte("leak-ok")},
+	}
+	offs := s.dataOffsets()
+
+	// locals: 0 = packed (i64)
+	expr := make([]byte, 0, 32)
+	expr = append(expr, i32c(offs[0])...)
+	expr = append(expr, i32c(i32n(len(reqBytes)))...)
+	expr = append(expr, opCall, 0x01, opLocalSet, 0x00)
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i64c(32)...)
+	expr = append(expr, opI64ShrU, opI32WrapI64, opI32Eqz, opIf, blockVoid)
+	expr = append(expr, logCall(offs[1], i32n(len("leak-ok")))...)
+	expr = append(expr, opDrop)
+	expr = append(expr, opEnd)
+	expr = append(expr, i32c(0)...)
+	s.onInstall = expr
+	s.onInstallLocals64 = 1
 	return s.build()
 }
