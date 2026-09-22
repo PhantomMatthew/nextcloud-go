@@ -49,6 +49,14 @@ type HostConfig struct {
 	SystemPrefix string
 	// MaxSpoolBytes caps user-scope write spools; <= 0 means 1 GiB.
 	MaxSpoolBytes int64
+	// DBMaxConcurrentPerPlugin bounds one plugin's in-flight DB statements —
+	// the db Query/Exec/Begin calls executing at the same moment, aggregated
+	// across all of the plugin's pooled instances (ADR-0060). Exhaustion
+	// fails the call with ErrCodeQuotaExceeded. <= 0 means the default of 4.
+	// The quota governs in-flight statements only: open rows/tx handles stay
+	// under the per-instance handle budget (spec §8), and a cross-instance
+	// aggregate handle cap is a documented follow-up.
+	DBMaxConcurrentPerPlugin int
 	// HTTPRatePerMinute is the sustained http_request allowance per plugin
 	// id (ADR-0059); one call — including its redirect chain — costs one
 	// token. <= 0 means the default of 120. The allowance is process-local
@@ -93,6 +101,12 @@ type Host struct {
 	// to cfg.HTTPClient when the egress guard cannot be installed on it.
 	httpGuarded *http.Client
 
+	// dbConc counts in-flight db_* statements per plugin id (ADR-0060); the
+	// map is bounded by the installed plugin count (entries are deleted at
+	// zero), keyed by plugin id, and reset on process restart.
+	dbConcMu sync.Mutex
+	dbConc   map[string]int
+
 	// httpRate holds the per-plugin http_request token buckets (ADR-0059);
 	// keyed by plugin id, bounded by the installed plugin count, reset on
 	// process restart.
@@ -122,6 +136,9 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 	if cfg.MaxSpoolBytes <= 0 {
 		cfg.MaxSpoolBytes = defaultMaxSpoolBytes
 	}
+	if cfg.DBMaxConcurrentPerPlugin <= 0 {
+		cfg.DBMaxConcurrentPerPlugin = defaultDBMaxConcurrentPerPlugin
+	}
 	if cfg.HTTPRatePerMinute <= 0 {
 		cfg.HTTPRatePerMinute = defaultHTTPRatePerMinute
 	}
@@ -148,7 +165,7 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().
 		WithCloseOnContextDone(true).
 		WithMemoryLimitPages(pages))
-	h := &Host{rt: rt, logger: logger, cfg: cfg, handleTabs: make(map[api.Module]*handleTable), dispatch: make(map[*Plugin]struct{}), httpRate: make(map[string]*tokenBucket)}
+	h := &Host{rt: rt, logger: logger, cfg: cfg, handleTabs: make(map[api.Module]*handleTable), dispatch: make(map[*Plugin]struct{}), httpRate: make(map[string]*tokenBucket), dbConc: make(map[string]int)}
 	h.httpGuarded = guardedHTTPClient(ctx, cfg.HTTPClient, logger)
 	if cfg.Bus != nil {
 		h.unsubEvents = cfg.Bus.Subscribe(h.dispatchEvent)

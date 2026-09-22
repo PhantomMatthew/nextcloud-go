@@ -119,15 +119,18 @@ type JobsConfig struct {
 }
 
 // PluginConfig controls the WASM plugin host. HTTPRatePerMinute and
-// MaxHTTPResponseMB bound plugin outbound HTTP (ADR-0059); zero selects the
-// host default (120 calls/min with burst 30, 32 MiB per response).
+// MaxHTTPResponseMB bound plugin outbound HTTP (ADR-0059);
+// DBMaxConcurrentPerPlugin bounds one plugin's in-flight DB statements
+// (ADR-0060); zero selects the host default (120 calls/min with burst 30,
+// 32 MiB per response, 4 concurrent statements).
 type PluginConfig struct {
-	Enabled              bool   `koanf:"enabled"`
-	InstallDir           string `koanf:"install_dir"`
-	DefaultMemoryLimitMB int    `koanf:"default_memory_limit_mb"`
-	DefaultCPUTimeoutMS  int    `koanf:"default_cpu_timeout_ms"`
-	HTTPRatePerMinute    int    `koanf:"http_rate_per_minute"`
-	MaxHTTPResponseMB    int    `koanf:"max_http_response_mb"`
+	Enabled                  bool   `koanf:"enabled"`
+	InstallDir               string `koanf:"install_dir"`
+	DefaultMemoryLimitMB     int    `koanf:"default_memory_limit_mb"`
+	DefaultCPUTimeoutMS      int    `koanf:"default_cpu_timeout_ms"`
+	HTTPRatePerMinute        int    `koanf:"http_rate_per_minute"`
+	MaxHTTPResponseMB        int    `koanf:"max_http_response_mb"`
+	DBMaxConcurrentPerPlugin int    `koanf:"db_max_concurrent_per_plugin"`
 }
 
 // ObservabilityConfig covers logging, metrics, and tracing endpoints.

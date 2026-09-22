@@ -51,6 +51,7 @@ plugin:
   default_cpu_timeout_ms: 5000
   http_rate_per_minute: 240
   max_http_response_mb: 64
+  db_max_concurrent_per_plugin: 8
 
 observability:
   log_level: info

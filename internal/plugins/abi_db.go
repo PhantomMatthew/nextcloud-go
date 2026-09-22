@@ -158,6 +158,11 @@ func (h *Host) dbQuery(ctx context.Context, mod api.Module, sqlPtr, sqlLen, args
 	if code != pluginsdk.ErrCodeOK {
 		return int64(code) << 32
 	}
+	release, ok := h.acquireDBSlotCtx(ctx)
+	if !ok {
+		return int64(pluginsdk.ErrCodeQuotaExceeded) << 32
+	}
+	defer release()
 	return h.doQuery(ctx, mod, h.cfg.DB, query, args)
 }
 
@@ -187,6 +192,11 @@ func (h *Host) dbExec(ctx context.Context, mod api.Module, sqlPtr, sqlLen, argsP
 	if code != pluginsdk.ErrCodeOK {
 		return code
 	}
+	release, ok := h.acquireDBSlotCtx(ctx)
+	if !ok {
+		return pluginsdk.ErrCodeQuotaExceeded
+	}
+	defer release()
 	return h.doExec(ctx, mod, h.cfg.DB, query, args, outRows)
 }
 
@@ -214,6 +224,14 @@ func (h *Host) dbTxBegin(ctx context.Context, mod api.Module) int64 {
 	if !pluginCaps(ctx).hasAnyDB() {
 		return int64(pluginsdk.ErrCodePermissionDenied) << 32
 	}
+	// Begin pins a pool connection immediately, so it draws a statement slot
+	// like Query/Exec do; the slot is released when Begin returns — the
+	// resulting tx handle stays under the per-instance rows-handle budget.
+	release, ok := h.acquireDBSlotCtx(ctx)
+	if !ok {
+		return int64(pluginsdk.ErrCodeQuotaExceeded) << 32
+	}
+	defer release()
 	tx, err := h.cfg.DB.Begin(ctx)
 	if err != nil {
 		return int64(pluginsdk.ErrCodeInternal) << 32
@@ -303,6 +321,11 @@ func (h *Host) dbTxQuery(ctx context.Context, mod api.Module, txHandle, sqlPtr, 
 	if code != pluginsdk.ErrCodeOK {
 		return int64(code) << 32
 	}
+	release, ok := h.acquireDBSlotCtx(ctx)
+	if !ok {
+		return int64(pluginsdk.ErrCodeQuotaExceeded) << 32
+	}
+	defer release()
 	return h.doQuery(ctx, mod, tx, query, args)
 }
 
@@ -318,5 +341,10 @@ func (h *Host) dbTxExec(ctx context.Context, mod api.Module, txHandle, sqlPtr, s
 	if code != pluginsdk.ErrCodeOK {
 		return code
 	}
+	release, ok := h.acquireDBSlotCtx(ctx)
+	if !ok {
+		return pluginsdk.ErrCodeQuotaExceeded
+	}
+	defer release()
 	return h.doExec(ctx, mod, tx, query, args, outRows)
 }

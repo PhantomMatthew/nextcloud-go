@@ -305,6 +305,8 @@ func installHostConfig(cfg *config.Config, db database.DB, st storage.Storage) p
 		Jobs:                 jobs.NewRunner(jobs.NewSQLStore(db), nil, 1, time.Minute),
 		HTTPRatePerMinute:    cfg.Plugin.HTTPRatePerMinute,
 		MaxHTTPResponseBytes: int64(cfg.Plugin.MaxHTTPResponseMB) << 20,
+		// Hooks run DDL/DML through db_*, so the quota applies here too.
+		DBMaxConcurrentPerPlugin: cfg.Plugin.DBMaxConcurrentPerPlugin,
 	}
 }
 

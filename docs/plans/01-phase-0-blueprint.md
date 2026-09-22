@@ -240,6 +240,7 @@ plugin:
   default_cpu_timeout_ms: 5000
   http_rate_per_minute: 120    # per-plugin http_request allowance (burst 30); 0 = default
   max_http_response_mb: 32     # per-response body cap; 0 = default
+  db_max_concurrent_per_plugin: 4  # per-plugin in-flight db_* statement cap; 0 = default
 
 observability:
   log_level: "info"        # debug | info | warn | error

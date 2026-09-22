@@ -40,7 +40,7 @@ func TestDefaultSnapshot(t *testing.T) {
 		t.Errorf("jobs defaults: %+v", got.Jobs)
 	}
 	if !got.Plugin.Enabled || got.Plugin.DefaultMemoryLimitMB != 32 || got.Plugin.DefaultCPUTimeoutMS != 5000 ||
-		got.Plugin.HTTPRatePerMinute != 120 || got.Plugin.MaxHTTPResponseMB != 32 {
+		got.Plugin.HTTPRatePerMinute != 120 || got.Plugin.MaxHTTPResponseMB != 32 || got.Plugin.DBMaxConcurrentPerPlugin != 4 {
 		t.Errorf("plugin defaults: %+v", got.Plugin)
 	}
 	if got.Observability.LogLevel != "info" || got.Observability.LogFormat != "json" {
@@ -90,8 +90,8 @@ func TestLoadFullFile(t *testing.T) {
 	if cfg.Instance.ID != "ocabcdef0123" || cfg.Instance.Secret != "supersecret" {
 		t.Errorf("instance = %+v", cfg.Instance)
 	}
-	if cfg.Plugin.HTTPRatePerMinute != 240 || cfg.Plugin.MaxHTTPResponseMB != 64 {
-		t.Errorf("plugin http limits = %+v", cfg.Plugin)
+	if cfg.Plugin.HTTPRatePerMinute != 240 || cfg.Plugin.MaxHTTPResponseMB != 64 || cfg.Plugin.DBMaxConcurrentPerPlugin != 8 {
+		t.Errorf("plugin limits = %+v", cfg.Plugin)
 	}
 	if cfg.Database.ConnMaxLifetime != time.Hour {
 		t.Errorf("conn_max_lifetime = %s", cfg.Database.ConnMaxLifetime)
@@ -232,6 +232,7 @@ func TestValidateRules(t *testing.T) {
 		{"plugin_timeout", func(c *Config) { c.Plugin.DefaultCPUTimeoutMS = 30001 }, "plugin.default_cpu_timeout_ms"},
 		{"plugin_http_rate_negative", func(c *Config) { c.Plugin.HTTPRatePerMinute = -1 }, "plugin.http_rate_per_minute"},
 		{"plugin_http_response_negative", func(c *Config) { c.Plugin.MaxHTTPResponseMB = -1 }, "plugin.max_http_response_mb"},
+		{"plugin_db_concurrent_negative", func(c *Config) { c.Plugin.DBMaxConcurrentPerPlugin = -1 }, "plugin.db_max_concurrent_per_plugin"},
 		{"storage_backend", func(c *Config) { c.Storage.DefaultBackend = "s3" }, "storage.default_backend"},
 		{"encryption_no_key", func(c *Config) { c.Encryption.Enabled = true }, "encryption.master_key_path"},
 		{"previews_dim_low", func(c *Config) { c.Previews.MaxDimension = 31 }, "previews.max_dimension"},

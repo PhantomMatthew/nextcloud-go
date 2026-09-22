@@ -614,6 +614,23 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-22** — Phase 4o closed the ADR-0039 "per-plugin connection
+  pools/quotas" follow-up in its quota form (ADR-0060): the five
+  connection-consuming `db_*` entries (`db_query`, `db_exec`, `db_tx_query`,
+  `db_tx_exec`, `db_tx_begin`) now acquire a per-plugin-id in-flight
+  statement slot after the capability/SQL checks and hold it only for the
+  duration of the `Query`/`Exec`/`Begin` call; exhaustion returns -8
+  (`ErrQuotaExceeded`) plus a warn log naming the plugin.
+  `HostConfig.DBMaxConcurrentPerPlugin` defaults to 4 and is
+  operator-tunable via `plugin.db_max_concurrent_per_plugin` (0 = host
+  default, negatives rejected). Open rows/tx handles remain governed by the
+  §8 per-instance handle budgets — the quota bounds concurrent *execution*,
+  not handle lifetime, and a cross-instance aggregate handle cap stays a
+  follow-up. No new metric families: refusals classify into the existing
+  bounded `result` label (-8 → `internal`), and statement duration was
+  already covered by the Phase 4i §12 histograms, closing the "query
+  duration" follow-up without a code change. Read/write splitting remains
+  the last open ADR-0039 follow-up.
 - **2026-09-22** — Phase 4n closed the ADR-0043 "per-plugin rate limits" and
   "response size caps" follow-ups (ADR-0059), leaving only >1 MiB streaming
   request bodies outstanding. Each `http_request` call (redirect chain

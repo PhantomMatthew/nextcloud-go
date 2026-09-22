@@ -191,6 +191,32 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4o: per-plugin DB concurrency quota for the plugin
+  host (ADR-0060), closing the ADR-0039 "per-plugin connection
+  pools/quotas" follow-up in its quota form (per-plugin pools and
+  read/write splitting remain follow-ups; query duration in §12 metrics was
+  already closed by 4i's wrapHostMetrics, no code change needed). The five
+  connection-consuming entries — `db_query`, `db_exec`, `db_tx_query`,
+  `db_tx_exec`, `db_tx_begin` — acquire a slot from a per-plugin-id counter
+  (`Host` `dbConcMu` + `map[string]int`, zero-count keys deleted, bounded
+  by installed plugin count, reset on restart) after the capability/SQL
+  checks and `defer` its release around the `Query`/`Exec`/`Begin` call, so
+  the quota governs in-flight statements only; open rows/tx handles stay
+  under the per-instance handle budget and a cross-instance aggregate
+  handle cap is a documented follow-up (bounded in practice: 16
+  handles/instance, operator-reviewed manifest pool sizes). Exhaustion
+  returns -8 (`ErrQuotaExceeded`) plus a warn log naming the plugin — the
+  4n rate-limit posture — and classifies into the existing bounded `result`
+  label (no new metric families). `HostConfig.DBMaxConcurrentPerPlugin` <= 0
+  defaults to 4 (bounds concurrency, not throughput; slot lifetime is
+  capped by the per-call wall-clock timeout). New config key
+  `plugin.db_max_concurrent_per_plugin` (default 4, negative rejected)
+  passed through by both `internal/app` and the `ncgo-cli` install host —
+  install/upgrade hooks run DDL/DML through `db_*` and must not bypass the
+  quota. Tests: helper boundary/isolation/zero-delete/defaulting unit
+  tests; wasm integration with quota 1 (held slot forces -8 + warn log;
+  uncontended sequential statements succeed). Spec Change Log and Phase 0
+  blueprint config YAML updated.
 - **2026-09-22** — Phase 4n: per-plugin rate limit + response size cap for
   plugin outbound HTTP (ADR-0059), closing two of the three ADR-0043
   follow-ups (only >1 MiB streaming request bodies remain, an ABI extension

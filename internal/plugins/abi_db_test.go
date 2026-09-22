@@ -116,3 +116,48 @@ func TestDBTransaction(t *testing.T) {
 		t.Fatalf("rows = %d, want 1 (tx2 must be rolled back)", n)
 	}
 }
+
+// ADR-0060: with the plugin's only in-flight statement slot occupied at the
+// host layer, the probe's db_query fails with -8 (ErrQuotaExceeded) and the
+// refusal is warn-logged with the plugin id.
+func TestDBQuotaExhausted(t *testing.T) {
+	h, buf := testHost(t, HostConfig{DB: testDB(t), DBMaxConcurrentPerPlugin: 1})
+	release, ok := h.acquireDBSlot("com.example.probe")
+	if !ok {
+		t.Fatal("first acquire denied, want allow")
+	}
+	defer release()
+	installModule(t, h, dbManifest(), wasmgen.DBDeniedModule("SELECT path FROM pt_items", ErrCodeQuotaExceeded))
+	out := buf.String()
+	if !strings.Contains(out, "denied-ok") {
+		t.Fatalf("quota denial probe missing: %q", out)
+	}
+	if !strings.Contains(out, "concurrency quota exceeded") || !strings.Contains(out, "com.example.probe") {
+		t.Fatalf("warn log naming the plugin missing: %q", out)
+	}
+}
+
+// ADR-0060: quota 1 still admits sequential statements — each Query/Exec
+// releases its slot before the next statement runs.
+func TestDBQuotaSequentialStatementsOK(t *testing.T) {
+	h, buf := testHost(t, HostConfig{DB: testDB(t), DBMaxConcurrentPerPlugin: 1})
+	ctx := context.Background()
+	p, err := h.Load(ctx, dbManifest(), wasmgen.DBModule(dbCreateSQL, dbInsertSQL, dbSelectSQL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close(context.Background()) })
+	if err := p.Install(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Call(ctx, "probe"); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "hello-item") {
+		t.Fatalf("row missing from log: %q", out)
+	}
+	if !strings.Contains(out, "eof-ok") {
+		t.Fatalf("EOF probe missing: %q", out)
+	}
+}

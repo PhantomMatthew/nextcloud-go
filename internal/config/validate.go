@@ -71,6 +71,9 @@ func (c *Config) Validate() error {
 	if c.Plugin.MaxHTTPResponseMB < 0 {
 		errs = append(errs, &ValidationError{Field: "plugin.max_http_response_mb", Reason: "must be >= 0"})
 	}
+	if c.Plugin.DBMaxConcurrentPerPlugin < 0 {
+		errs = append(errs, &ValidationError{Field: "plugin.db_max_concurrent_per_plugin", Reason: "must be >= 0"})
+	}
 
 	if c.Storage.DefaultBackend == "" {
 		errs = append(errs, &ValidationError{Field: "storage.default_backend", Reason: "must not be empty"})
