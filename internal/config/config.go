@@ -9,6 +9,7 @@ type Config struct {
 	Cache         CacheConfig         `koanf:"cache"`
 	Storage       StorageConfig       `koanf:"storage"`
 	Encryption    EncryptionConfig    `koanf:"encryption"`
+	Previews      PreviewsConfig      `koanf:"previews"`
 	Auth          AuthConfig          `koanf:"auth"`
 	Jobs          JobsConfig          `koanf:"jobs"`
 	Plugin        PluginConfig        `koanf:"plugin"`
@@ -76,6 +77,13 @@ type BackendConfig struct {
 type EncryptionConfig struct {
 	Enabled       bool   `koanf:"enabled"`
 	MasterKeyPath string `koanf:"master_key_path"`
+}
+
+// PreviewsConfig controls server-side image preview generation (ADR-0053).
+// MaxDimension caps the requested preview box edge (x/y are clamped to it).
+type PreviewsConfig struct {
+	Enabled      bool `koanf:"enabled"`
+	MaxDimension int  `koanf:"max_dimension"`
 }
 
 // AuthConfig covers sessions, app passwords, hashing, and bootstrap admin.

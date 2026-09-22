@@ -75,5 +75,9 @@ func (c *Config) Validate() error {
 		errs = append(errs, &ValidationError{Field: "encryption.master_key_path", Reason: "required when encryption is enabled"})
 	}
 
+	if c.Previews.MaxDimension < 32 || c.Previews.MaxDimension > 4096 {
+		errs = append(errs, &ValidationError{Field: "previews.max_dimension", Reason: "must be between 32 and 4096"})
+	}
+
 	return errors.Join(errs...)
 }

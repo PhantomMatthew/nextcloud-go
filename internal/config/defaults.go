@@ -51,6 +51,7 @@ func hardcodedDefault() *Config {
 				"local": {Type: "localfs", Root: "/var/lib/ncgo/data"},
 			},
 		},
+		Previews: PreviewsConfig{Enabled: true, MaxDimension: 2048},
 		Auth: AuthConfig{
 			SessionTTL:   24 * time.Hour,
 			PasswordHash: "argon2id",
@@ -93,6 +94,8 @@ func defaultFlat() map[string]any {
 		"storage.backends.local.root":       "/var/lib/ncgo/data",
 		"encryption.enabled":                false,
 		"encryption.master_key_path":        "",
+		"previews.enabled":                  true,
+		"previews.max_dimension":            2048,
 		"auth.session_ttl":                  24 * time.Hour,
 		"auth.app_password_ttl":             time.Duration(0),
 		"auth.password_hash":                "argon2id",

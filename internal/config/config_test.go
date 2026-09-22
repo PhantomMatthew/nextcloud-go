@@ -24,6 +24,9 @@ func TestDefaultSnapshot(t *testing.T) {
 	if got.Storage.DefaultBackend != "local" {
 		t.Errorf("storage.default_backend = %q", got.Storage.DefaultBackend)
 	}
+	if !got.Previews.Enabled || got.Previews.MaxDimension != 2048 {
+		t.Errorf("previews defaults: %+v", got.Previews)
+	}
 	local, ok := got.Storage.Backends["local"]
 	if !ok || local.Type != "localfs" || local.Root != "/var/lib/ncgo/data" {
 		t.Errorf("local backend = %+v ok=%v", local, ok)
@@ -204,6 +207,8 @@ func TestValidateRules(t *testing.T) {
 		{"plugin_timeout", func(c *Config) { c.Plugin.DefaultCPUTimeoutMS = 30001 }, "plugin.default_cpu_timeout_ms"},
 		{"storage_backend", func(c *Config) { c.Storage.DefaultBackend = "s3" }, "storage.default_backend"},
 		{"encryption_no_key", func(c *Config) { c.Encryption.Enabled = true }, "encryption.master_key_path"},
+		{"previews_dim_low", func(c *Config) { c.Previews.MaxDimension = 31 }, "previews.max_dimension"},
+		{"previews_dim_high", func(c *Config) { c.Previews.MaxDimension = 4097 }, "previews.max_dimension"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

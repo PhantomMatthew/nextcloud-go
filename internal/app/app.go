@@ -28,6 +28,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/notifications"
 	"github.com/PhantomMatthew/nextcloud-go/internal/ocm"
 	"github.com/PhantomMatthew/nextcloud-go/internal/plugins"
+	"github.com/PhantomMatthew/nextcloud-go/internal/preview"
 	"github.com/PhantomMatthew/nextcloud-go/internal/session"
 	"github.com/PhantomMatthew/nextcloud-go/internal/sharing"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage"
@@ -77,6 +78,7 @@ type App struct {
 	lookup        *sharing.LookupClient
 	principalFS   *caldav.PrincipalDAV
 	davRootFS     *caldav.RootDAV
+	previewGen    *preview.Generator
 }
 
 // New opens dependencies and mounts routes.
@@ -227,6 +229,9 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	a.instanceID = cfg.Instance.ID
 	if a.instanceID == "" {
 		a.instanceID = "oc" + randomHex(logger, 5, "NCGO_INSTANCE_ID / instance.id")
+	}
+	if cfg.Previews.Enabled {
+		a.previewGen = preview.NewGenerator(dav, st, "appdata_"+a.instanceID+"/previews", cfg.Previews.MaxDimension, logger)
 	}
 	if cfg.Plugin.Enabled {
 		reg := plugins.NewRegistry(a.DB)

@@ -187,6 +187,12 @@ func (a *App) mountRoutes() error {
 	router.Handle(http.MethodGet, "/index.php/login/v2/flow", http.HandlerFunc(lv2.HandlePicker))
 	router.Handle(http.MethodPost, "/index.php/login/v2/grant", http.HandlerFunc(lv2.HandleGrant))
 
+	if a.previewGen != nil {
+		for _, p := range []string{"/index.php/core/preview", "/index.php/core/preview.png"} {
+			router.Handle(http.MethodGet, p, a.previewGen, httpx.Middleware(webdav.Auth(authCfg)))
+		}
+	}
+
 	davHandler, err := webdav.NewHandler("/remote.php/dav/files/", a.davFS, a.instanceID)
 	if err != nil {
 		return fmt.Errorf("app: webdav: %w", err)

@@ -191,6 +191,28 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4g: server-side image preview generation
+  (ADR-0053). Authenticated `GET /index.php/core/preview[.png]` serves
+  aspect-preserving fit-box previews of JPEG/PNG/GIF files (GIF first frame
+  → PNG), gated by `files.DAV.Read` so preview access equals read access
+  including shares, with auth via the same `webdav.Auth` chain as DAV routes
+  (session cookies, app passwords, Bearer). Content is sniffed
+  (`http.DetectContentType` on the first 512 bytes — extensions never
+  trusted), `DecodeConfig` rejects sources outside 1..8192 per edge before
+  any pixel decoding (decompression-bomb guard), source reads cap at
+  256 MiB, and every failure — non-image, corrupt, E2EE/encrypted blob,
+  missing file — is a uniform 404 with no fallback to source bytes.
+  Previews are cached in the configured storage backend under
+  `appdata_<instanceID>/previews/` keyed by
+  sha256(uid+path+etag+box), so rewrites invalidate implicitly; misses
+  generate under singleflight (one decode per concurrent burst), scale with
+  `golang.org/x/image/draw.ApproxBiLinear` (approved dependency exception;
+  `x/sync` promoted from indirect), and encode JPEG q85 for JPEG sources
+  else PNG (re-encoding strips EXIF). New config: `previews.enabled`
+  (default true), `previews.max_dimension` (default 2048, bounds 32..4096).
+  Deferred: document previews via external service, fill/crop modes,
+  pre-generation cron, cache GC, WebP.
+
 - **2026-09-22** — Phase 4f: transparent server-side encryption at rest
   (ADR-0052). A `storage.Storage` decorator (`internal/storage/encrypt`)
   seals file contents with chunked AES-256-GCM: 64 KiB plaintext chunks, a
