@@ -189,6 +189,23 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4c8: plugin WebDAV properties implemented —
+  `webdav_register_prop` (hook-only, `webdav.props` grant) persists
+  `prefix:local` name + getter/setter export names to a new
+  `plugin_webdav_props` table (migration `0018`, uninstalled with the
+  plugin); an empty setter registers a read-only prop. Live values are
+  computed per request by a `plugins.PropProvider` attached to the files
+  DAV as `webdav.LivePropProvider`: PROPFIND entries carry
+  `Entry.ExtraProps` emitted as `<x:NAME xmlns:x="NS">value</x:NAME>` under
+  the per-plugin namespace URI `http://ncgo.local/ns/plugin/<plugin_id>`
+  (same local name across plugins never collides), and PROPPATCH offers
+  each op to the provider first (403 read-only/detached, 500 guest failure,
+  remove = set-empty) before falling through to the persisted
+  `oc:favorite` logic. Getter/setter use a raw-string convention
+  (getter writes the value into a host-allocated 4 KiB buffer and returns
+  the byte count) — a documented deviation from the spec §7 MessagePack
+  sketch; getter failures omit the prop and never fail the PROPFIND (see
+  ADR-0046).
 - **2026-09-22** — Phase 4c7: plugin jobs implemented — `job_enqueue`
   validates the plugin-local name (1–128 bytes of `[A-Za-z0-9_.-]`, else -2),
   checks `jobs.register` (-3), requires a configured runner (-12), and

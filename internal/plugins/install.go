@@ -191,6 +191,9 @@ func (in *Installer) Uninstall(ctx context.Context, id string) error {
 	if err := in.Registry.DeleteRoutesForPlugin(ctx, id); err != nil {
 		return err
 	}
+	if err := in.Registry.DeletePropsForPlugin(ctx, id); err != nil {
+		return err
+	}
 	if err := in.Registry.Delete(ctx, id); err != nil {
 		return err
 	}

@@ -2086,3 +2086,104 @@ func ConfigSetProbeModule(key string, valLen, want int32) []byte {
 	s.onInstall = expr
 	return s.build()
 }
+
+// PropOpts tunes the WebDAV property probe built by PropModuleOpts.
+type PropOpts struct {
+	Name   string // registered "prefix:local" prop name
+	Getter string // exported getter function name
+	Setter string // exported setter function name; "" registers read-only
+	Want   int32  // expected webdav_register_prop result code
+	// Value is the static string the getter writes into out_ptr; GetterCode
+	// non-zero makes the getter return that error code instead.
+	Value      string
+	GetterCode int32
+	// NoHook moves the registration call to an exported "regprobe" function
+	// invoked outside lifecycle hooks.
+	NoHook bool
+}
+
+// PropModule calls webdav_register_prop(name, getter, setter) on install and
+// logs "probe-ok" when the host returns want.
+func PropModule(name, getter, setter string, want int32) []byte {
+	return PropModuleOpts(PropOpts{Name: name, Getter: getter, Setter: setter, Want: want, Value: "prop-value"})
+}
+
+// PropModuleOpts is the fully configurable PropModule. The exported getter
+// (path_ptr, path_len, out_ptr, out_max) -> i32 writes Value into out_ptr and
+// returns its length (or GetterCode when non-zero); the exported setter
+// (path_ptr, path_len, val_ptr, val_len) -> i32 logs "setprop <path> <value>"
+// and returns 0. The setter export is omitted when Setter is empty.
+func PropModuleOpts(o PropOpts) []byte {
+	const prefix = "setprop "
+	s := guestSpec{
+		imports: []imp{{"log", tLog}, {"webdav_register_prop", tSixI32}},
+		data:    [][]byte{[]byte("probe-ok"), []byte(o.Name), []byte(o.Getter), []byte(o.Value), []byte(prefix)},
+	}
+	setterOff, setterLen := int32(0), int32(0)
+	if o.Setter != "" {
+		s.data = append(s.data, []byte(o.Setter))
+	}
+	offs := s.dataOffsets()
+	if o.Setter != "" {
+		setterOff, setterLen = offs[5], i32n(len(o.Setter))
+	}
+	allocIdx := uint32(len(s.imports)) + 1 //nolint:gosec // G115: test modules have few imports
+
+	expr := make([]byte, 0, 64)
+	expr = append(expr, i32c(offs[1])...)
+	expr = append(expr, i32c(i32n(len(o.Name)))...)
+	expr = append(expr, i32c(offs[2])...)
+	expr = append(expr, i32c(i32n(len(o.Getter)))...)
+	expr = append(expr, i32c(setterOff)...)
+	expr = append(expr, i32c(setterLen)...)
+	expr = append(expr, opCall, 0x01) // webdav_register_prop
+	expr = append(expr, i32c(o.Want)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, logCall(offs[0], i32n(len("probe-ok")))...)
+	expr = append(expr, opDrop)
+	expr = append(expr, opEnd)
+	expr = append(expr, i32c(0)...)
+	if o.NoHook {
+		s.onInstall = i32c(0)
+		s.extras = append(s.extras, extraFn{name: "regprobe", typ: tNullToI32, expr: expr})
+	} else {
+		s.onInstall = expr
+	}
+
+	// getter params: 0=pathPtr 1=pathLen 2=outPtr 3=outMax; local 4=i
+	getter := i32c(o.GetterCode)
+	if o.GetterCode == 0 {
+		getter = memcpy([]byte{opLocalGet, 0x02}, i32c(offs[3]), i32c(i32n(len(o.Value))), 4)
+		getter = append(getter, i32c(i32n(len(o.Value)))...)
+	}
+	s.extras = append(s.extras, extraFn{name: o.Getter, typ: tFourI32, locals: 1, expr: getter})
+
+	if o.Setter == "" {
+		return s.build()
+	}
+	// setter params: 0=pathPtr 1=pathLen 2=valPtr 3=valLen
+	// locals: 4=dst 5=i 6=total
+	setter := i32c(int32(len(prefix)))
+	setter = append(setter, opLocalGet, 0x01, opI32Add)
+	setter = append(setter, i32c(1)...)
+	setter = append(setter, opI32Add, opLocalGet, 0x03, opI32Add, opLocalSet, 0x06)
+	setter = append(setter, opLocalGet, 0x06, opCall)
+	setter = append(setter, u32(allocIdx)...)
+	setter = append(setter, opLocalSet, 0x04) // dst = alloc(total)
+	setter = append(setter, memcpy([]byte{opLocalGet, 0x04}, i32c(offs[4]), i32c(int32(len(prefix))), 5)...)
+	dstPath := append([]byte{opLocalGet, 0x04}, i32c(int32(len(prefix)))...)
+	dstPath = append(dstPath, opI32Add)
+	setter = append(setter, memcpy(dstPath, []byte{opLocalGet, 0x00}, []byte{opLocalGet, 0x01}, 5)...)
+	setter = append(setter, dstPath...)
+	setter = append(setter, opLocalGet, 0x01, opI32Add)
+	setter = append(setter, i32c(0x20)...)
+	setter = append(setter, opI32Store8, 0x00, 0x00) // dst[prefixLen+pathLen] = ' '
+	dstVal := append([]byte{opLocalGet, 0x04}, i32c(int32(len(prefix)+1))...)
+	dstVal = append(dstVal, opI32Add, opLocalGet, 0x01, opI32Add)
+	setter = append(setter, memcpy(dstVal, []byte{opLocalGet, 0x02}, []byte{opLocalGet, 0x03}, 5)...)
+	setter = append(setter, i32c(1)...)
+	setter = append(setter, opLocalGet, 0x04, opLocalGet, 0x06, opCall, 0x00, opDrop) // log built message
+	setter = append(setter, i32c(0)...)
+	s.extras = append(s.extras, extraFn{name: o.Setter, typ: tFourI32, locals: 3, expr: setter})
+	return s.build()
+}

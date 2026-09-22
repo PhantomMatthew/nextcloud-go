@@ -150,6 +150,9 @@ func emptyPropXML(space, name string) string {
 	case "urn:ietf:params:xml:ns:caldav":
 		return `<cal:` + local + `/>`
 	default:
-		return `<d:` + local + `/>`
+		if space == "" || space == "DAV:" {
+			return `<d:` + local + `/>`
+		}
+		return `<x:` + local + ` xmlns:x="` + xmlEscape(space) + `"/>`
 	}
 }

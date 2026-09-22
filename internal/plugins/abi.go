@@ -181,12 +181,3 @@ func pluginCaps(ctx context.Context) *Capabilities {
 	}
 	return &info.plugin.manifest.Capabilities
 }
-
-// unsupportedGranted returns ErrPermissionDenied when the capability check
-// fails, else ErrUnsupported for subsystems not yet implemented.
-func unsupportedGranted(granted bool) int32 {
-	if !granted {
-		return pluginsdk.ErrCodePermissionDenied
-	}
-	return pluginsdk.ErrCodeUnsupported
-}

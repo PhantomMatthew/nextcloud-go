@@ -320,3 +320,42 @@ func assertGolden(t *testing.T, name string, got []byte) {
 		t.Errorf("golden %s mismatch\n--- want (%d bytes) ---\n%s\n--- got (%d bytes) ---\n%s", name, len(want), want, len(got), got)
 	}
 }
+
+func TestWriteMultistatusExtraProps(t *testing.T) {
+	e := emptyHomeRootEntry()
+	e.ExtraProps = []CustomProp{
+		{NS: "http://ncgo.local/ns/plugin/com.example.probe", Name: "tags", Value: "a <b> & c"},
+		{NS: "", Name: "skipped"},          // empty NS: skipped
+		{NS: "http://x.test/ns", Name: ""}, // empty Name: skipped
+	}
+	var buf bytes.Buffer
+	WriteMultistatus(&buf, PropfindContext{BaseHref: "/remote.php/dav/files/alice/"}, []*Entry{e})
+	out := buf.String()
+	want := `<x:tags xmlns:x="http://ncgo.local/ns/plugin/com.example.probe">a &lt;b&gt; &amp; c</x:tags>`
+	if !strings.Contains(out, want) {
+		t.Errorf("output missing %q\n%s", want, out)
+	}
+	if strings.Contains(out, "skipped") {
+		t.Errorf("empty-NS prop emitted\n%s", out)
+	}
+
+	// ParseMultistatus tolerates the unknown namespaced element.
+	ents, err := ParseMultistatus(strings.NewReader(out))
+	if err != nil || len(ents) != 1 || !ents[0].IsDir {
+		t.Fatalf("parse = %+v %v", ents, err)
+	}
+}
+
+func TestEmptyPropXMLCustomNS(t *testing.T) {
+	got := emptyPropXML("http://ncgo.local/ns/plugin/com.example.probe", "tags")
+	want := `<x:tags xmlns:x="http://ncgo.local/ns/plugin/com.example.probe"/>`
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	if got := emptyPropXML("DAV:", "getetag"); got != `<d:getetag/>` {
+		t.Fatalf("dav = %q", got)
+	}
+	if got := emptyPropXML("", "displayname"); got != `<d:displayname/>` {
+		t.Fatalf("empty = %q", got)
+	}
+}

@@ -231,6 +231,84 @@ func (r *Registry) DeleteRoutesForPlugin(ctx context.Context, pluginID string) e
 	return nil
 }
 
+// PropRecord is one persisted plugin WebDAV property registration.
+type PropRecord struct {
+	PluginID string
+	Name     string // "prefix:local" as registered
+	Getter   string // exported getter function name
+	Setter   string // exported setter function name; empty means read-only
+}
+
+// UpsertProp inserts or replaces one WebDAV property record.
+func (r *Registry) UpsertProp(ctx context.Context, rec *PropRecord) error {
+	var query string
+	if r.db.Dialect() == database.DialectMySQL {
+		query = `
+INSERT INTO plugin_webdav_props (plugin_id, name, getter, setter)
+VALUES (?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE
+    getter = VALUES(getter),
+    setter = VALUES(setter)`
+	} else {
+		query = `
+INSERT INTO plugin_webdav_props (plugin_id, name, getter, setter)
+VALUES (?, ?, ?, ?)
+ON CONFLICT (plugin_id, name) DO UPDATE SET
+    getter = excluded.getter,
+    setter = excluded.setter`
+	}
+	_, err := r.db.Exec(ctx, query, rec.PluginID, rec.Name, rec.Getter, rec.Setter)
+	if err != nil {
+		return fmt.Errorf("plugins: prop upsert: %w", err)
+	}
+	return nil
+}
+
+// PropsForPlugin returns one plugin's property records ordered by name.
+func (r *Registry) PropsForPlugin(ctx context.Context, pluginID string) ([]PropRecord, error) {
+	rows, err := r.db.Query(ctx, `
+SELECT plugin_id, name, getter, setter
+FROM plugin_webdav_props WHERE plugin_id = ? ORDER BY name`, pluginID)
+	if err != nil {
+		return nil, fmt.Errorf("plugins: props for plugin: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	return scanProps(rows)
+}
+
+// AllProps returns every property record ordered by plugin id, name.
+func (r *Registry) AllProps(ctx context.Context) ([]PropRecord, error) {
+	rows, err := r.db.Query(ctx, `
+SELECT plugin_id, name, getter, setter
+FROM plugin_webdav_props ORDER BY plugin_id, name`)
+	if err != nil {
+		return nil, fmt.Errorf("plugins: all props: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	return scanProps(rows)
+}
+
+// DeletePropsForPlugin removes every property record of a plugin. A plugin
+// without props is not an error.
+func (r *Registry) DeletePropsForPlugin(ctx context.Context, pluginID string) error {
+	if _, err := r.db.Exec(ctx, `DELETE FROM plugin_webdav_props WHERE plugin_id = ?`, pluginID); err != nil {
+		return fmt.Errorf("plugins: props delete: %w", err)
+	}
+	return nil
+}
+
+func scanProps(rows database.Rows) ([]PropRecord, error) {
+	var out []PropRecord
+	for rows.Next() {
+		var rec PropRecord
+		if err := rows.Scan(&rec.PluginID, &rec.Name, &rec.Getter, &rec.Setter); err != nil {
+			return nil, fmt.Errorf("plugins: props scan: %w", err)
+		}
+		out = append(out, rec)
+	}
+	return out, rows.Err()
+}
+
 func scanRoutes(rows database.Rows) ([]RouteRecord, error) {
 	var out []RouteRecord
 	for rows.Next() {

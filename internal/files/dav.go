@@ -34,6 +34,9 @@ type DAV struct {
 	Incoming IncomingLookup
 	NewToken func() string
 	Remote   RemoteFile
+	// LiveProps, when set, attaches plugin-provided custom properties to
+	// Stat/List/Read entries and gets first refusal on PROPPATCH ops.
+	LiveProps webdav.LivePropProvider
 	// Events, when set, receives files.uploaded after a successful Write.
 	Events *events.Bus
 }
@@ -152,7 +155,26 @@ func isFavoriteProp(space, name string) bool {
 	return space == "" || space == PropNSOwnCloud
 }
 
-// PatchProps applies PROPPATCH operations. Only oc:favorite is persisted.
+// attachLiveProps queries the optional live-prop provider for each entry and
+// attaches the results as ExtraProps. Provider failures never surface here:
+// the interface returns only props it could compute.
+func (d *DAV) attachLiveProps(ctx context.Context, user string, entries ...*webdav.Entry) {
+	if d.LiveProps == nil {
+		return
+	}
+	for _, e := range entries {
+		if e == nil {
+			continue
+		}
+		if props := d.LiveProps.PropsFor(ctx, user, e.Path); len(props) > 0 {
+			e.ExtraProps = props
+		}
+	}
+}
+
+// PatchProps applies PROPPATCH operations. Live (plugin-provided) props are
+// offered to the LiveProps provider first; everything else falls through to
+// the persisted oc:favorite logic.
 func (d *DAV) PatchProps(ctx context.Context, user, p string, ops []webdav.PropPatchOp) ([]webdav.PropPatchResult, error) {
 	u, err := d.resolveUser(ctx, user)
 	if err != nil {
@@ -168,6 +190,17 @@ func (d *DAV) PatchProps(ctx context.Context, user, p string, ops []webdav.PropP
 	out := make([]webdav.PropPatchResult, 0, len(ops))
 	for _, op := range ops {
 		res := webdav.PropPatchResult{Space: op.Space, Name: op.Name, Status: http.StatusForbidden}
+		if d.LiveProps != nil {
+			val := op.Value
+			if op.Remove {
+				val = "" // a remove is a set-empty for the provider
+			}
+			if handled, status := d.LiveProps.SetProp(ctx, user, np, op.Space, op.Name, val); handled {
+				res.Status = status
+				out = append(out, res)
+				continue
+			}
+		}
 		if isProtectedLiveProp(op.Space, op.Name) || !isFavoriteProp(op.Space, op.Name) || d.Props == nil {
 			out = append(out, res)
 			continue
@@ -201,6 +234,15 @@ func (d *DAV) PatchProps(ctx context.Context, user, p string, ops []webdav.PropP
 }
 
 func (d *DAV) Stat(ctx context.Context, user, p string) (*webdav.Entry, error) {
+	e, err := d.statMaybeIncoming(ctx, user, p)
+	if err != nil {
+		return nil, err
+	}
+	d.attachLiveProps(ctx, user, e)
+	return e, nil
+}
+
+func (d *DAV) statMaybeIncoming(ctx context.Context, user, p string) (*webdav.Entry, error) {
 	e, err := d.statOwned(ctx, user, p)
 	if err == nil || !errors.Is(err, webdav.ErrNotFound) {
 		return e, err
@@ -224,6 +266,15 @@ func (d *DAV) Stat(ctx context.Context, user, p string) (*webdav.Entry, error) {
 }
 
 func (d *DAV) List(ctx context.Context, user, p string) ([]*webdav.Entry, error) {
+	out, err := d.listMaybeIncoming(ctx, user, p)
+	if err != nil {
+		return nil, err
+	}
+	d.attachLiveProps(ctx, user, out...)
+	return out, nil
+}
+
+func (d *DAV) listMaybeIncoming(ctx context.Context, user, p string) ([]*webdav.Entry, error) {
 	np, err := NormalizePath(p)
 	if err != nil {
 		return nil, mapMeta(err)
@@ -258,6 +309,15 @@ func (d *DAV) List(ctx context.Context, user, p string) ([]*webdav.Entry, error)
 }
 
 func (d *DAV) Read(ctx context.Context, user, p string) (io.ReadCloser, *webdav.Entry, error) {
+	rc, e, err := d.readMaybeIncoming(ctx, user, p)
+	if err != nil {
+		return nil, nil, err
+	}
+	d.attachLiveProps(ctx, user, e)
+	return rc, e, nil
+}
+
+func (d *DAV) readMaybeIncoming(ctx context.Context, user, p string) (io.ReadCloser, *webdav.Entry, error) {
 	np, err := NormalizePath(p)
 	if err != nil {
 		return nil, nil, mapMeta(err)

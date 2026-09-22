@@ -189,6 +189,18 @@ func writeProps(buf *bytes.Buffer, ctx PropfindContext, e *Entry) {
 		fmt.Fprintf(buf, `<cs:getctag>&quot;%s&quot;</cs:getctag>`, xmlEscape(e.CTag))
 		fmt.Fprintf(buf, `<d:sync-token>https://nextcloud-go/sync/%s</d:sync-token>`, xmlEscape(e.CTag))
 	}
+	writeExtraProps(buf, e.ExtraProps)
+}
+
+// writeExtraProps emits live custom props with an inline xmlns declaration
+// (SabreDAV style), skipping entries with an empty namespace or name.
+func writeExtraProps(buf *bytes.Buffer, props []CustomProp) {
+	for _, p := range props {
+		if p.NS == "" || p.Name == "" {
+			continue
+		}
+		fmt.Fprintf(buf, `<x:%s xmlns:x="%s">%s</x:%s>`, p.Name, xmlEscape(p.NS), xmlEscape(p.Value), p.Name)
+	}
 }
 
 func buildHref(base string, e *Entry) string {

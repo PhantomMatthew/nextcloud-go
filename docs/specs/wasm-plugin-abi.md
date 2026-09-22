@@ -598,6 +598,35 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-22** — Phase 4c8 implemented plugin WebDAV properties
+  (ADR-0046): the §6.3 `webdav_register_prop` is live (lifecycle-hook only
+  → -3; `webdav.props` grant required → -3; name must be `prefix:local`
+  with a non-empty prefix and `local` matching `[A-Za-z][A-Za-z0-9_-]*` →
+  -2; getter required and setter — when given — must be identifier-ish
+  `[A-Za-z_][A-Za-z0-9_.]*` ≤ 128 → -2; nil registry → -12; an empty setter
+  registers a read-only property). Registrations persist to
+  `plugin_webdav_props` (migration `0018`) and are deleted on uninstall.
+  **Namespace URI scheme (v1):** each plugin's props are emitted and
+  patched under the per-plugin namespace URI
+  `http://ncgo.local/ns/plugin/<plugin_id>` with the local name being the
+  part after `:` in the registered name, so same-named props from
+  different plugins never collide; the registered prefix is a
+  capability-namespacing device and does not appear on the wire.
+  **Getter/setter signature convention (v1, deviation from §7's i64
+  MessagePack sketch):** the getter is
+  `<getter>(path_ptr, path_len, out_ptr, out_max) -> i32` — the guest
+  writes the raw string value (not MessagePack) into a host-allocated
+  4 KiB buffer and returns the byte count (0 = empty, negative = error
+  code); the setter is `<setter>(path_ptr, path_len, val_ptr, val_len) ->
+  i32` (0 = OK, else HTTP 500). Emission is `<x:NAME
+  xmlns:x="NS">value</x:NAME>` inline-xmlns style on PROPFIND;
+  getter/trap failures omit the prop and never fail the response;
+  PROPPATCH routes to the setter first (403 for read-only or detached
+  plugin) and falls through to core behavior when the (ns, name) pair is
+  not a registered plugin prop; a remove op is delivered as an empty
+  value. pluginsdk gains WebDAVRegisterProp/WebDAVPropArgs. Follow-ups:
+  allprop performance/batching, prop caching, 404 propstat for
+  requested-but-unset plugin props.
 - **2026-09-22** — Phase 4c7 implemented plugin jobs (ADR-0045): the §6.3
   `job_enqueue` is live and §7's `ncgo_on_job` is delivered. **Namespacing
   (v1):** every plugin's jobs run under a single adapter job

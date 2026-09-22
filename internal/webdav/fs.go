@@ -65,6 +65,18 @@ type Entry struct {
 	AddressbookHomeSet   string
 	AddressData          string
 	Status               int
+
+	// ExtraProps carries live, externally-provided properties (e.g. plugin
+	// WebDAV props) emitted verbatim in PROPFIND responses.
+	ExtraProps []CustomProp
+}
+
+// CustomProp is one extra namespaced property emitted in a PROPFIND
+// response (inline xmlns, SabreDAV style).
+type CustomProp struct {
+	NS    string
+	Name  string
+	Value string
 }
 
 type FS interface {
@@ -107,6 +119,19 @@ type PropPatchResult struct {
 // PropPatchFS is implemented by filesystems that persist PROPPATCH properties.
 type PropPatchFS interface {
 	PatchProps(ctx context.Context, user, path string, ops []PropPatchOp) ([]PropPatchResult, error)
+}
+
+// LivePropProvider supplies computed (not persisted) custom properties for
+// PROPFIND responses and handles PROPPATCH writes to them — the plugin
+// WebDAV property mechanism (ADR-0046). Filesystems attach the PropsFor
+// results to entries as Entry.ExtraProps and consult SetProp before their
+// own patch logic: handled=false means (ns, name) is not a live prop and
+// the filesystem falls through to its existing behavior; status is the HTTP
+// status reported in the PropPatchResult (200 on success, 403 for a
+// read-only prop or unavailable provider, 500 on provider failure).
+type LivePropProvider interface {
+	PropsFor(ctx context.Context, user, path string) []CustomProp
+	SetProp(ctx context.Context, user, path, ns, name, value string) (handled bool, status int)
 }
 
 // LockRequest is an exclusive write LOCK or refresh.

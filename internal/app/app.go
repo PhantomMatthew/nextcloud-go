@@ -251,6 +251,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		}
 		a.PluginHost = ph
 		a.Plugins = plugins.StartEnabled(ctx, ph, reg, logger)
+		dav.LiveProps = plugins.NewPropProvider(ph, reg, logger)
 	}
 	if err := a.mountRoutes(); err != nil {
 		if cerr := a.closeResources(ctx); cerr != nil {

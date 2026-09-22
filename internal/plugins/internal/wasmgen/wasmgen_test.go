@@ -66,6 +66,10 @@ func TestModulesCompile(t *testing.T) {
 		{"config-read-only", ConfigModule("", "", "", "foo", "", 0)},
 		{"config-get-probe", ConfigGetProbeModule("foo", 4096, -3)},
 		{"config-set-probe", ConfigSetProbeModule("foo", 65537, -11)},
+		{"prop", PropModule("x:tags", "getTags", "setTags", 0)},
+		{"prop-read-only", PropModule("x:tags", "getTags", "", 0)},
+		{"prop-getter-fail", PropModuleOpts(PropOpts{Name: "x:tags", Getter: "getTags", Setter: "setTags", Want: 0, GetterCode: -5})},
+		{"prop-nohook", PropModuleOpts(PropOpts{Name: "x:tags", Getter: "getTags", Want: -3, NoHook: true})},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			compiled, err := r.CompileModule(ctx, tc.bin)
