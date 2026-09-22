@@ -431,7 +431,7 @@ func (d *DAV) emitUploaded(ctx context.Context, user string, ent *webdav.Entry, 
 	if err != nil {
 		return
 	}
-	d.Events.Publish(ctx, events.Event{Topic: "files.uploaded", Payload: payload, Source: "host"})
+	d.Events.Publish(ctx, events.Event{Topic: "files.uploaded", Payload: payload, Source: "host", UserID: user})
 }
 
 func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *time.Time, snapshot bool) (*webdav.Entry, bool, error) {

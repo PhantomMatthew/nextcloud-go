@@ -42,6 +42,16 @@ func TestModulesCompile(t *testing.T) {
 		{"route-fail", RouteFailModule(-7)},
 		{"route-trap", RouteTrapModule()},
 		{"route-no-response", RouteNoResponseModule()},
+		{"storage", StorageModule("user:/d/a.txt", "user:/d/b.txt", "user:/d", "hello", "system:/x", -3)},
+		{"storage-stat-probe", StorageStatProbeModule("user:/a", -3)},
+		{"storage-open-loop", StorageOpenLoopModule("user:/a", 65, -12)},
+		{"storage-leak", StorageLeakModule("user:/a", "user:/b", "c")},
+		{"storage-write-probe", StorageWriteProbeModule("user:/a", "c", -11)},
+		{"storage-event-stat", StorageEventStatModule("user:/a")},
+		{"storage-read-probe", StorageReadProbeModule("user:/a", "user:/d")},
+		{"storage-op-create", StorageOpProbeModule("create", "user:/a", "", -3)},
+		{"storage-op-delete", StorageOpProbeModule("delete", "user:/a", "", -3)},
+		{"storage-op-rename", StorageOpProbeModule("rename", "user:/a", "user:/b", -3)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			compiled, err := r.CompileModule(ctx, tc.bin)

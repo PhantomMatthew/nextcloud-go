@@ -56,8 +56,38 @@ func (c *Capabilities) hasStorageRead() bool {
 	return c != nil && len(c.Storage.Read) > 0
 }
 
-func (c *Capabilities) hasStorageWrite() bool {
-	return c != nil && len(c.Storage.Write) > 0
+// storageScopeGranted reports whether scope ("user"/"system") is listed.
+func storageScopeGranted(scopes []string, scope string) bool {
+	for _, s := range scopes {
+		if s == scope {
+			return true
+		}
+	}
+	return false
+}
+
+// canStorageUserRead reports whether the plugin may read the calling user's
+// files (storage.read includes "user").
+func (c *Capabilities) canStorageUserRead() bool {
+	return c != nil && storageScopeGranted(c.Storage.Read, "user")
+}
+
+// canStorageUserWrite reports whether the plugin may write the calling
+// user's files (storage.write includes "user").
+func (c *Capabilities) canStorageUserWrite() bool {
+	return c != nil && storageScopeGranted(c.Storage.Write, "user")
+}
+
+// canStorageSystemRead reports whether the plugin may read its system
+// storage (storage.read includes "system").
+func (c *Capabilities) canStorageSystemRead() bool {
+	return c != nil && storageScopeGranted(c.Storage.Read, "system")
+}
+
+// canStorageSystemWrite reports whether the plugin may write its system
+// storage (storage.write includes "system").
+func (c *Capabilities) canStorageSystemWrite() bool {
+	return c != nil && storageScopeGranted(c.Storage.Write, "system")
 }
 
 func (c *Capabilities) hasHTTPOutbound() bool {

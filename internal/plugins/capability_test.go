@@ -64,6 +64,21 @@ func TestCapabilityDefaults(t *testing.T) {
 	}
 }
 
+func TestStorageScopeGrants(t *testing.T) {
+	var nilCaps *Capabilities
+	if nilCaps.canStorageUserRead() || nilCaps.canStorageUserWrite() ||
+		nilCaps.canStorageSystemRead() || nilCaps.canStorageSystemWrite() {
+		t.Fatal("nil capabilities must deny every storage scope")
+	}
+	c := &Capabilities{Storage: StorageCapabilities{Read: []string{"user"}, Write: []string{"system"}}}
+	if !c.canStorageUserRead() || c.canStorageSystemRead() {
+		t.Fatal("read=[user] must grant user reads only")
+	}
+	if c.canStorageUserWrite() || !c.canStorageSystemWrite() {
+		t.Fatal("write=[system] must grant system writes only")
+	}
+}
+
 func TestCanSubscribeEvent(t *testing.T) {
 	var nilCaps *Capabilities
 	if nilCaps.canSubscribeEvent("demo.x") {

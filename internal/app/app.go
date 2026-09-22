@@ -218,6 +218,14 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		return nil, err
 	}
 	a.jobs = jr
+	a.secret = cfg.Instance.Secret
+	if a.secret == "" {
+		a.secret = randomHex(logger, 32, "NCGO_SECRET / instance.secret")
+	}
+	a.instanceID = cfg.Instance.ID
+	if a.instanceID == "" {
+		a.instanceID = "oc" + randomHex(logger, 5, "NCGO_INSTANCE_ID / instance.id")
+	}
 	if cfg.Plugin.Enabled {
 		reg := plugins.NewRegistry(a.DB)
 		a.pluginReg = reg
@@ -228,6 +236,9 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 			DB:                   a.DB,
 			Bus:                  bus,
 			Registry:             reg,
+			Files:                dav,
+			SystemStorage:        st,
+			SystemPrefix:         "appdata_" + a.instanceID + "/plugins",
 		}, logger)
 		if err != nil {
 			if cerr := a.closeResources(ctx); cerr != nil {
@@ -237,14 +248,6 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		}
 		a.PluginHost = ph
 		a.Plugins = plugins.StartEnabled(ctx, ph, reg, logger)
-	}
-	a.secret = cfg.Instance.Secret
-	if a.secret == "" {
-		a.secret = randomHex(logger, 32, "NCGO_SECRET / instance.secret")
-	}
-	a.instanceID = cfg.Instance.ID
-	if a.instanceID == "" {
-		a.instanceID = "oc" + randomHex(logger, 5, "NCGO_INSTANCE_ID / instance.id")
 	}
 	if err := a.mountRoutes(); err != nil {
 		if cerr := a.closeResources(ctx); cerr != nil {

@@ -44,7 +44,13 @@ func (h *Host) dispatchEvent(ctx context.Context, ev events.Event) {
 		if ev.Source == "plugin:"+p.manifest.Plugin.ID {
 			continue
 		}
-		if err := p.deliverEvent(ctx, ev.Topic, ev.Payload); err != nil && h.logger != nil {
+		// The event's user becomes the delivery's call identity unless the
+		// publish context already carries explicit call metadata.
+		deliverCtx := ctx
+		if _, ok := ctx.Value(ctxCall).(CallContext); !ok && ev.UserID != "" {
+			deliverCtx = WithCallContext(ctx, CallContext{UserID: ev.UserID})
+		}
+		if err := p.deliverEvent(deliverCtx, ev.Topic, ev.Payload); err != nil && h.logger != nil {
 			h.logger.WarnContext(ctx, "plugins: event delivery failed",
 				slog.String("plugin.id", p.manifest.Plugin.ID),
 				slog.String("topic", ev.Topic),

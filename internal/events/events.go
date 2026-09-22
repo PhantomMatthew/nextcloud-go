@@ -7,11 +7,14 @@ import (
 )
 
 // Event is one bus message. Source is "host" for core-module emissions or
-// "plugin:<id>" for plugin publishes.
+// "plugin:<id>" for plugin publishes. UserID, when set, names the user the
+// event is about (e.g. the uploader for files.uploaded); subscribers may use
+// it as their call-time user identity.
 type Event struct {
 	Topic   string
 	Payload []byte
 	Source  string
+	UserID  string
 }
 
 // Handler consumes one event.

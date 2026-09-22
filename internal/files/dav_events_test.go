@@ -68,6 +68,9 @@ func TestDAVWriteEmitsUploaded(t *testing.T) {
 	if ev.Topic != "files.uploaded" || ev.Source != "host" {
 		t.Fatalf("event = %+v", ev)
 	}
+	if ev.UserID != "alice" {
+		t.Fatalf("event UserID = %q, want alice", ev.UserID)
+	}
 	var p uploadedPayload
 	if err := msgpack.Unmarshal(ev.Payload, &p); err != nil {
 		t.Fatal(err)

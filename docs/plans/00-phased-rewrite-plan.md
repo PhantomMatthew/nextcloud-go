@@ -189,6 +189,20 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4c4: `storage.*` host functions implemented —
+  scheme-prefix path routing (`user:` = calling user's files via the files
+  DAV, `system:` = per-plugin namespace under
+  `appdata_<instanceID>/plugins/<plugin_id>/` on the default storage
+  backend, bare paths default to `user:`), granular per-scope
+  `storage.read`/`storage.write` capability checks, streaming read/write
+  handles on the 64-stream budget with closeAll cleanup, user writes
+  spooled to temp files and committed one-shot through `DAV.Write` on
+  stream close (1 GiB cap, trash-on-delete via `DAV.Remove`, rename via
+  `DAV.Move`), and `events.Event.UserID` propagation so event-driven
+  plugin calls get the uploading user's identity (explicit call metadata
+  on the publish ctx wins). HostConfig gains
+  Files/SystemStorage/SystemPrefix/MaxSpoolBytes; pluginsdk gains the
+  storage bindings (see ADR-0042).
 - **2026-09-22** — Phase 4c3: plugin HTTP route + OCS endpoint registration
   and dispatch — `route_register`/`ocs_register` implemented (hook-only,
   capability + `/apps/<plugin_id>/` namespace enforcement, method/handler

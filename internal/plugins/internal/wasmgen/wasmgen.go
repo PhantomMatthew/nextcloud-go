@@ -29,6 +29,8 @@ const (
 	opI32LtU      = 0x49
 	opI32GtU      = 0x4b
 	opI32GeU      = 0x4f
+	opI32Eqz      = 0x45
+	opI32GtS      = 0x4e
 	opI64ShrU     = 0x88
 	opI32WrapI64  = 0xa7
 	opI32Sub      = 0x6b
@@ -56,6 +58,7 @@ const (
 	tFourI32I64 = 10 // (i32,i32,i32,i32)->i64
 	tFiveI32I64 = 11 // (i32,i32,i32,i32,i32)->i64
 	tTwoI32I64  = 12 // (i32,i32)->i64 (ncgo_on_request)
+	tCreateI64  = 13 // (i32,i32,i64)->i64 (storage_create)
 )
 
 func u32(n uint32) []byte {
@@ -145,13 +148,28 @@ func i64c(v int64) []byte {
 }
 
 func code(localsI32 int, expr []byte) []byte {
+	return codeEx(localsI32, 0, expr)
+}
+
+// codeEx emits a function body with i32 and i64 local groups (i32 locals
+// first, so i64 locals start at index localsI32).
+func codeEx(localsI32, localsI64 int, expr []byte) []byte {
 	var body []byte
-	if localsI32 == 0 {
-		body = append(body, 0x00)
-	} else {
-		body = append(body, 0x01)
+	groups := 0
+	if localsI32 > 0 {
+		groups++
+	}
+	if localsI64 > 0 {
+		groups++
+	}
+	body = append(body, byte(groups))
+	if localsI32 > 0 {
 		body = append(body, u32(u32len(localsI32))...)
 		body = append(body, i32)
+	}
+	if localsI64 > 0 {
+		body = append(body, u32(u32len(localsI64))...)
+		body = append(body, i64)
 	}
 	body = append(body, expr...)
 	body = append(body, opEnd)
@@ -185,6 +203,7 @@ func typeTable() []byte {
 		ft([]byte{i32, i32, i32, i32}, []byte{i64}),           // 10 db_query
 		ft([]byte{i32, i32, i32, i32, i32}, []byte{i64}),      // 11 db_tx_query
 		ft([]byte{i32, i32}, []byte{i64}),                     // 12 ncgo_on_request
+		ft([]byte{i32, i32, i64}, []byte{i64}),                // 13 storage_create
 	)
 }
 
@@ -196,20 +215,22 @@ type imp struct {
 
 // extraFn is an additional exported guest function.
 type extraFn struct {
-	name   string
-	typ    uint32
-	locals int
-	expr   []byte
+	name     string
+	typ      uint32
+	locals   int
+	locals64 int
+	expr     []byte
 }
 
 // guestSpec describes a full test module.
 type guestSpec struct {
-	imports         []imp
-	onInstall       []byte // must leave one i32 on the stack
-	onInstallLocals int
-	data            [][]byte
-	extras          []extraFn
-	counter         bool // add a mutable i32 global at index 1
+	imports           []imp
+	onInstall         []byte // must leave one i32 on the stack
+	onInstallLocals   int
+	onInstallLocals64 int
+	data              [][]byte
+	extras            []extraFn
+	counter           bool // add a mutable i32 global at index 1
 }
 
 // dataOffsets returns the aligned offset of each data blob.
@@ -308,10 +329,10 @@ func (s guestSpec) build() []byte {
 		code(0, i32c(1)),
 		code(1, allocExpr),
 		code(0, nil),
-		code(s.onInstallLocals, s.onInstall),
+		codeEx(s.onInstallLocals, s.onInstallLocals64, s.onInstall),
 	)
 	for _, ex := range s.extras {
-		codes = append(codes, code(ex.locals, ex.expr))
+		codes = append(codes, codeEx(ex.locals, ex.locals64, ex.expr))
 	}
 
 	out := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
@@ -1057,4 +1078,503 @@ func WASIModule() []byte {
 // NoExportsModule is a valid empty wasm module.
 func NoExportsModule() []byte {
 	return []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
+}
+
+// StorageModule builds a scripted storage round-trip probe. The exported
+// do_storage entry (invoke outside hooks) runs: create+write+close (commit)
+// on createPath, stat it, open+read it (logging the content), list listPath,
+// rename to renamePath, stat the new name, delete it, stat the gone path
+// (expecting -4), and stat deniedPath expecting deniedWant. Each step logs a
+// marker ("commit-ok", "stat-ok", "read-ok", "list-ok", "rename-ok",
+// "stat2-ok", "delete-ok", "gone-ok", "denied-ok") only when the host
+// answers as expected; stat/list payloads are logged raw.
+func StorageModule(createPath, renamePath, listPath, content, deniedPath string, deniedWant int32) []byte {
+	const (
+		outBuf = 8192
+		outMax = 4096
+	)
+	s := guestSpec{
+		imports: []imp{
+			{"log", tLog},                    // 0
+			{"storage_stat", tFourI32},       // 1
+			{"storage_open", tTwoI32I64},     // 2
+			{"storage_create", tCreateI64},   // 3
+			{"storage_stream_read", tLog},    // 4
+			{"storage_stream_write", tLog},   // 5
+			{"storage_stream_close", tAlloc}, // 6
+			{"storage_delete", tOutMax},      // 7
+			{"storage_list", tFourI32},       // 8
+			{"storage_rename", tFourI32},     // 9
+		},
+		data: [][]byte{
+			[]byte(createPath), []byte(renamePath), []byte(listPath), []byte(content), []byte(deniedPath),
+			[]byte("commit-ok"), []byte("stat-ok"), []byte("read-ok"), []byte("list-ok"), []byte("rename-ok"),
+			[]byte("stat2-ok"), []byte("delete-ok"), []byte("gone-ok"), []byte("denied-ok"),
+		},
+		onInstall: i32c(0),
+	}
+	offs := s.dataOffsets()
+	createOff, createLen := offs[0], i32n(len(createPath))
+	renameOff, renameLen := offs[1], i32n(len(renamePath))
+	listOff, listLen := offs[2], i32n(len(listPath))
+	contentOff, contentLen := offs[3], i32n(len(content))
+	deniedOff, deniedLen := offs[4], i32n(len(deniedPath))
+
+	// locals: 0 = handle (i32), 1 = n (i32), 2 = packed (i64)
+	packedOK := func() []byte {
+		e := []byte{opLocalGet, 0x02}
+		e = append(e, i64c(32)...)
+		return append(e, opI64ShrU, opI32WrapI64, opI32Eqz)
+	}
+	// logN logs the n bytes at ptr (n in local 1).
+	logN := func(ptr int32) []byte {
+		e := append(i32c(1), i32c(ptr)...)
+		return append(e, opLocalGet, 0x01, opCall, 0x00, opDrop)
+	}
+	marker := func(i int) []byte {
+		m := s.data[5+i]
+		e := logCall(offs[5+i], i32n(len(m)))
+		return append(e, opDrop)
+	}
+
+	expr := make([]byte, 0, 256)
+	// 1. create + write + close(commit); log "commit-ok".
+	expr = append(expr, i32c(createOff)...)
+	expr = append(expr, i32c(createLen)...)
+	expr = append(expr, i64c(-1)...)
+	expr = append(expr, opCall, 0x03, opLocalSet, 0x02)
+	expr = append(expr, packedOK()...)
+	expr = append(expr, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x02, opI32WrapI64, opLocalSet, 0x00)
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i32c(contentOff)...)
+	expr = append(expr, i32c(contentLen)...)
+	expr = append(expr, opCall, 0x05, opDrop) // stream_write
+	expr = append(expr, opLocalGet, 0x00, opCall, 0x06, opI32Eqz, opIf, blockVoid)
+	expr = append(expr, marker(0)...)
+	expr = append(expr, opEnd)
+	expr = append(expr, opEnd)
+	// 2. stat; log the payload and "stat-ok".
+	expr = append(expr, i32c(createOff)...)
+	expr = append(expr, i32c(createLen)...)
+	expr = append(expr, i32c(outBuf)...)
+	expr = append(expr, i32c(outMax)...)
+	expr = append(expr, opCall, 0x01, opLocalSet, 0x01)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opI32GtS, opIf, blockVoid)
+	expr = append(expr, logN(outBuf)...)
+	expr = append(expr, marker(1)...)
+	expr = append(expr, opEnd)
+	// 3. open + read; log the content and "read-ok", then close the stream.
+	expr = append(expr, i32c(createOff)...)
+	expr = append(expr, i32c(createLen)...)
+	expr = append(expr, opCall, 0x02, opLocalSet, 0x02)
+	expr = append(expr, packedOK()...)
+	expr = append(expr, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x02, opI32WrapI64, opLocalSet, 0x00)
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i32c(outBuf)...)
+	expr = append(expr, i32c(outMax)...)
+	expr = append(expr, opCall, 0x04, opLocalSet, 0x01) // n = stream_read
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opI32GtS, opIf, blockVoid)
+	expr = append(expr, logN(outBuf)...)
+	expr = append(expr, marker(2)...)
+	expr = append(expr, opEnd)
+	expr = append(expr, opLocalGet, 0x00, opCall, 0x06, opDrop) // close read stream
+	expr = append(expr, opEnd)
+	// 4. list; log the payload and "list-ok".
+	expr = append(expr, i32c(listOff)...)
+	expr = append(expr, i32c(listLen)...)
+	expr = append(expr, i32c(outBuf)...)
+	expr = append(expr, i32c(outMax)...)
+	expr = append(expr, opCall, 0x08, opLocalSet, 0x01)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opI32GtS, opIf, blockVoid)
+	expr = append(expr, logN(outBuf)...)
+	expr = append(expr, marker(3)...)
+	expr = append(expr, opEnd)
+	// 5. rename; log "rename-ok".
+	expr = append(expr, i32c(createOff)...)
+	expr = append(expr, i32c(createLen)...)
+	expr = append(expr, i32c(renameOff)...)
+	expr = append(expr, i32c(renameLen)...)
+	expr = append(expr, opCall, 0x09, opI32Eqz, opIf, blockVoid)
+	expr = append(expr, marker(4)...)
+	expr = append(expr, opEnd)
+	// 6. stat the renamed path; log the payload and "stat2-ok".
+	expr = append(expr, i32c(renameOff)...)
+	expr = append(expr, i32c(renameLen)...)
+	expr = append(expr, i32c(outBuf)...)
+	expr = append(expr, i32c(outMax)...)
+	expr = append(expr, opCall, 0x01, opLocalSet, 0x01)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opI32GtS, opIf, blockVoid)
+	expr = append(expr, logN(outBuf)...)
+	expr = append(expr, marker(5)...)
+	expr = append(expr, opEnd)
+	// 7. delete the renamed path; log "delete-ok".
+	expr = append(expr, i32c(renameOff)...)
+	expr = append(expr, i32c(renameLen)...)
+	expr = append(expr, opCall, 0x07, opI32Eqz, opIf, blockVoid)
+	expr = append(expr, marker(6)...)
+	expr = append(expr, opEnd)
+	// 8. stat the deleted path; log "gone-ok" on -4.
+	expr = append(expr, i32c(renameOff)...)
+	expr = append(expr, i32c(renameLen)...)
+	expr = append(expr, i32c(outBuf)...)
+	expr = append(expr, i32c(outMax)...)
+	expr = append(expr, opCall, 0x01)
+	expr = append(expr, i32c(-4)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, marker(7)...)
+	expr = append(expr, opEnd)
+	// 9. denied/unauthorized probe; log "denied-ok" on the expected code.
+	expr = append(expr, i32c(deniedOff)...)
+	expr = append(expr, i32c(deniedLen)...)
+	expr = append(expr, i32c(outBuf)...)
+	expr = append(expr, i32c(outMax)...)
+	expr = append(expr, opCall, 0x01)
+	expr = append(expr, i32c(deniedWant)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, marker(8)...)
+	expr = append(expr, opEnd)
+	expr = append(expr, i32c(0)...)
+	s.extras = append(s.extras, extraFn{name: "do_storage", typ: tNullToI32, locals: 2, locals64: 1, expr: expr})
+	return s.build()
+}
+
+// StorageStatProbeModule stats path on install and logs "probe-ok" when the
+// host returns want (a byte count or a negative error code).
+func StorageStatProbeModule(path string, want int32) []byte {
+	s := guestSpec{
+		imports: []imp{{"log", tLog}, {"storage_stat", tFourI32}},
+		data:    [][]byte{[]byte(path), []byte("probe-ok")},
+	}
+	offs := s.dataOffsets()
+
+	expr := make([]byte, 0, 48)
+	expr = append(expr, i32c(offs[0])...)
+	expr = append(expr, i32c(i32n(len(path)))...)
+	expr = append(expr, i32c(8192)...)
+	expr = append(expr, i32c(4096)...)
+	expr = append(expr, opCall, 0x01) // storage_stat
+	expr = append(expr, i32c(want)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, logCall(offs[1], i32n(len("probe-ok")))...)
+	expr = append(expr, opDrop)
+	expr = append(expr, opEnd)
+	expr = append(expr, i32c(0)...)
+	s.onInstall = expr
+	return s.build()
+}
+
+// StorageOpenLoopModule opens path count times on install without closing
+// and logs "budget-ok" when the last call's high-32 code equals want (e.g.
+// -12 once the 64-stream budget is exhausted).
+func StorageOpenLoopModule(path string, count int, want int32) []byte {
+	s := guestSpec{
+		imports: []imp{{"log", tLog}, {"storage_open", tTwoI32I64}},
+		data:    [][]byte{[]byte(path), []byte("budget-ok")},
+	}
+	offs := s.dataOffsets()
+
+	// locals: 0 = i (i32), 1 = packed (i64)
+	expr := make([]byte, 0, 64)
+	expr = append(expr, opBlock, blockVoid, opLoop, blockVoid)
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i32c(i32n(count))...)
+	expr = append(expr, opI32GeU, opBrIf, 0x01)
+	expr = append(expr, i32c(offs[0])...)
+	expr = append(expr, i32c(i32n(len(path)))...)
+	expr = append(expr, opCall, 0x01, opLocalSet, 0x01) // packed = storage_open
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i32c(i32n(count-1))...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i64c(32)...)
+	expr = append(expr, opI64ShrU, opI32WrapI64)
+	expr = append(expr, i32c(want)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, logCall(offs[1], i32n(len("budget-ok")))...)
+	expr = append(expr, opDrop)
+	expr = append(expr, opEnd)
+	expr = append(expr, opEnd)
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i32c(1)...)
+	expr = append(expr, opI32Add, opLocalSet, 0x00)
+	expr = append(expr, opBr, 0x00)
+	expr = append(expr, opEnd, opEnd)
+	expr = append(expr, i32c(0)...)
+	s.onInstall = expr
+	s.onInstallLocals = 1
+	s.onInstallLocals64 = 1
+	return s.build()
+}
+
+// StorageLeakModule opens readPath and creates+writes writePath on install
+// without closing either handle, logging "leak-ok" when both succeed. The
+// test destroys the instance to verify closeAll cleanup.
+func StorageLeakModule(readPath, writePath, content string) []byte {
+	s := guestSpec{
+		imports: []imp{
+			{"log", tLog},                  // 0
+			{"storage_open", tTwoI32I64},   // 1
+			{"storage_create", tCreateI64}, // 2
+			{"storage_stream_write", tLog}, // 3
+		},
+		data: [][]byte{[]byte(readPath), []byte(writePath), []byte(content), []byte("leak-ok")},
+	}
+	offs := s.dataOffsets()
+
+	packedOK := func() []byte {
+		e := []byte{opLocalGet, 0x01}
+		e = append(e, i64c(32)...)
+		return append(e, opI64ShrU, opI32WrapI64, opI32Eqz)
+	}
+
+	// locals: 0 = handle (i32), 1 = packed (i64)
+	expr := make([]byte, 0, 64)
+	expr = append(expr, i32c(offs[0])...)
+	expr = append(expr, i32c(i32n(len(readPath)))...)
+	expr = append(expr, opCall, 0x01, opLocalSet, 0x01) // open readPath
+	expr = append(expr, packedOK()...)
+	expr = append(expr, opIf, blockVoid)
+	expr = append(expr, i32c(offs[1])...)
+	expr = append(expr, i32c(i32n(len(writePath)))...)
+	expr = append(expr, i64c(-1)...)
+	expr = append(expr, opCall, 0x02, opLocalSet, 0x01) // create writePath
+	expr = append(expr, packedOK()...)
+	expr = append(expr, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x01, opI32WrapI64, opLocalSet, 0x00)
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i32c(offs[2])...)
+	expr = append(expr, i32c(i32n(len(content)))...)
+	expr = append(expr, opCall, 0x03) // stream_write
+	expr = append(expr, i32c(i32n(len(content)))...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, logCall(offs[3], i32n(len("leak-ok")))...)
+	expr = append(expr, opDrop)
+	expr = append(expr, opEnd)
+	expr = append(expr, opEnd)
+	expr = append(expr, opEnd)
+	expr = append(expr, i32c(0)...)
+	s.onInstall = expr
+	s.onInstallLocals = 1
+	s.onInstallLocals64 = 1
+	return s.build()
+}
+
+// StorageWriteProbeModule creates path and writes content on install,
+// logging "spool-ok" when storage_stream_write returns want (e.g. -11 for an
+// oversize spool).
+func StorageWriteProbeModule(path, content string, want int32) []byte {
+	s := guestSpec{
+		imports: []imp{
+			{"log", tLog},                  // 0
+			{"storage_create", tCreateI64}, // 1
+			{"storage_stream_write", tLog}, // 2
+			{"storage_stream_close", tAlloc},
+		},
+		data: [][]byte{[]byte(path), []byte(content), []byte("spool-ok")},
+	}
+	offs := s.dataOffsets()
+
+	// locals: 0 = handle (i32), 1 = packed (i64)
+	expr := make([]byte, 0, 48)
+	expr = append(expr, i32c(offs[0])...)
+	expr = append(expr, i32c(i32n(len(path)))...)
+	expr = append(expr, i64c(-1)...)
+	expr = append(expr, opCall, 0x01, opLocalSet, 0x01)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i64c(32)...)
+	expr = append(expr, opI64ShrU, opI32WrapI64, opI32Eqz, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x01, opI32WrapI64, opLocalSet, 0x00)
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i32c(offs[1])...)
+	expr = append(expr, i32c(i32n(len(content)))...)
+	expr = append(expr, opCall, 0x02) // stream_write
+	expr = append(expr, i32c(want)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, logCall(offs[2], i32n(len("spool-ok")))...)
+	expr = append(expr, opDrop)
+	expr = append(expr, opEnd)
+	expr = append(expr, opLocalGet, 0x00, opCall, 0x03, opDrop) // close (commit)
+	expr = append(expr, opEnd)
+	expr = append(expr, i32c(0)...)
+	s.onInstall = expr
+	s.onInstallLocals = 1
+	s.onInstallLocals64 = 1
+	return s.build()
+}
+
+// StorageEventStatModule exports ncgo_on_event which stats path and logs
+// "user-ok" plus the raw stat payload when the stat succeeds. It proves an
+// event-driven call carries the event's user identity.
+func StorageEventStatModule(path string) []byte {
+	s := guestSpec{
+		imports:   []imp{{"log", tLog}, {"storage_stat", tFourI32}},
+		data:      [][]byte{[]byte(path), []byte("user-ok")},
+		onInstall: i32c(0),
+	}
+	offs := s.dataOffsets()
+
+	// params: 0=topicPtr 1=topicLen 2=payloadPtr 3=payloadLen; local 4 = n
+	expr := make([]byte, 0, 48)
+	expr = append(expr, i32c(offs[0])...)
+	expr = append(expr, i32c(i32n(len(path)))...)
+	expr = append(expr, i32c(8192)...)
+	expr = append(expr, i32c(4096)...)
+	expr = append(expr, opCall, 0x01, opLocalSet, 0x04) // n = storage_stat
+	expr = append(expr, opLocalGet, 0x04)
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opI32GtS, opIf, blockVoid)
+	expr = append(expr, i32c(1)...)
+	expr = append(expr, i32c(8192)...)
+	expr = append(expr, opLocalGet, 0x04, opCall, 0x00, opDrop) // log stat payload
+	expr = append(expr, logCall(offs[1], i32n(len("user-ok")))...)
+	expr = append(expr, opDrop)
+	expr = append(expr, opEnd)
+	expr = append(expr, i32c(0)...)
+	s.extras = append(s.extras, extraFn{name: "ncgo_on_event", typ: tFourI32, locals: 1, expr: expr})
+	return s.build()
+}
+
+// StorageReadProbeModule exercises the read-class storage functions on
+// install: stat path (logs the payload and "stat-ok"), open+read+close path
+// (logs the content and "open-ok"), and list listPath (logs the payload and
+// "list-ok"). Markers only appear on success.
+func StorageReadProbeModule(path, listPath string) []byte {
+	const (
+		outBuf = 8192
+		outMax = 4096
+	)
+	s := guestSpec{
+		imports: []imp{
+			{"log", tLog},                    // 0
+			{"storage_stat", tFourI32},       // 1
+			{"storage_open", tTwoI32I64},     // 2
+			{"storage_stream_read", tLog},    // 3
+			{"storage_stream_close", tAlloc}, // 4
+			{"storage_list", tFourI32},       // 5
+		},
+		data: [][]byte{[]byte(path), []byte(listPath), []byte("stat-ok"), []byte("open-ok"), []byte("list-ok")},
+	}
+	offs := s.dataOffsets()
+	pathOff, pathLen := offs[0], i32n(len(path))
+	listOff, listLen := offs[1], i32n(len(listPath))
+
+	logN := func(ptr int32) []byte {
+		e := append(i32c(1), i32c(ptr)...)
+		return append(e, opLocalGet, 0x01, opCall, 0x00, opDrop)
+	}
+	marker := func(i int) []byte {
+		m := s.data[2+i]
+		e := logCall(offs[2+i], i32n(len(m)))
+		return append(e, opDrop)
+	}
+
+	// locals: 0 = handle (i32), 1 = n (i32), 2 = packed (i64)
+	expr := make([]byte, 0, 96)
+	// stat
+	expr = append(expr, i32c(pathOff)...)
+	expr = append(expr, i32c(pathLen)...)
+	expr = append(expr, i32c(outBuf)...)
+	expr = append(expr, i32c(outMax)...)
+	expr = append(expr, opCall, 0x01, opLocalSet, 0x01)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opI32GtS, opIf, blockVoid)
+	expr = append(expr, logN(outBuf)...)
+	expr = append(expr, marker(0)...)
+	expr = append(expr, opEnd)
+	// open + read + close
+	expr = append(expr, i32c(pathOff)...)
+	expr = append(expr, i32c(pathLen)...)
+	expr = append(expr, opCall, 0x02, opLocalSet, 0x02)
+	expr = append(expr, opLocalGet, 0x02)
+	expr = append(expr, i64c(32)...)
+	expr = append(expr, opI64ShrU, opI32WrapI64, opI32Eqz, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x02, opI32WrapI64, opLocalSet, 0x00)
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i32c(outBuf)...)
+	expr = append(expr, i32c(outMax)...)
+	expr = append(expr, opCall, 0x03, opLocalSet, 0x01)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opI32GtS, opIf, blockVoid)
+	expr = append(expr, logN(outBuf)...)
+	expr = append(expr, marker(1)...)
+	expr = append(expr, opEnd)
+	expr = append(expr, opLocalGet, 0x00, opCall, 0x04, opDrop)
+	expr = append(expr, opEnd)
+	// list
+	expr = append(expr, i32c(listOff)...)
+	expr = append(expr, i32c(listLen)...)
+	expr = append(expr, i32c(outBuf)...)
+	expr = append(expr, i32c(outMax)...)
+	expr = append(expr, opCall, 0x05, opLocalSet, 0x01)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opI32GtS, opIf, blockVoid)
+	expr = append(expr, logN(outBuf)...)
+	expr = append(expr, marker(2)...)
+	expr = append(expr, opEnd)
+	expr = append(expr, i32c(0)...)
+	s.onInstall = expr
+	s.onInstallLocals = 2
+	s.onInstallLocals64 = 1
+	return s.build()
+}
+
+// StorageOpProbeModule runs one write-class storage op on install and logs
+// "probe-ok" when it returns want. op is "create" (packed high-32 code),
+// "delete" (path), or "rename" (path → dst).
+func StorageOpProbeModule(op, path, dst string, want int32) []byte {
+	s := guestSpec{
+		data: [][]byte{[]byte(path), []byte(dst), []byte("probe-ok")},
+	}
+	var call []byte
+	switch op {
+	case "create":
+		s.imports = []imp{{"log", tLog}, {"storage_create", tCreateI64}}
+		offs := s.dataOffsets()
+		call = i32c(offs[0])
+		call = append(call, i32c(i32n(len(path)))...)
+		call = append(call, i64c(-1)...)
+		call = append(call, opCall, 0x01)
+		call = append(call, i64c(32)...)
+		call = append(call, opI64ShrU, opI32WrapI64)
+	case "delete":
+		s.imports = []imp{{"log", tLog}, {"storage_delete", tOutMax}}
+		offs := s.dataOffsets()
+		call = i32c(offs[0])
+		call = append(call, i32c(i32n(len(path)))...)
+		call = append(call, opCall, 0x01)
+	case "rename":
+		s.imports = []imp{{"log", tLog}, {"storage_rename", tFourI32}}
+		offs := s.dataOffsets()
+		call = i32c(offs[0])
+		call = append(call, i32c(i32n(len(path)))...)
+		call = append(call, i32c(offs[1])...)
+		call = append(call, i32c(i32n(len(dst)))...)
+		call = append(call, opCall, 0x01)
+	default:
+		return nil
+	}
+	offs := s.dataOffsets()
+	expr := make([]byte, 0, 48)
+	expr = append(expr, call...)
+	expr = append(expr, i32c(want)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, logCall(offs[2], i32n(len("probe-ok")))...)
+	expr = append(expr, opDrop)
+	expr = append(expr, opEnd)
+	expr = append(expr, i32c(0)...)
+	s.onInstall = expr
+	return s.build()
 }

@@ -9,9 +9,9 @@ import (
 )
 
 // This file holds the host functions whose backing subsystems are not yet
-// implemented (storage proxying, outbound HTTP, job wiring, plugin config
-// store). Each validates the relevant capability so the default-deny posture
-// is exercised now, then returns ErrUnsupported until its increment lands.
+// implemented (outbound HTTP, job wiring, plugin config store). Each
+// validates the relevant capability so the default-deny posture is exercised
+// now, then returns ErrUnsupported until its increment lands.
 
 func (h *Host) configGet(ctx context.Context, _ api.Module, _, _, _, _ int32) int32 {
 	return unsupportedGranted(pluginCaps(ctx).hasConfigRead())
@@ -19,43 +19,6 @@ func (h *Host) configGet(ctx context.Context, _ api.Module, _, _, _, _ int32) in
 
 func (h *Host) configSet(ctx context.Context, _ api.Module, _, _, _, _ int32) int32 {
 	return unsupportedGranted(pluginCaps(ctx).hasConfigWrite())
-}
-
-func (h *Host) storageStat(ctx context.Context, _ api.Module, _, _, _, _ int32) int32 {
-	return unsupportedGranted(pluginCaps(ctx).hasStorageRead())
-}
-
-func (h *Host) storageOpen(ctx context.Context, _ api.Module, _, _ int32) int64 {
-	return int64(unsupportedGranted(pluginCaps(ctx).hasStorageRead()))
-}
-
-func (h *Host) storageCreate(ctx context.Context, _ api.Module, _, _ int32, _ int64) int64 {
-	return int64(unsupportedGranted(pluginCaps(ctx).hasStorageWrite()))
-}
-
-func (h *Host) storageStreamRead(ctx context.Context, _ api.Module, _, _, _ int32) int32 {
-	return unsupportedGranted(pluginCaps(ctx).hasStorageRead())
-}
-
-func (h *Host) storageStreamWrite(ctx context.Context, _ api.Module, _, _, _ int32) int32 {
-	return unsupportedGranted(pluginCaps(ctx).hasStorageWrite())
-}
-
-func (h *Host) storageStreamClose(ctx context.Context, _ api.Module, _ int32) int32 {
-	caps := pluginCaps(ctx)
-	return unsupportedGranted(caps.hasStorageRead() || caps.hasStorageWrite())
-}
-
-func (h *Host) storageDelete(ctx context.Context, _ api.Module, _, _ int32) int32 {
-	return unsupportedGranted(pluginCaps(ctx).hasStorageWrite())
-}
-
-func (h *Host) storageList(ctx context.Context, _ api.Module, _, _, _, _ int32) int32 {
-	return unsupportedGranted(pluginCaps(ctx).hasStorageRead())
-}
-
-func (h *Host) storageRename(ctx context.Context, _ api.Module, _, _, _, _ int32) int32 {
-	return unsupportedGranted(pluginCaps(ctx).hasStorageWrite())
 }
 
 func (h *Host) httpRequest(ctx context.Context, _ api.Module, _, _ int32) int64 {

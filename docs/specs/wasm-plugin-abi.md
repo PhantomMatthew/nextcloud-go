@@ -598,6 +598,25 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-22** — Phase 4c4 implemented storage (ADR-0042): the §6.3
+  `storage_*` family is live. **Path convention (v1):** plugin storage
+  paths carry a scheme prefix — `user:/path` addresses the calling user's
+  files, `system:/path` addresses the plugin's system storage, bare paths
+  default to `user:`; after scheme strip the remainder is normalized
+  (`..`/empty segments/NUL rejected, -2), unknown schemes are rejected
+  (-2), and `/` (scope root) is valid only for stat/list. User-scope
+  operations run through the files DAV as the call's user
+  (`CallContext.UserID`, empty → -12) so filecache/etag/trash/versions
+  stay consistent; user writes spool to a temp file and commit one-shot
+  through `DAV.Write` on `storage_stream_close` (1 GiB spool cap, -11;
+  leaked spools are discarded by closeAll). System paths resolve to
+  `appdata_<instanceID>/plugins/<plugin_id>/<path>` on the default storage
+  backend. `storage.read`/`storage.write` scope lists gate each operation
+  per scope; streams share the 64-handle `handleStream` budget. The stat/
+  list MessagePack entry shape is `{path, size, mtime_unix_ms, is_dir}`.
+  `events.Event` carries an optional `UserID` (set by `files.uploaded`)
+  which the dispatcher adopts as the delivery's call user when the publish
+  context has no explicit call metadata.
 - **2026-09-22** — Phase 4c3 implemented plugin HTTP routes (ADR-0041):
   §6.3 `route_register`/`ocs_register` are live (lifecycle-hook only,
   per-plugin `/apps/<id>/` namespace, persisted in `plugin_routes`, upsert

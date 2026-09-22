@@ -13,6 +13,8 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/cache"
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
 	"github.com/PhantomMatthew/nextcloud-go/internal/events"
+	"github.com/PhantomMatthew/nextcloud-go/internal/files"
+	"github.com/PhantomMatthew/nextcloud-go/internal/storage"
 )
 
 // HostConfig sizes the wazero runtime and wires host services.
@@ -30,6 +32,19 @@ type HostConfig struct {
 	// Registry backs route_register/ocs_register persistence. Nil makes them
 	// return ErrUnavailable.
 	Registry *Registry
+	// Files backs user-scope storage_* calls (one-shot commits keep the
+	// filecache consistent). Nil makes user-scope calls return
+	// ErrUnavailable.
+	Files *files.DAV
+	// SystemStorage backs system-scope storage_* calls. Nil makes
+	// system-scope calls return ErrUnavailable.
+	SystemStorage storage.Storage
+	// SystemPrefix namespaces system-scope paths:
+	// <SystemPrefix>/<plugin_id>/<path> (Nextcloud's appdata_<instanceid>
+	// convention).
+	SystemPrefix string
+	// MaxSpoolBytes caps user-scope write spools; <= 0 means 1 GiB.
+	MaxSpoolBytes int64
 }
 
 // Host is a wazero-backed plugin runtime.
@@ -57,6 +72,9 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 	}
 	if cfg.DefaultCallTimeout <= 0 {
 		cfg.DefaultCallTimeout = 5 * time.Second
+	}
+	if cfg.MaxSpoolBytes <= 0 {
+		cfg.MaxSpoolBytes = defaultMaxSpoolBytes
 	}
 	mb := cfg.DefaultMemoryLimitMB
 	if mb < 1 {
