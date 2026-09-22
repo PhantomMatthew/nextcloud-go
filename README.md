@@ -33,8 +33,10 @@ constraints, and the honest API-coverage caveats are in
 ### Managing plugins
 
 `ncgo-cli plugin install` / `enable` / `disable` / `uninstall` update the
-plugin registry in the database; the running server reads that set once at
-boot, so every change takes effect only after a server restart.
+plugin registry in the database; the running server's plugin reconciler
+polls that registry, so every change takes effect within
+`plugin.refresh_interval` (default 10s; a restart also works). Set the
+interval to 0 to disable hot reload and return to restart-only semantics.
 
 ## Project Goals
 

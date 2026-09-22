@@ -55,6 +55,42 @@ func TestRunnerRegisterEnqueueRun(t *testing.T) {
 	}
 }
 
+func TestRunnerUnregister(t *testing.T) {
+	ctx := t.Context()
+	store := NewSQLStore(testDB(t))
+	r := NewRunner(store, time.Now, 1, 20*time.Millisecond)
+	var first, second atomic.Int32
+	if err := r.Register(&countJob{name: "hot", n: &first}); err != nil {
+		t.Fatal(err)
+	}
+	// Unknown names and empty names are silent no-ops.
+	r.Unregister("missing")
+	r.Unregister("")
+	r.Unregister("hot")
+	if err := r.Enqueue(ctx, "hot", nil, time.Now()); !errors.Is(err, ErrUnknownJob) {
+		t.Fatalf("enqueue after unregister = %v", err)
+	}
+	// The freed name accepts a fresh registration (the hot-reload restart
+	// case: new adapter, new *Plugin).
+	if err := r.Register(&countJob{name: "hot", n: &second}); err != nil {
+		t.Fatalf("re-register = %v", err)
+	}
+	if err := r.Enqueue(ctx, "hot", nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Stop(ctx) })
+	deadline := time.Now().Add(time.Second)
+	for second.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if second.Load() != 1 || first.Load() != 0 {
+		t.Fatalf("first=%d second=%d", first.Load(), second.Load())
+	}
+}
+
 func TestRunnerPeriodicExpireNames(t *testing.T) {
 	ctx := t.Context()
 	store := NewSQLStore(testDB(t))

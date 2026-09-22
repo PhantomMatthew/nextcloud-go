@@ -359,10 +359,13 @@ func pluginInstaller(cmd *cobra.Command) (*plugins.Installer, func(), error) {
 	}
 	// Only a Redis-backed deployment gets cache cleanup from the CLI: the
 	// shared L2 survives server restarts, so a reinstalled plugin would see
-	// the previous generation's keys. A memory-only cache dies with the
-	// server process, and uninstalls take effect on restart anyway (same
-	// semantics as enable/disable) — a CLI-local Memory would be an empty
-	// shell. The install host's Cache stays deliberately nil (ADR-0056 G1).
+	// the previous generation's keys. A memory-only cache lives inside the
+	// server process — a CLI-local Memory would be an empty shell, and the
+	// server's copy dies with the process. (With hot reload, ADR-0062, an
+	// uninstall no longer implies a restart, so a memory-cache reinstall
+	// within one process lifetime can see stale keys — a reconciler-side
+	// purge is a documented follow-up.) The install host's Cache stays
+	// deliberately nil (ADR-0056 G1).
 	var rc *cache.Redis
 	if cfg.Cache.RedisAddr != "" {
 		rc, err = cache.NewRedis(cache.RedisConfig{
@@ -475,10 +478,11 @@ func newPluginEnable(use string, enabled bool) *cobra.Command {
 	verb := strings.Split(use, " ")[0]
 	return &cobra.Command{
 		Use:   use,
-		Short: verb + " an installed plugin (takes effect on server restart)",
+		Short: verb + " an installed plugin (takes effect within plugin.refresh_interval)",
 		Long: verb + " an installed plugin by flipping its enabled flag in the registry.\n\n" +
-			"The running server reads the enabled plugin set once at boot, so a\n" +
-			"SERVER RESTART is required for the change to take effect.",
+			"The running server's plugin reconciler polls the registry, so the change\n" +
+			"takes effect within plugin.refresh_interval (default 10s; 0 disables the\n" +
+			"poll, in which case a SERVER RESTART is required).",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(config.LoadOptions{Path: cfgPath})

@@ -34,7 +34,8 @@ dispatch from the app router into guest modules.
    (plain routes at the recorded path, OCS endpoints under both
    `/ocs/v1.php` and `/ocs/v2.php`). Runtime install/enable/disable route
    refresh is future work — a restart (or reinstall) is required to pick up
-   new routes. A per-plugin registry read failure is logged and skipped
+   new routes (closed by ADR-0062's runtime reconciler). A per-plugin
+   registry read failure is logged and skipped
    (StartEnabled philosophy); a nil router/registry is a hard error. Two
    records colliding on method+path resolve last-wins (the router's exact
    map), same as any double registration.

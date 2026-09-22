@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -99,4 +100,79 @@ func TestRouterPanicOnInvalidPath(t *testing.T) {
 		}
 	}()
 	NewRouter().Handle(http.MethodGet, "rel", okHandler("x"))
+}
+
+func TestRouterRemove(t *testing.T) {
+	r := NewRouter()
+	r.Handle(http.MethodGet, "/x", okHandler("x"))
+	r.Handle(http.MethodPost, "/x", okHandler("x"))
+
+	r.Remove(http.MethodGet, "/x")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/x", nil))
+	if rr.Code != http.StatusMethodNotAllowed || rr.Header().Get("Allow") != "POST" {
+		t.Fatalf("after remove GET: code=%d allow=%q", rr.Code, rr.Header().Get("Allow"))
+	}
+	rr = httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/x", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("POST must survive: code=%d", rr.Code)
+	}
+
+	r.Remove(http.MethodPost, "/x")
+	rr = httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/x", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("after removing last method: code=%d, want 404", rr.Code)
+	}
+}
+
+func TestRouterRemoveNoop(t *testing.T) {
+	r := NewRouter()
+	r.Handle(http.MethodGet, "/x", okHandler("x"))
+	// Unknown path, unknown method, and prefix routes are all silent no-ops.
+	r.Remove(http.MethodDelete, "/missing")
+	r.Remove(http.MethodDelete, "/x")
+	r.HandlePrefix(MethodAny, "/pre", okHandler("pre"))
+	r.Remove(http.MethodGet, "/pre")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/x", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /x must survive no-op removals: code=%d", rr.Code)
+	}
+	rr = httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/pre/a", nil))
+	if rr.Code != http.StatusOK || rr.Body.String() != "pre" {
+		t.Fatalf("prefix route must not be removable: code=%d body=%q", rr.Code, rr.Body.String())
+	}
+}
+
+// TestRouterConcurrentRegisterRemoveServe hammers ServeHTTP while another
+// goroutine churns register/Remove on the same paths; it exists for the
+// race detector (-race), not for a fixed outcome.
+func TestRouterConcurrentRegisterRemoveServe(t *testing.T) {
+	r := NewRouter()
+	r.Handle(http.MethodGet, "/stable", okHandler("stable"))
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 200 {
+				rr := httptest.NewRecorder()
+				r.ServeHTTP(rr, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/hot", nil))
+				r.ServeHTTP(rr, httptest.NewRequestWithContext(context.Background(), http.MethodDelete, "/hot", nil))
+				r.ServeHTTP(rr, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/stable", nil))
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for range 200 {
+			r.Handle(http.MethodGet, "/hot", okHandler("hot"))
+			r.Remove(http.MethodGet, "/hot")
+		}
+	}()
+	wg.Wait()
 }

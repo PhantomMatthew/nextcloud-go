@@ -124,15 +124,19 @@ type JobsConfig struct {
 // (ADR-0060); SystemStorageQuotaMB caps one plugin's system-scope storage
 // tree (ADR-0061); zero selects the host default (120 calls/min with burst
 // 30, 32 MiB per response, 4 concurrent statements, 1 GiB per tree).
+// RefreshInterval is the plugin hot-reload poll (ADR-0062): registry
+// changes (install/enable/disable/upgrade via ncgo-cli) take effect within
+// one interval; 0 disables the poll so changes need a restart, like before.
 type PluginConfig struct {
-	Enabled                  bool   `koanf:"enabled"`
-	InstallDir               string `koanf:"install_dir"`
-	DefaultMemoryLimitMB     int    `koanf:"default_memory_limit_mb"`
-	DefaultCPUTimeoutMS      int    `koanf:"default_cpu_timeout_ms"`
-	HTTPRatePerMinute        int    `koanf:"http_rate_per_minute"`
-	MaxHTTPResponseMB        int    `koanf:"max_http_response_mb"`
-	DBMaxConcurrentPerPlugin int    `koanf:"db_max_concurrent_per_plugin"`
-	SystemStorageQuotaMB     int    `koanf:"system_storage_quota_mb"`
+	Enabled                  bool          `koanf:"enabled"`
+	InstallDir               string        `koanf:"install_dir"`
+	DefaultMemoryLimitMB     int           `koanf:"default_memory_limit_mb"`
+	DefaultCPUTimeoutMS      int           `koanf:"default_cpu_timeout_ms"`
+	HTTPRatePerMinute        int           `koanf:"http_rate_per_minute"`
+	MaxHTTPResponseMB        int           `koanf:"max_http_response_mb"`
+	DBMaxConcurrentPerPlugin int           `koanf:"db_max_concurrent_per_plugin"`
+	SystemStorageQuotaMB     int           `koanf:"system_storage_quota_mb"`
+	RefreshInterval          time.Duration `koanf:"refresh_interval"`
 }
 
 // ObservabilityConfig covers logging, metrics, and tracing endpoints.

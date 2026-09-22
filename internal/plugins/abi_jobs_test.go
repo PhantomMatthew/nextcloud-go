@@ -190,6 +190,7 @@ func TestJobEnqueueFarFuture(t *testing.T) {
 type errJobRunner struct{}
 
 func (errJobRunner) Register(jobs.Job) error { return nil }
+func (errJobRunner) Unregister(string)       {}
 func (errJobRunner) Enqueue(context.Context, string, []byte, time.Time) error {
 	return errors.New("store down")
 }

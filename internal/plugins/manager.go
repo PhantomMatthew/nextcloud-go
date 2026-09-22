@@ -6,25 +6,10 @@ import (
 	"os"
 )
 
-// StartEnabled loads and starts every enabled plugin from the registry.
-// Per-plugin failures are logged and skipped: a broken plugin must not
-// prevent the server from booting.
-func StartEnabled(ctx context.Context, h *Host, reg *Registry, logger *slog.Logger) []*Plugin {
-	rows, err := reg.ListEnabled(ctx)
-	if err != nil {
-		logger.ErrorContext(ctx, "plugins: list enabled failed", slog.String("error", err.Error()))
-		return nil
-	}
-	var out []*Plugin
-	for _, row := range rows {
-		p := startOne(ctx, h, &row, logger)
-		if p != nil {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
+// startOne loads and starts one enabled plugin from its registry row.
+// Per-plugin failures are logged and skipped (nil return): a broken plugin
+// must not prevent the server from booting or other plugins from
+// starting — the reconciler retries on its next pass.
 func startOne(ctx context.Context, h *Host, row *RegistryRow, logger *slog.Logger) *Plugin {
 	fail := func(stage string, err error) *Plugin {
 		logger.ErrorContext(ctx, "plugins: start failed",

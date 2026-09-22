@@ -63,6 +63,7 @@ func hardcodedDefault() *Config {
 			MaxHTTPResponseMB:        32,
 			DBMaxConcurrentPerPlugin: 4,
 			SystemStorageQuotaMB:     1024,
+			RefreshInterval:          10 * time.Second,
 		},
 		Observability: ObservabilityConfig{
 			LogLevel:  "info",
@@ -109,6 +110,7 @@ func defaultFlat() map[string]any {
 		"plugin.max_http_response_mb":         32,
 		"plugin.db_max_concurrent_per_plugin": 4,
 		"plugin.system_storage_quota_mb":      1024,
+		"plugin.refresh_interval":             10 * time.Second,
 		"observability.log_level":             "info",
 		"observability.log_format":            "json",
 		"observability.metrics_enabled":       false,

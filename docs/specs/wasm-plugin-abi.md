@@ -614,6 +614,30 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-22** — Phase 4q added plugin hot reload (ADR-0062), closing the
+  ADR-0041 "routes mount at boot; runtime refresh is future work" follow-up:
+  install/enable/disable/upgrade through `ncgo-cli` now take effect on the
+  running server within `plugin.refresh_interval` (default 10s; 0 disables
+  the poll and restores restart-only semantics, negatives rejected). A new
+  `plugins.Reconciler` polls the registry (`Sync` is one idempotent pass,
+  `Run` the blocking loop, `Close` stops everything for `App.Close`): a
+  plugin enabled but not running is started and its routes mounted, a
+  running plugin no longer enabled — or whose registry `version` changed
+  (upgrade = stop + start; the CLI's clear-then-hook already rewrote the
+  route rows) — is unmounted and stopped. Stop order is tracked-route
+  removal first, then the `plugin.<id>` job adapter is unregistered from the
+  runner (the new `jobs.Runner.Unregister`), then `Plugin.Close` (which
+  detaches event delivery); rows queued while a plugin is down retry as
+  unknown-name and are dropped after three strikes. Removal works from the
+  route keys recorded at mount time because an uninstall has already deleted
+  the registry's route rows by the time it is reconciled. `httpx.Router`
+  gained a `sync.RWMutex` (handlers are resolved under one read lock and
+  invoked after unlocking) and exact-route `Remove`. Per-plugin failures stay
+  isolated the startOne way (log, skip, retried next pass); a registry read
+  failure keeps the current running set. In-flight requests are unaffected
+  by unmounting — they already hold the handler — and a same-version
+  reinstall is not detected (version is the change signal). WebDAV prop
+  registrations needed nothing: they are looked up per request.
 - **2026-09-22** — Phase 4p closed the ADR-0042 "quota checks" follow-up
   (ADR-0061): both `storage_*` write paths now enforce quotas at two
   checkpoints — `storage_create` against the declared size (skipped when the

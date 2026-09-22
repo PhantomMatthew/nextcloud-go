@@ -191,6 +191,30 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4q: plugin hot reload (ADR-0062), closing the
+  ADR-0041 boot-time-mount follow-up. A new `plugins.Reconciler` polls the
+  registry every `plugin.refresh_interval` (new config key, default 10s;
+  0 = restart-only, negatives rejected) and reconciles the running set:
+  newly enabled plugins are started and mounted (the former
+  `plugins.StartEnabled` + `MountRoutes` boot pair is now the reconciler's
+  first `Sync` inside `mountRoutes`), disabled/uninstalled plugins are
+  unmounted and stopped, and a registry version change (upgrade, with the
+  CLI's 4j clear-then-hook having already rewritten the route rows) is
+  stop-then-start. Stops remove the tracked route keys recorded at mount
+  time (uninstall deletes the route rows first, so the DB cannot answer),
+  `Unregister` the `plugin.<id>` job adapter (new `jobs.Runner.Unregister`;
+  queued rows retry as unknown-name and drop after three strikes), then
+  `Plugin.Close`. `httpx.Router` is now safe for concurrent register/Remove
+  vs ServeHTTP (one read lock resolves the handler; invocation happens
+  unlocked) and gained exact-route `Remove`. Per-plugin failures stay
+  isolated and are retried next pass; a registry read failure keeps the
+  running set. In-flight requests already dispatched to a removed route run
+  to completion. The 4k "restart required" texts (README, both example
+  READMEs, CLI enable/disable help) now read "takes effect within
+  `plugin.refresh_interval`". Follow-up: with hot reload, ADR-0058's
+  memory-cache uninstall residue no longer dies with a mandatory restart —
+  a reconciler-side `plugin:<id>:` cache purge on detected uninstall is
+  open.
 - **2026-09-22** — Phase 4p: plugin storage quotas (ADR-0061), closing the
   ADR-0042 "quota checks" follow-up (chunked/resumable writes, per-plugin
   storage byte metrics, a mkdir host function, and core-DAV quota

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -298,14 +299,20 @@ func (a *App) mountRoutes() error {
 		router.HandlePrefix(httpx.MethodAny, "/public.php/webdav", pub)
 	}
 
-	if len(a.Plugins) > 0 && a.pluginReg != nil {
-		if err := plugins.MountRoutes(context.Background(), router, a.Plugins, a.pluginReg,
+	if a.PluginHost != nil && a.pluginReg != nil {
+		// The reconciler's first Sync is the boot-time mount (the former
+		// StartEnabled + MountRoutes pair); its Run loop then hot-applies
+		// later registry changes (ADR-0062). A registry outage here is
+		// logged, not fatal: the next tick retries.
+		rec := plugins.NewReconciler(a.PluginHost, a.pluginReg, router,
 			webdav.Auth(authCfg),
 			httpx.Middleware(ocs.Auth(ocs.V1, authCfg)),
 			httpx.Middleware(ocs.Auth(ocs.V2, authCfg)),
-			a.Logger); err != nil {
-			return fmt.Errorf("app: plugin routes: %w", err)
+			a.Logger)
+		if err := rec.Sync(context.Background()); err != nil {
+			a.Logger.ErrorContext(context.Background(), "plugins: initial reconcile failed", slog.String("error", err.Error()))
 		}
+		a.reconciler = rec
 	}
 
 	if a.metrics != nil {

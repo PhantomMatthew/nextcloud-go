@@ -76,6 +76,17 @@ func (r *SQLRunner) Register(job Job) error {
 	return nil
 }
 
+// Unregister drops the job under name so a re-Register does not hit
+// ErrDuplicateJob. Unknown names are a no-op (the reconciler calls this for
+// every stopped plugin, including ones that never registered an adapter).
+// Queued rows under name are not deleted: with no adapter known they retry
+// and are dropped after maxUnknownJobAttempts.
+func (r *SQLRunner) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.jobs, name)
+}
+
 func (r *SQLRunner) Enqueue(ctx context.Context, name string, payload []byte, runAt time.Time) error {
 	r.mu.Lock()
 	_, ok := r.jobs[name]

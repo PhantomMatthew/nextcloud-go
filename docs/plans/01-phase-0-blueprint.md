@@ -242,6 +242,7 @@ plugin:
   max_http_response_mb: 32     # per-response body cap; 0 = default
   db_max_concurrent_per_plugin: 4  # per-plugin in-flight db_* statement cap; 0 = default
   system_storage_quota_mb: 1024    # per-plugin system-scope storage tree cap; 0 = default
+  refresh_interval: "10s"      # plugin registry hot-reload poll; 0 = restart-only
 
 observability:
   log_level: "info"        # debug | info | warn | error

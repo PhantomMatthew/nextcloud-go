@@ -50,10 +50,11 @@ type App struct {
 	Users      users.Store
 	Router     *httpx.Router
 	PluginHost *plugins.Host
-	Plugins    []*plugins.Plugin
 
-	pluginReg *plugins.Registry
-	metrics   *observability.Registry
+	pluginReg  *plugins.Registry
+	reconciler *plugins.Reconciler
+	recCancel  context.CancelFunc
+	metrics    *observability.Registry
 
 	hasher        auth.PasswordHasher
 	authStore     auth.Store
@@ -279,7 +280,6 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 			return nil, err
 		}
 		a.PluginHost = ph
-		a.Plugins = plugins.StartEnabled(ctx, ph, reg, logger)
 		dav.LiveProps = plugins.NewPropProvider(ph, reg, logger)
 	}
 	if err := a.mountRoutes(); err != nil {
@@ -287,6 +287,14 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 			return nil, errors.Join(err, cerr)
 		}
 		return nil, err
+	}
+	// The refresh loop runs only when refresh_interval > 0; the boot-time
+	// Sync mountRoutes already performed keeps the 0 semantics identical to
+	// the pre-hot-reload startup mount (ADR-0062).
+	if a.reconciler != nil && cfg.Plugin.RefreshInterval > 0 {
+		var recCtx context.Context
+		recCtx, a.recCancel = context.WithCancel(context.Background())
+		go a.reconciler.Run(recCtx, cfg.Plugin.RefreshInterval)
 	}
 	return a, nil
 }
@@ -337,15 +345,20 @@ func (a *App) Close(ctx context.Context) error {
 
 func (a *App) closeResources(ctx context.Context) error {
 	var err error
+	// Stop the refresh loop first so no Sync can start a plugin while
+	// teardown is closing the others.
+	if a.recCancel != nil {
+		a.recCancel()
+		a.recCancel = nil
+	}
 	if a.jobs != nil {
 		err = joinErr(err, a.jobs.Stop(ctx))
 		a.jobs = nil
 	}
-	for i, p := range a.Plugins {
-		err = joinErr(err, p.Close(ctx))
-		a.Plugins[i] = nil
+	if a.reconciler != nil {
+		err = joinErr(err, a.reconciler.Close(ctx))
+		a.reconciler = nil
 	}
-	a.Plugins = nil
 	if a.PluginHost != nil {
 		err = joinErr(err, a.PluginHost.Close(ctx))
 		a.PluginHost = nil

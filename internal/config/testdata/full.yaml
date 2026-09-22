@@ -53,6 +53,7 @@ plugin:
   max_http_response_mb: 64
   db_max_concurrent_per_plugin: 8
   system_storage_quota_mb: 2048
+  refresh_interval: 30s
 
 observability:
   log_level: info

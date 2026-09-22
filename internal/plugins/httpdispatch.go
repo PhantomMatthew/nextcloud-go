@@ -160,20 +160,22 @@ func ocsValue(v any) any {
 	}
 }
 
+// routeKey identifies one mounted exact route for later removal. An OCS
+// record mounts under both /ocs/v1.php and /ocs/v2.php, so it produces two
+// keys.
+type routeKey struct {
+	method string
+	path   string
+}
+
 // MountRoutes mounts every persisted route of the given started plugins.
 // Plain routes are wrapped with routeMw; OCS endpoints are mounted under
 // both /ocs/v1.php and /ocs/v2.php with the matching auth middleware. A
-// per-plugin registry failure is logged and skipped (StartEnabled
-// philosophy): one broken plugin must not prevent the others from mounting.
+// per-plugin registry failure is logged and skipped (startOne philosophy):
+// one broken plugin must not prevent the others from mounting.
 func MountRoutes(ctx context.Context, router *httpx.Router, ps []*Plugin, reg *Registry, routeMw, ocsV1Mw, ocsV2Mw httpx.Middleware, logger *slog.Logger) error {
 	if router == nil || reg == nil {
 		return errors.New("plugins: mount routes: nil router or registry")
-	}
-	mws := func(mw httpx.Middleware) []httpx.Middleware {
-		if mw == nil {
-			return nil
-		}
-		return []httpx.Middleware{mw}
 	}
 	for _, p := range ps {
 		if p == nil {
@@ -187,23 +189,43 @@ func MountRoutes(ctx context.Context, router *httpx.Router, ps []*Plugin, reg *R
 			}
 			continue
 		}
-		for _, rec := range recs {
-			switch rec.Kind {
-			case "route":
-				router.Handle(rec.Method, rec.Path, p.RouteHandler(rec), mws(routeMw)...)
-			case "ocs":
-				router.Handle(rec.Method, "/ocs/v1.php"+rec.Path, p.OCSHandler(rec, ocs.V1), mws(ocsV1Mw)...)
-				router.Handle(rec.Method, "/ocs/v2.php"+rec.Path, p.OCSHandler(rec, ocs.V2), mws(ocsV2Mw)...)
-			default:
-				if logger != nil {
-					logger.WarnContext(ctx, "plugins: unknown route kind, skipped",
-						slog.String("plugin.id", p.manifest.Plugin.ID), slog.String("kind", rec.Kind),
-						slog.String("path", rec.Path))
-				}
+		mountRoutes(ctx, router, p, recs, routeMw, ocsV1Mw, ocsV2Mw, logger)
+	}
+	return nil
+}
+
+// mountRoutes mounts every route record of one started plugin and returns
+// the keys it registered. The reconciler records them: by the time a stop
+// is reconciled the registry's route rows may already be gone (uninstall
+// deletes them), so removal works from this list, not from the registry.
+func mountRoutes(ctx context.Context, router *httpx.Router, p *Plugin, recs []RouteRecord, routeMw, ocsV1Mw, ocsV2Mw httpx.Middleware, logger *slog.Logger) []routeKey {
+	mws := func(mw httpx.Middleware) []httpx.Middleware {
+		if mw == nil {
+			return nil
+		}
+		return []httpx.Middleware{mw}
+	}
+	var keys []routeKey
+	for _, rec := range recs {
+		switch rec.Kind {
+		case "route":
+			router.Handle(rec.Method, rec.Path, p.RouteHandler(rec), mws(routeMw)...)
+			keys = append(keys, routeKey{method: rec.Method, path: rec.Path})
+		case "ocs":
+			v1 := "/ocs/v1.php" + rec.Path
+			v2 := "/ocs/v2.php" + rec.Path
+			router.Handle(rec.Method, v1, p.OCSHandler(rec, ocs.V1), mws(ocsV1Mw)...)
+			router.Handle(rec.Method, v2, p.OCSHandler(rec, ocs.V2), mws(ocsV2Mw)...)
+			keys = append(keys, routeKey{method: rec.Method, path: v1}, routeKey{method: rec.Method, path: v2})
+		default:
+			if logger != nil {
+				logger.WarnContext(ctx, "plugins: unknown route kind, skipped",
+					slog.String("plugin.id", p.manifest.Plugin.ID), slog.String("kind", rec.Kind),
+					slog.String("path", rec.Path))
 			}
 		}
 	}
-	return nil
+	return keys
 }
 
 // failRequest logs err and answers the request: 413 for an oversized body,
