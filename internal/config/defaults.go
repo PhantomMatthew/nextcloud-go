@@ -115,6 +115,8 @@ func defaultFlat() map[string]any {
 		"observability.log_level":           "info",
 		"observability.log_format":          "json",
 		"observability.metrics_listen":      "127.0.0.1:9090",
+		"observability.metrics_enabled":     false,
+		"observability.metrics_token":       "",
 		"observability.otel_endpoint":       "",
 		"maintenance.enabled":               false,
 		"maintenance.needs_db_upgrade":      false,

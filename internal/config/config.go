@@ -133,11 +133,16 @@ type PluginConfig struct {
 }
 
 // ObservabilityConfig covers logging, metrics, and tracing endpoints.
+// MetricsEnabled mounts GET /metrics (ADR-0055); MetricsToken, when set,
+// requires `Authorization: Bearer <token>` on scrapes (constant-time
+// compared). Network-level restriction is recommended regardless.
 type ObservabilityConfig struct {
-	LogLevel      string `koanf:"log_level"`
-	LogFormat     string `koanf:"log_format"`
-	MetricsListen string `koanf:"metrics_listen"`
-	OTELEndpoint  string `koanf:"otel_endpoint"`
+	LogLevel       string `koanf:"log_level"`
+	LogFormat      string `koanf:"log_format"`
+	MetricsListen  string `koanf:"metrics_listen"`
+	MetricsEnabled bool   `koanf:"metrics_enabled"`
+	MetricsToken   string `koanf:"metrics_token"`
+	OTELEndpoint   string `koanf:"otel_endpoint"`
 }
 
 // MaintenanceConfig mirrors Nextcloud's maintenance and upgrade flags.

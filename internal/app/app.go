@@ -26,6 +26,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/login"
 	"github.com/PhantomMatthew/nextcloud-go/internal/migrations"
 	"github.com/PhantomMatthew/nextcloud-go/internal/notifications"
+	"github.com/PhantomMatthew/nextcloud-go/internal/observability"
 	"github.com/PhantomMatthew/nextcloud-go/internal/ocm"
 	"github.com/PhantomMatthew/nextcloud-go/internal/plugins"
 	"github.com/PhantomMatthew/nextcloud-go/internal/preview"
@@ -52,6 +53,7 @@ type App struct {
 	Plugins    []*plugins.Plugin
 
 	pluginReg *plugins.Registry
+	metrics   *observability.Registry
 
 	hasher        auth.PasswordHasher
 	authStore     auth.Store
@@ -245,6 +247,9 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		}
 		a.staticUI = ui
 	}
+	if cfg.Observability.MetricsEnabled {
+		a.metrics = observability.NewRegistry()
+	}
 	if cfg.Plugin.Enabled {
 		reg := plugins.NewRegistry(a.DB)
 		a.pluginReg = reg
@@ -260,6 +265,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 			SystemPrefix:         "appdata_" + a.instanceID + "/plugins",
 			AppConfig:            appconfig.NewStore(a.DB),
 			Jobs:                 jr,
+			Metrics:              a.metrics,
 		}, logger)
 		if err != nil {
 			if cerr := a.closeResources(ctx); cerr != nil {

@@ -49,6 +49,9 @@ func TestDefaultSnapshot(t *testing.T) {
 	if got.Observability.LogLevel != "info" || got.Observability.LogFormat != "json" {
 		t.Errorf("observability defaults: %+v", got.Observability)
 	}
+	if got.Observability.MetricsEnabled || got.Observability.MetricsToken != "" {
+		t.Errorf("metrics defaults: %+v", got.Observability)
+	}
 	if got.Maintenance.Enabled || got.Instance.Secret != "" {
 		t.Errorf("maintenance/instance defaults: %+v %+v", got.Maintenance, got.Instance)
 	}

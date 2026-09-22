@@ -17,6 +17,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/events"
 	"github.com/PhantomMatthew/nextcloud-go/internal/files"
 	"github.com/PhantomMatthew/nextcloud-go/internal/jobs"
+	"github.com/PhantomMatthew/nextcloud-go/internal/observability"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage"
 )
 
@@ -59,6 +60,10 @@ type HostConfig struct {
 	// Jobs backs job_enqueue and plugin job delivery. Nil makes job_enqueue
 	// return ErrUnavailable and skips adapter registration.
 	Jobs jobs.Runner
+	// Metrics, when non-nil, instruments every exported host function with
+	// the §12 counter/histogram/denial families. Nil disables instrumentation
+	// entirely (zero overhead: functions are registered unwrapped).
+	Metrics *observability.Registry
 }
 
 // Host is a wazero-backed plugin runtime.

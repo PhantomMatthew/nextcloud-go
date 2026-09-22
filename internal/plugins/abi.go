@@ -23,7 +23,7 @@ const (
 func (h *Host) registerHostModule(ctx context.Context) error {
 	b := h.rt.NewHostModuleBuilder("ncgo")
 	export := func(name string, fn any) {
-		b.NewFunctionBuilder().WithFunc(fn).Export(name)
+		b.NewFunctionBuilder().WithFunc(h.wrapHostMetrics(name, fn)).Export(name)
 	}
 	export("log", h.log)
 

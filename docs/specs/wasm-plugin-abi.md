@@ -598,6 +598,22 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-22** — Phase 4i implemented §12 Prometheus metrics (ADR-0055):
+  `ncgo_plugin_host_calls_total{plugin,function,result}` and
+  `ncgo_plugin_host_call_duration_seconds{plugin,function}` are emitted for
+  every host call (instrumented uniformly at the `registerHostModule` export
+  helper), and capability denials additionally increment
+  `ncgo_plugin_capability_denials_total{plugin,function}` as the security
+  signal. The exposition registry is stdlib-only
+  (`internal/observability`, no `client_golang`); `result` is a bounded
+  classification of ABI codes (`ok` — including positive byte-count returns,
+  `permission_denied`, `invalid_argument`, `not_found`, `unavailable`,
+  `unsupported`, `too_large`, `timeout`, `canceled`, `internal`), never raw
+  codes. `GET /metrics` is gated by `observability.metrics_enabled` (default
+  off) with optional bearer-token auth (`observability.metrics_token`,
+  constant-time compared). **Deferred:** OTel `plugin.host_call` spans (no
+  OTel SDK in v1), the per-plugin admin dashboard (request count, error
+  rate, p50/p95/p99, memory high-water), and guest entry-point call metrics.
 - **2026-09-22** — Phase 4c8 implemented plugin WebDAV properties
   (ADR-0046): the §6.3 `webdav_register_prop` is live (lifecycle-hook only
   → -3; `webdav.props` grant required → -3; name must be `prefix:local`

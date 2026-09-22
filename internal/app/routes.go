@@ -308,6 +308,10 @@ func (a *App) mountRoutes() error {
 		}
 	}
 
+	if a.metrics != nil {
+		router.Handle(http.MethodGet, "/metrics", a.metrics.Handler(a.Cfg.Observability.MetricsToken))
+	}
+
 	// Static frontend catch-all: the router's longest-prefix matching keeps
 	// every exact and prefix route above ahead of this "/" mount, so only
 	// paths nothing else claimed reach the SPA/static handler. Static GETs

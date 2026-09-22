@@ -191,6 +191,25 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4i: Prometheus metrics for the plugin system
+  (ADR-0055), completing the Phase 4 feature set. A minimal stdlib-only
+  Prometheus text-exposition registry (`internal/observability.Registry`,
+  zero new dependencies — the project deliberately does not take on
+  `client_golang`) backs the three §12 families:
+  `ncgo_plugin_host_calls_total{plugin,function,result}` with raw ABI codes
+  classified into a bounded `result` label set (cardinality budget, never
+  raw codes), `ncgo_plugin_host_call_duration_seconds{plugin,function}`
+  with fixed µs-to-seconds buckets, and
+  `ncgo_plugin_capability_denials_total{plugin,function}` as the security
+  signal. Instrumentation lives at the single choke point every ~39 host
+  function passes through (the `export` helper in `registerHostModule`),
+  via one `reflect.MakeFunc` wrapper shape-validated at startup; a nil
+  registry leaves functions fully unwrapped (zero overhead). New
+  `observability.metrics_enabled` (default false) and
+  `observability.metrics_token` config gate `GET /metrics` on the main
+  listener, with optional constant-time-compared bearer auth. OTel spans,
+  the per-plugin admin dashboard, memory high-water marks, and guest
+  entry-point metrics are deferred (documented in ADR-0055).
 - **2026-09-22** — Phase 4h: static serving for the Nextcloud admin frontend
   (ADR-0054). New `web.static_root` config (empty = disabled, absolute path
   validated) points ncgo at an operator-provided directory of pre-compiled
