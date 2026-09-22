@@ -189,6 +189,18 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4c7: plugin jobs implemented — `job_enqueue`
+  validates the plugin-local name (1–128 bytes of `[A-Za-z0-9_.-]`, else -2),
+  checks `jobs.register` (-3), requires a configured runner (-12), and
+  rejects plugins without an `on_job` entry point (-2); `run_at_unix_ms` ≤ 0
+  or past means now, more than ten years out is -2. Rows are stored under
+  one adapter job per plugin (`plugin.<plugin_id>`) carrying a MessagePack
+  `{name, payload}` envelope; the adapter drops undeliverable work (detached
+  plugin, poison envelope, no entry point) and retries guest failures
+  (non-zero i32 or trap) through the jobs runner, delivering the
+  plugin-local name verbatim to `ncgo_on_job`. Registration happens in
+  `startOne` (duplicates tolerated, failures logged, boot never fails);
+  HostConfig gains Jobs; pluginsdk gains JobEnqueue/JobArgs (see ADR-0045).
 - **2026-09-22** — Phase 4c6: `config.*` host functions implemented — a new
   generic `appconfig` store (migration `0017_appconfig`, all three
   dialects; the Nextcloud `oc_appconfig` analogue) backs `config_get` /

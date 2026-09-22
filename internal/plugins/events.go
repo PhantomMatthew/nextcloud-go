@@ -23,6 +23,15 @@ func (h *Host) detach(p *Plugin) {
 	delete(h.dispatch, p)
 }
 
+// isAttached reports whether p is currently registered for event delivery;
+// the job adapter uses it to drop queued work for plugins that went away.
+func (h *Host) isAttached(p *Plugin) bool {
+	h.dispMu.RLock()
+	defer h.dispMu.RUnlock()
+	_, ok := h.dispatch[p]
+	return ok
+}
+
 // dispatchEvent is the bus handler subscribed in NewHost: it fans one event
 // out to every attached plugin whose manifest subscribes to the topic. The
 // publishing plugin is skipped (self-skip prevents a singleton re-entrancy
@@ -65,10 +74,15 @@ type guestBuf struct {
 }
 
 // deliverEvent invokes the plugin's on_event entry point with topic and
-// payload copied into guest memory (alloc/write/call/free). A trap anywhere
-// destroys the instance via release(true).
+// payload copied into guest memory (alloc/write/call/free).
 func (p *Plugin) deliverEvent(ctx context.Context, topic string, payload []byte) error {
-	entry := p.manifest.EntryPoints.OnEvent
+	return p.invokeEntry(ctx, p.manifest.EntryPoints.OnEvent, []byte(topic), payload)
+}
+
+// invokeEntry invokes entry with args copied into guest memory
+// (alloc/write/call/free). A trap anywhere destroys the instance via
+// release(true); a non-zero i32 result comes back as a *PluginError.
+func (p *Plugin) invokeEntry(ctx context.Context, entry string, args ...[]byte) error {
 	callCtx, cancel := context.WithTimeout(withCall(ctx, p, false), p.callTimeout())
 	defer cancel()
 
@@ -106,29 +120,28 @@ func (p *Plugin) deliverEvent(ctx context.Context, topic string, payload []byte)
 		return guestBuf{ptr: ptr, size: int32(len(data))}, nil //nolint:gosec // G115: bounded by maxPayloadArg
 	}
 
-	topicBuf, err := allocBuf([]byte(topic))
-	if err != nil {
-		release(true)
-		return err
-	}
-	payloadBuf, err := allocBuf(payload)
-	if err != nil {
-		release(true)
-		return err
+	bufs := make([]guestBuf, len(args))
+	for i, data := range args {
+		bufs[i], err = allocBuf(data)
+		if err != nil {
+			release(true)
+			return err
+		}
 	}
 
 	// Guest ABI args are u32 bit patterns; widened to u64 for the call.
-	args := []uint64{
-		uint64(uint32(topicBuf.ptr)),    //nolint:gosec // G115: u32 bit pattern
-		uint64(uint32(topicBuf.size)),   //nolint:gosec // G115: bounded by maxPayloadArg
-		uint64(uint32(payloadBuf.ptr)),  //nolint:gosec // G115: u32 bit pattern
-		uint64(uint32(payloadBuf.size)), //nolint:gosec // G115: bounded by maxPayloadArg
+	callArgs := make([]uint64, 0, 2*len(bufs))
+	for _, b := range bufs {
+		callArgs = append(callArgs,
+			uint64(uint32(b.ptr)),  //nolint:gosec // G115: u32 bit pattern
+			uint64(uint32(b.size)), //nolint:gosec // G115: bounded by maxPayloadArg
+		)
 	}
-	results, callErr := fn.Call(callCtx, args...)
+	results, callErr := fn.Call(callCtx, callArgs...)
 
-	// Free both buffers best-effort; a trapping free destroys the instance.
+	// Free all buffers best-effort; a trapping free destroys the instance.
 	var freeErr error
-	for _, b := range []guestBuf{topicBuf, payloadBuf} {
+	for _, b := range bufs {
 		if b.ptr == 0 {
 			continue
 		}

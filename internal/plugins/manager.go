@@ -48,5 +48,9 @@ func startOne(ctx context.Context, h *Host, row *RegistryRow, logger *slog.Logge
 		return fail("start", err)
 	}
 	h.attach(p)
+	if err := h.registerPluginJob(p); err != nil {
+		logger.ErrorContext(ctx, "plugins: job registration failed",
+			slog.String("plugin.id", row.ID), slog.String("error", err.Error()))
+	}
 	return p
 }

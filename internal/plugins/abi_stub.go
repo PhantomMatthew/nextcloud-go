@@ -9,13 +9,9 @@ import (
 )
 
 // This file holds the host functions whose backing subsystems are not yet
-// implemented (job wiring). Each validates the relevant capability so the
-// default-deny posture is exercised now, then returns ErrUnsupported until
-// its increment lands.
-
-func (h *Host) jobEnqueue(ctx context.Context, _ api.Module, _, _, _, _ int32, _ int64) int32 {
-	return unsupportedGranted(pluginCaps(ctx).canRegisterJobs())
-}
+// implemented. Each validates the relevant capability so the default-deny
+// posture is exercised now, then returns ErrUnsupported until its increment
+// lands.
 
 func (h *Host) webdavRegisterProp(ctx context.Context, mod api.Module, namePtr, nameLen, _, _, _, _ int32) int32 {
 	name, code := readString(mod, namePtr, nameLen)

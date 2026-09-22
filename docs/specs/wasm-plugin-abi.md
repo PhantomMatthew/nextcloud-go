@@ -598,6 +598,25 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-22** — Phase 4c7 implemented plugin jobs (ADR-0045): the §6.3
+  `job_enqueue` is live and §7's `ncgo_on_job` is delivered. **Namespacing
+  (v1):** every plugin's jobs run under a single adapter job
+  `plugin.<plugin_id>`; the row payload is a MessagePack
+  `{name: string, payload: []byte}` envelope and the guest's `on_job`
+  receives the plugin-local name and payload verbatim. **Validation (v1):**
+  name must be 1–128 bytes of `[A-Za-z0-9_.-]` (else -2); `jobs.register`
+  required (-3); nil runner → -12; enqueue without an `on_job` entry point
+  → -2 (the row could never be delivered); `run_at_unix_ms` ≤ 0 or past
+  means now, more than ten years out → -2; payload capped at 1 MiB; runner
+  errors → -1. **Delivery semantics (v1):** the adapter drops (runner
+  completes) undeliverable rows — detached plugin, malformed envelope, no
+  entry point — and returns an error (runner retries at now+poll) on guest
+  failure (non-zero i32 or trap). Adapter registration happens at plugin
+  start (`startOne`) with duplicates tolerated and failures logged, never
+  failing boot. `on_job` runs without a user context (user-scope storage
+  unavailable); HostConfig gains Jobs; pluginsdk gains JobEnqueue/JobArgs.
+  Follow-ups: envelope user field, scheduled recurring plugin jobs,
+  uninstall-time row cleanup.
 - **2026-09-22** — Phase 4c6 implemented plugin config (ADR-0044): the §6.3
   `config_get` / `config_set` pair is live. Storage is a generic
   `appconfig(appid, configkey, configvalue)` table (migration `0017`; the

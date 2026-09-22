@@ -59,6 +59,7 @@ const (
 	tFiveI32I64 = 11 // (i32,i32,i32,i32,i32)->i64
 	tTwoI32I64  = 12 // (i32,i32)->i64 (ncgo_on_request)
 	tCreateI64  = 13 // (i32,i32,i64)->i64 (storage_create)
+	tEnqueue    = 14 // (i32,i32,i32,i32,i64)->i32 (job_enqueue)
 )
 
 func u32(n uint32) []byte {
@@ -204,6 +205,7 @@ func typeTable() []byte {
 		ft([]byte{i32, i32, i32, i32, i32}, []byte{i64}),      // 11 db_tx_query
 		ft([]byte{i32, i32}, []byte{i64}),                     // 12 ncgo_on_request
 		ft([]byte{i32, i32, i64}, []byte{i64}),                // 13 storage_create
+		ft([]byte{i32, i32, i32, i32, i64}, []byte{i32}),      // 14 job_enqueue
 	)
 }
 
@@ -840,6 +842,69 @@ func EventFailListenerModule() []byte {
 func EventTrapListenerModule() []byte {
 	s := guestSpec{onInstall: i32c(0)}
 	s.extras = []extraFn{{name: "ncgo_on_event", typ: tFourI32, expr: []byte{opUnreachable}}}
+	return s.build()
+}
+
+// JobModule builds a job probe: ncgo_on_job logs "job <name> <payload>" at
+// info (the plugin-local name, verbatim), and do_enqueue calls job_enqueue
+// with the baked-in name/payload/runAtUnixMS, returning the host's result
+// code.
+func JobModule(name, payload string, runAtUnixMS int64) []byte {
+	const prefix = "job "
+	s := guestSpec{
+		imports:   []imp{{"log", tLog}, {"job_enqueue", tEnqueue}},
+		data:      [][]byte{[]byte(prefix), []byte(name), []byte(payload)},
+		onInstall: i32c(0),
+	}
+	offs := s.dataOffsets()
+	allocIdx := uint32(len(s.imports)) + 1 //nolint:gosec // G115: test modules have few imports
+
+	// params: 0=namePtr 1=nameLen 2=payloadPtr 3=payloadLen
+	// locals: 4=dst 5=i 6=total
+	onJob := i32c(int32(len(prefix)))
+	onJob = append(onJob, opLocalGet, 0x01, opI32Add)
+	onJob = append(onJob, i32c(1)...)
+	onJob = append(onJob, opI32Add, opLocalGet, 0x03, opI32Add, opLocalSet, 0x06)
+	onJob = append(onJob, opLocalGet, 0x06, opCall)
+	onJob = append(onJob, u32(allocIdx)...)
+	onJob = append(onJob, opLocalSet, 0x04) // dst = alloc(total)
+	onJob = append(onJob, memcpy([]byte{opLocalGet, 0x04}, i32c(offs[0]), i32c(int32(len(prefix))), 5)...)
+	dstName := append([]byte{opLocalGet, 0x04}, i32c(int32(len(prefix)))...)
+	dstName = append(dstName, opI32Add)
+	onJob = append(onJob, memcpy(dstName, []byte{opLocalGet, 0x00}, []byte{opLocalGet, 0x01}, 5)...)
+	onJob = append(onJob, dstName...)
+	onJob = append(onJob, opLocalGet, 0x01, opI32Add)
+	onJob = append(onJob, i32c(0x20)...)
+	onJob = append(onJob, opI32Store8, 0x00, 0x00) // dst[4+nameLen] = ' '
+	dstPayload := append([]byte{opLocalGet, 0x04}, i32c(int32(len(prefix)+1))...)
+	dstPayload = append(dstPayload, opI32Add, opLocalGet, 0x01, opI32Add)
+	onJob = append(onJob, memcpy(dstPayload, []byte{opLocalGet, 0x02}, []byte{opLocalGet, 0x03}, 5)...)
+	onJob = append(onJob, i32c(1)...)
+	onJob = append(onJob, opLocalGet, 0x04, opLocalGet, 0x06, opCall, 0x00, opDrop) // log built message
+	onJob = append(onJob, i32c(0)...)
+	s.extras = append(s.extras, extraFn{name: "ncgo_on_job", typ: tFourI32, locals: 3, expr: onJob})
+
+	doEnqueue := i32c(offs[1])
+	doEnqueue = append(doEnqueue, i32c(i32n(len(name)))...)
+	doEnqueue = append(doEnqueue, i32c(offs[2])...)
+	doEnqueue = append(doEnqueue, i32c(i32n(len(payload)))...)
+	doEnqueue = append(doEnqueue, i64c(runAtUnixMS)...)
+	doEnqueue = append(doEnqueue, opCall, 0x01) // job_enqueue; the code is the return value
+	s.extras = append(s.extras, extraFn{name: "do_enqueue", typ: tNullToI32, expr: doEnqueue})
+	return s.build()
+}
+
+// JobFailListenerModule exports ncgo_on_job returning a non-zero code.
+func JobFailListenerModule() []byte {
+	s := guestSpec{onInstall: i32c(0)}
+	s.extras = []extraFn{{name: "ncgo_on_job", typ: tFourI32, expr: i32c(7)}}
+	return s.build()
+}
+
+// JobTrapListenerModule exports ncgo_on_job that traps (unreachable).
+func JobTrapListenerModule() []byte {
+	s := guestSpec{onInstall: i32c(0)}
+	s.extras = []extraFn{{name: "ncgo_on_job", typ: tFourI32, expr: []byte{opUnreachable}}}
 	return s.build()
 }
 

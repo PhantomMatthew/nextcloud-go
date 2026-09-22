@@ -241,6 +241,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 			SystemStorage:        st,
 			SystemPrefix:         "appdata_" + a.instanceID + "/plugins",
 			AppConfig:            appconfig.NewStore(a.DB),
+			Jobs:                 jr,
 		}, logger)
 		if err != nil {
 			if cerr := a.closeResources(ctx); cerr != nil {

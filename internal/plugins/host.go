@@ -16,6 +16,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
 	"github.com/PhantomMatthew/nextcloud-go/internal/events"
 	"github.com/PhantomMatthew/nextcloud-go/internal/files"
+	"github.com/PhantomMatthew/nextcloud-go/internal/jobs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage"
 )
 
@@ -55,6 +56,9 @@ type HostConfig struct {
 	// AppConfig backs the config_* host functions. Nil makes them return
 	// ErrUnavailable.
 	AppConfig *appconfig.Store
+	// Jobs backs job_enqueue and plugin job delivery. Nil makes job_enqueue
+	// return ErrUnavailable and skips adapter registration.
+	Jobs jobs.Runner
 }
 
 // Host is a wazero-backed plugin runtime.
