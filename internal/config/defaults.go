@@ -59,6 +59,8 @@ func hardcodedDefault() *Config {
 			InstallDir:           "/var/lib/ncgo/plugins",
 			DefaultMemoryLimitMB: 32,
 			DefaultCPUTimeoutMS:  5000,
+			HTTPRatePerMinute:    120,
+			MaxHTTPResponseMB:    32,
 		},
 		Observability: ObservabilityConfig{
 			LogLevel:  "info",
@@ -101,6 +103,8 @@ func defaultFlat() map[string]any {
 		"plugin.install_dir":                "/var/lib/ncgo/plugins",
 		"plugin.default_memory_limit_mb":    32,
 		"plugin.default_cpu_timeout_ms":     5000,
+		"plugin.http_rate_per_minute":       120,
+		"plugin.max_http_response_mb":       32,
 		"observability.log_level":           "info",
 		"observability.log_format":          "json",
 		"observability.metrics_enabled":     false,

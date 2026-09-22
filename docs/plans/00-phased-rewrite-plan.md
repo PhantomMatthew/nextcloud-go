@@ -191,6 +191,30 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4n: per-plugin rate limit + response size cap for
+  plugin outbound HTTP (ADR-0059), closing two of the three ADR-0043
+  follow-ups (only >1 MiB streaming request bodies remain, an ABI extension
+  tracked separately). `httpRequest` draws one token per call — redirect
+  chain included — from a per-plugin-id stdlib token bucket (no new
+  dependency): `HostConfig.HTTPRatePerMinute` default 120, burst 30, with
+  exhaustion returning -8 (`ErrQuotaExceeded`) plus a warn log naming the
+  plugin; buckets are lazily created, bounded by the installed plugin count,
+  and reset on restart. Response bodies are capped at
+  `HostConfig.MaxHTTPResponseBytes` (default 32 MiB) by a counting
+  `limitedBody` wrapper: the read that would cross the cap fails loudly with
+  -11 (`ErrTooLarge`) instead of silently truncating, and later reads keep
+  failing. Both limits are orthogonal to the ADR-0057 egress guard and apply
+  to the guarded and unguarded clients alike. New config keys
+  `plugin.http_rate_per_minute` (120) and `plugin.max_http_response_mb` (32)
+  with non-negative validation are passed through by both `internal/app` and
+  the `ncgo-cli` install host (install hooks can call `http_request`); the
+  burst knob stays a HostConfig-only field (same precedent as
+  `MaxSpoolBytes`). No new metric families — the ADR-0055 wrapper classifies
+  the new refusal codes into the existing bounded `result` label. wasmgen
+  gains the `HTTPBodyCapModule` probe (registered in `TestModulesCompile`)
+  because the existing body loop cannot distinguish a -11 from EOF. Spec §6,
+  the wasm-plugin-abi Change Log, and the Phase 0 blueprint config YAML
+  updated.
 - **2026-09-22** — Phase 4m: `cache.DeleteByPrefix` + plugin uninstall cache
   cleanup (ADR-0058), closing the ADR-0056 Deferred item 1. `cache.Cache`
   gains `DeleteByPrefix(ctx, prefix) (int64, error)` — empty prefix rejected

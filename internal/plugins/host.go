@@ -49,6 +49,21 @@ type HostConfig struct {
 	SystemPrefix string
 	// MaxSpoolBytes caps user-scope write spools; <= 0 means 1 GiB.
 	MaxSpoolBytes int64
+	// HTTPRatePerMinute is the sustained http_request allowance per plugin
+	// id (ADR-0059); one call — including its redirect chain — costs one
+	// token. <= 0 means the default of 120. The allowance is process-local
+	// (restart resets it) and applies to the guarded and unguarded clients
+	// alike.
+	HTTPRatePerMinute int
+	// HTTPRateBurst is the token-bucket capacity behind HTTPRatePerMinute:
+	// short bursts up to this size pass, only sustained over-rate calling is
+	// throttled. <= 0 means the default of 30.
+	HTTPRateBurst int
+	// MaxHTTPResponseBytes caps the body bytes one http_request response may
+	// deliver to the guest; the body read that would cross the cap fails
+	// loudly with ErrTooLarge instead of silently truncating. <= 0 means the
+	// default of 32 MiB.
+	MaxHTTPResponseBytes int64
 	// HTTPClient backs the http_* host functions. Nil means a default client
 	// with a 30s timeout; per-request redirects are always re-validated
 	// against the calling plugin's allowlist on a shallow copy, never on the
@@ -78,6 +93,12 @@ type Host struct {
 	// to cfg.HTTPClient when the egress guard cannot be installed on it.
 	httpGuarded *http.Client
 
+	// httpRate holds the per-plugin http_request token buckets (ADR-0059);
+	// keyed by plugin id, bounded by the installed plugin count, reset on
+	// process restart.
+	httpRateMu sync.Mutex
+	httpRate   map[string]*tokenBucket
+
 	// handleTabs maps a live module instance to its handle table so host
 	// functions (which receive api.Module, not *instance) can find it.
 	handleTabsMu sync.RWMutex
@@ -101,6 +122,15 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 	if cfg.MaxSpoolBytes <= 0 {
 		cfg.MaxSpoolBytes = defaultMaxSpoolBytes
 	}
+	if cfg.HTTPRatePerMinute <= 0 {
+		cfg.HTTPRatePerMinute = defaultHTTPRatePerMinute
+	}
+	if cfg.HTTPRateBurst <= 0 {
+		cfg.HTTPRateBurst = defaultHTTPBurst
+	}
+	if cfg.MaxHTTPResponseBytes <= 0 {
+		cfg.MaxHTTPResponseBytes = defaultMaxHTTPResponseBytes
+	}
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{Timeout: maxHTTPTimeout}
 	}
@@ -118,7 +148,7 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().
 		WithCloseOnContextDone(true).
 		WithMemoryLimitPages(pages))
-	h := &Host{rt: rt, logger: logger, cfg: cfg, handleTabs: make(map[api.Module]*handleTable), dispatch: make(map[*Plugin]struct{})}
+	h := &Host{rt: rt, logger: logger, cfg: cfg, handleTabs: make(map[api.Module]*handleTable), dispatch: make(map[*Plugin]struct{}), httpRate: make(map[string]*tokenBucket)}
 	h.httpGuarded = guardedHTTPClient(ctx, cfg.HTTPClient, logger)
 	if cfg.Bus != nil {
 		h.unsubEvents = cfg.Bus.Subscribe(h.dispatchEvent)

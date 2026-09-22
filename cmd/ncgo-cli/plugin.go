@@ -295,14 +295,16 @@ func newPluginVerify() *cobra.Command {
 // server picks up on next boot.
 func installHostConfig(cfg *config.Config, db database.DB, st storage.Storage) plugins.HostConfig {
 	return plugins.HostConfig{
-		DB:            db,
-		Bus:           events.NewBus(slog.New(slog.DiscardHandler)),
-		Registry:      plugins.NewRegistry(db),
-		Files:         filesDAV(st, db),
-		SystemStorage: st,
-		SystemPrefix:  "appdata_" + cliInstanceID(cfg) + "/plugins",
-		AppConfig:     appconfig.NewStore(db),
-		Jobs:          jobs.NewRunner(jobs.NewSQLStore(db), nil, 1, time.Minute),
+		DB:                   db,
+		Bus:                  events.NewBus(slog.New(slog.DiscardHandler)),
+		Registry:             plugins.NewRegistry(db),
+		Files:                filesDAV(st, db),
+		SystemStorage:        st,
+		SystemPrefix:         "appdata_" + cliInstanceID(cfg) + "/plugins",
+		AppConfig:            appconfig.NewStore(db),
+		Jobs:                 jobs.NewRunner(jobs.NewSQLStore(db), nil, 1, time.Minute),
+		HTTPRatePerMinute:    cfg.Plugin.HTTPRatePerMinute,
+		MaxHTTPResponseBytes: int64(cfg.Plugin.MaxHTTPResponseMB) << 20,
 	}
 }
 

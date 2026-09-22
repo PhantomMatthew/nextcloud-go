@@ -2006,6 +2006,58 @@ func HTTPLeakModule(reqBytes []byte) []byte {
 	return s.build()
 }
 
+// HTTPBodyCapModule issues reqBytes on install, drains the response body in a
+// read loop (16-byte reads), and logs "cap-ok" when the loop's final read
+// result equals want (e.g. -11 once the host's per-response byte cap trips);
+// it then closes the response. The existing HTTPOutboundModule body loop
+// cannot serve this: it treats every n <= 0 alike and never checks the code.
+func HTTPBodyCapModule(reqBytes []byte, want int32) []byte {
+	s := guestSpec{
+		imports: []imp{
+			{"log", tLog},                     // 0
+			{"http_request", tTwoI32I64},      // 1
+			{"http_response_body_read", tLog}, // 2
+			{"http_response_close", tAlloc},   // 3
+		},
+		data: [][]byte{reqBytes, []byte("cap-ok")},
+	}
+	offs := s.dataOffsets()
+
+	// locals: 0 = handle (i32), 1 = last read result (i32), 2 = packed (i64)
+	expr := make([]byte, 0, 64)
+	expr = append(expr, i32c(offs[0])...)
+	expr = append(expr, i32c(i32n(len(reqBytes)))...)
+	expr = append(expr, opCall, 0x01, opLocalSet, 0x02)
+	expr = append(expr, opLocalGet, 0x02)
+	expr = append(expr, i64c(32)...)
+	expr = append(expr, opI64ShrU, opI32WrapI64, opI32Eqz, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x02, opI32WrapI64, opLocalSet, 0x00)
+	// read loop: stash each result in local 1, exit when n <= 0
+	expr = append(expr, opBlock, blockVoid, opLoop, blockVoid)
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i32c(8192)...) // scratch buffer
+	expr = append(expr, i32c(16)...)   // buf max
+	expr = append(expr, opCall, 0x02, opLocalSet, 0x01)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opI32GtS, opI32Eqz, opBrIf, 0x01)
+	expr = append(expr, opBr, 0x00)
+	expr = append(expr, opEnd, opEnd)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i32c(want)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, logCall(offs[1], i32n(len("cap-ok")))...)
+	expr = append(expr, opDrop)
+	expr = append(expr, opEnd)
+	expr = append(expr, opLocalGet, 0x00, opCall, 0x03, opDrop) // close
+	expr = append(expr, opEnd)
+	expr = append(expr, i32c(0)...)
+	s.onInstall = expr
+	s.onInstallLocals = 2
+	s.onInstallLocals64 = 1
+	return s.build()
+}
+
 // configImports are the host imports the config probe modules use: log plus
 // config_set / config_get.
 const (

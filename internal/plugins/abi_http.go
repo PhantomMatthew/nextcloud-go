@@ -24,9 +24,43 @@ const (
 	maxHTTPTimeout     = 30 * time.Second
 )
 
+// defaultMaxHTTPResponseBytes caps the body bytes one response may deliver
+// to the guest (ADR-0059); HostConfig.MaxHTTPResponseBytes <= 0 selects it.
+const defaultMaxHTTPResponseBytes int64 = 32 << 20
+
 // errHTTPRedirectDenied marks a redirect target rejected by the plugin's
 // http.outbound allowlist; client.Do wraps it in a *url.Error.
 var errHTTPRedirectDenied = errors.New("plugins: redirect target not granted")
+
+// errHTTPResponseTooLarge marks a response body that crossed the host's
+// per-response byte cap (ADR-0059); http_response_body_read maps it to
+// ErrTooLarge.
+var errHTTPResponseTooLarge = errors.New("plugins: http response body exceeds limit")
+
+// limitedBody caps the bytes a guest can pull from one response body: the
+// read that pushes the running total past limit fails with
+// errHTTPResponseTooLarge instead of delivering the chunk, and every later
+// read keeps failing (the total only grows), so a guest cannot retry-loop
+// around the cap. Close always reaches the wrapped body.
+type limitedBody struct {
+	body  io.ReadCloser
+	limit int64
+	total int64
+}
+
+func (b *limitedBody) Read(p []byte) (int, error) {
+	if b.total > b.limit {
+		return 0, errHTTPResponseTooLarge
+	}
+	n, err := b.body.Read(p)
+	b.total += int64(n)
+	if b.total > b.limit {
+		return 0, errHTTPResponseTooLarge
+	}
+	return n, err
+}
+
+func (b *limitedBody) Close() error { return b.body.Close() }
 
 var httpAllowedMethods = map[string]bool{
 	http.MethodGet:     true,
@@ -49,10 +83,14 @@ type httpOutboundRequest struct {
 
 // httpResponseHandle owns one in-flight response: the body streams to the
 // guest until http_response_close (or handle-table cleanup) closes it and
-// cancels the request context.
+// cancels the request context. target is the allowlist-normalized request
+// host and limit the response body byte cap (ADR-0059) — both kept for the
+// cap-tripped security log.
 type httpResponseHandle struct {
 	resp   *http.Response
 	cancel context.CancelFunc
+	target string
+	limit  int64
 }
 
 // Close releases the body and the request context.
@@ -144,6 +182,21 @@ func (h *Host) httpRequest(ctx context.Context, mod api.Module, reqPtr, reqLen i
 	if !caps.canHTTPOutbound(httpTarget(u)) {
 		return packI64(pluginsdk.ErrCodePermissionDenied, 0)
 	}
+	// Per-plugin rate limit (ADR-0059): one token per http_request call —
+	// the redirect chain inside client.Do rides on the same token. Both the
+	// guarded and the unguarded client draw from the same bucket.
+	var pluginID string
+	if info := callFromCtx(ctx); info.plugin != nil {
+		pluginID = info.plugin.manifest.Plugin.ID
+	}
+	if !h.allowHTTPRequest(pluginID) {
+		if h.logger != nil {
+			h.logger.WarnContext(ctx, "plugins: http_request rate limit exceeded",
+				slog.String("plugin", pluginID),
+				slog.Int("rate_per_minute", h.cfg.HTTPRatePerMinute))
+		}
+		return packI64(pluginsdk.ErrCodeQuotaExceeded, 0)
+	}
 	var body *bytes.Reader
 	if len(req.BodyBytes) > 0 {
 		body = bytes.NewReader(req.BodyBytes)
@@ -184,6 +237,11 @@ func (h *Host) httpRequest(ctx context.Context, mod api.Module, reqPtr, reqLen i
 		cancel()
 		return packI64(h.mapHTTPErr(ctx, err), 0)
 	}
+	// Cap the body bytes this response may deliver to the guest (ADR-0059);
+	// the wrapping reader fails the crossing read with
+	// errHTTPResponseTooLarge instead of silently truncating.
+	limit := h.cfg.MaxHTTPResponseBytes
+	resp.Body = &limitedBody{body: resp.Body, limit: limit}
 	tabs := h.handlesFor(mod)
 	if tabs == nil {
 		if cerr := resp.Body.Close(); cerr != nil {
@@ -192,7 +250,7 @@ func (h *Host) httpRequest(ctx context.Context, mod api.Module, reqPtr, reqLen i
 		cancel()
 		return packI64(pluginsdk.ErrCodeInvalidArgument, 0)
 	}
-	rh := &httpResponseHandle{resp: resp, cancel: cancel}
+	rh := &httpResponseHandle{resp: resp, cancel: cancel, target: httpTarget(u), limit: limit}
 	handle, err := tabs.add(handleHTTP, rh)
 	if err != nil {
 		if cerr := rh.Close(); cerr != nil {
@@ -270,6 +328,22 @@ func (h *Host) httpResponseBodyRead(ctx context.Context, mod api.Module, handle,
 	n, err := rh.resp.Body.Read(buf)
 	if n > 0 {
 		return writeBytes(mod, bufPtr, bufMax, buf[:n])
+	}
+	if errors.Is(err, errHTTPResponseTooLarge) {
+		// The read crossed the per-response byte cap: fail loudly (never
+		// silently truncate) and warn — an oversized upstream response is a
+		// resource-abuse signal worth operator attention (ADR-0059).
+		if h.logger != nil {
+			var pluginID string
+			if info := callFromCtx(ctx); info.plugin != nil {
+				pluginID = info.plugin.manifest.Plugin.ID
+			}
+			h.logger.WarnContext(ctx, "plugins: http response body exceeds host cap",
+				slog.String("plugin", pluginID),
+				slog.String("host", rh.target),
+				slog.Int64("limit_bytes", rh.limit))
+		}
+		return pluginsdk.ErrCodeTooLarge
 	}
 	if errors.Is(err, io.EOF) {
 		return pluginsdk.ErrCodeOK // EOF

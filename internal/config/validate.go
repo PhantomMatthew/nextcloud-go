@@ -65,6 +65,12 @@ func (c *Config) Validate() error {
 	if c.Plugin.DefaultCPUTimeoutMS > 30000 {
 		errs = append(errs, &ValidationError{Field: "plugin.default_cpu_timeout_ms", Reason: "must be <= 30000"})
 	}
+	if c.Plugin.HTTPRatePerMinute < 0 {
+		errs = append(errs, &ValidationError{Field: "plugin.http_rate_per_minute", Reason: "must be >= 0"})
+	}
+	if c.Plugin.MaxHTTPResponseMB < 0 {
+		errs = append(errs, &ValidationError{Field: "plugin.max_http_response_mb", Reason: "must be >= 0"})
+	}
 
 	if c.Storage.DefaultBackend == "" {
 		errs = append(errs, &ValidationError{Field: "storage.default_backend", Reason: "must not be empty"})

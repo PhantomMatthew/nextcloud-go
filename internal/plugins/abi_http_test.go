@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -354,5 +355,85 @@ func TestHTTPOutboundHostOnlyGrantDefaultPort(t *testing.T) {
 	requireLogMarkers(t, out, "req-ok", "status-ok", "body-ok", "close-ok")
 	if !strings.Contains(out, "default-port-ok") {
 		t.Fatalf("body missing from log: %q", out)
+	}
+}
+
+// The read that crosses MaxHTTPResponseBytes fails loudly with -11 (no
+// silent truncation), and the host logs a warn naming plugin + host. A body
+// exactly at the cap reads cleanly to EOF.
+func TestHTTPOutboundResponseCap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/exact" {
+			_, _ = w.Write([]byte("0123456789abcdef0123456789abcdef")) // 32 bytes
+			return
+		}
+		_, _ = w.Write([]byte("0123456789abcdef0123456789abcdef-tail"))
+	}))
+	t.Cleanup(srv.Close)
+	h, buf := testHost(t, HostConfig{MaxHTTPResponseBytes: 8})
+	installModule(t, h, httpManifest(httpHostPort(srv)),
+		wasmgen.HTTPBodyCapModule(httpReqBytes(t, "GET", srv.URL+"/big", nil, nil, 0), ErrCodeTooLarge))
+	out := buf.String()
+	if !strings.Contains(out, "cap-ok") {
+		t.Fatalf("log %q", out)
+	}
+	if !strings.Contains(out, "http response body exceeds host cap") || !strings.Contains(out, "plugin=com.example.probe") {
+		t.Fatalf("missing cap warn log: %q", out)
+	}
+
+	h2, buf2 := testHost(t, HostConfig{MaxHTTPResponseBytes: 32})
+	installModule(t, h2, httpManifest(httpHostPort(srv)),
+		wasmgen.HTTPBodyCapModule(httpReqBytes(t, "GET", srv.URL+"/exact", nil, nil, 0), ErrCodeOK))
+	if !strings.Contains(buf2.String(), "cap-ok") {
+		t.Fatalf("exact-fit body rejected: %q", buf2.String())
+	}
+}
+
+// With a burst of one, the first http_request succeeds and the second —
+// same plugin, moments later — is throttled with -8; the warn log names the
+// plugin.
+func TestHTTPOutboundRateLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("rate-body"))
+	}))
+	t.Cleanup(srv.Close)
+	ctx := t.Context()
+	h, buf := testHost(t, HostConfig{HTTPRatePerMinute: 1, HTTPRateBurst: 1})
+	req := httpReqBytes(t, "GET", srv.URL+"/", nil, nil, 0)
+	p, err := h.Load(ctx, httpManifest(httpHostPort(srv)),
+		wasmgen.HTTPOutboundModule(req, req, "X-Unused", 200, ErrCodeQuotaExceeded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close(ctx) })
+	if _, err := p.Call(ctx, "do_http"); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	requireLogMarkers(t, out, "req-ok", "status-ok", "body-ok", "close-ok", "denied-ok")
+	if !strings.Contains(out, "http_request rate limit exceeded") || !strings.Contains(out, "plugin=com.example.probe") {
+		t.Fatalf("missing rate-limit warn log: %q", out)
+	}
+}
+
+// limitedBody boundary behavior without a wasm guest: exact-limit bodies
+// read to EOF; the crossing read fails and keeps failing.
+func TestLimitedBody(t *testing.T) {
+	exact := &limitedBody{body: io.NopCloser(strings.NewReader("1234")), limit: 4}
+	got, err := io.ReadAll(exact)
+	if err != nil || string(got) != "1234" {
+		t.Fatalf("exact fit: got %q err %v", got, err)
+	}
+
+	over := &limitedBody{body: io.NopCloser(strings.NewReader("123456")), limit: 4}
+	buf := make([]byte, 3)
+	if n, err := over.Read(buf); n != 3 || err != nil {
+		t.Fatalf("first read: n=%d err=%v", n, err)
+	}
+	if n, err := over.Read(buf); n != 0 || !errors.Is(err, errHTTPResponseTooLarge) {
+		t.Fatalf("crossing read: n=%d err=%v", n, err)
+	}
+	if n, err := over.Read(buf); n != 0 || !errors.Is(err, errHTTPResponseTooLarge) {
+		t.Fatalf("post-cap read: n=%d err=%v", n, err)
 	}
 }

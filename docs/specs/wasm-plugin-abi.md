@@ -286,6 +286,14 @@ when it is loopback, private (RFC1918/ULA), link-local, or unspecified, unless t
 plugin additionally holds `http.outbound_allow_private = true` (SSRF guard,
 ADR-0057).
 
+Each `http_request` call — redirect chain included — draws one token from a
+per-plugin-id bucket (`plugin.http_rate_per_minute`, default 120, burst 30);
+exhaustion fails the call with -8 (`ErrQuotaExceeded`). Response bodies are capped
+at `plugin.max_http_response_mb` (default 32 MiB): the `http_response_body_read`
+that would push delivered bytes past the cap fails loudly with -11 (`ErrTooLarge`)
+instead of silently truncating, later reads keep failing, and status/header reads
+are unaffected (ADR-0059).
+
 #### Events
 
 ```
@@ -606,6 +614,23 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-22** — Phase 4n closed the ADR-0043 "per-plugin rate limits" and
+  "response size caps" follow-ups (ADR-0059), leaving only >1 MiB streaming
+  request bodies outstanding. Each `http_request` call (redirect chain
+  included) now draws one token from a per-plugin-id stdlib token bucket —
+  `HostConfig.HTTPRatePerMinute` default 120, burst 30 — and exhaustion fails
+  the call with -8 (`ErrQuotaExceeded`) plus a warn log naming the plugin;
+  buckets are process-local and reset on restart. Response bodies are capped
+  by `HostConfig.MaxHTTPResponseBytes` (default 32 MiB) via a counting body
+  wrapper: the `http_response_body_read` that would push delivered bytes past
+  the cap fails loudly with -11 (`ErrTooLarge`) — never a silent truncation —
+  later reads keep failing, and status/header reads are unaffected. Both
+  limits apply to the guarded and unguarded ADR-0057 clients alike and are
+  operator-tunable through the new `plugin.http_rate_per_minute` /
+  `plugin.max_http_response_mb` config keys (0 = host default, negatives
+  rejected). No new metric families: the ADR-0055 wrapper classifies -11 as
+  `too_large` and -8 as `internal` in the existing `result` label. §6
+  documents the semantics.
 - **2026-09-22** — Phase 4m closed the cache-cleanup follow-up Phase 4j left
   open ("cache keys under `plugin:<id>:` are NOT removed on uninstall
   (`cache.Cache` has no prefix delete)"). `cache.Cache` gains
