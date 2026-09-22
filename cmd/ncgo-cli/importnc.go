@@ -38,7 +38,7 @@ func newImportNextcloud() *cobra.Command {
 			"idempotent and resumable (existing rows are skipped, so an interrupted\n" +
 			"run can simply be repeated):\n" +
 			"  users   users, groups, and group memberships\n" +
-			"  files   file data (planned)\n" +
+			"  files   user files from a Nextcloud data directory\n" +
 			"  shares  internal and public-link shares (planned)\n" +
 			"  dav     calendars and contacts (planned)\n\n" +
 			"Sessions and app passwords are NOT imported: Nextcloud authtokens are\n" +
@@ -63,7 +63,7 @@ func newImportNextcloud() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&f.sourceDSN, "source-dsn", "", "source database DSN (required)")
 	cmd.PersistentFlags().StringVar(&f.tablePrefix, "table-prefix", "oc_", "source table prefix")
 	cmd.PersistentFlags().BoolVar(&f.dryRun, "dry-run", false, "scan and count without writing to the target")
-	cmd.AddCommand(newImportNCUsers(f))
+	cmd.AddCommand(newImportNCUsers(f), newImportNCFiles(f))
 	return cmd
 }
 
@@ -98,6 +98,7 @@ type importReport struct {
 
 type importCounts struct {
 	created int
+	updated int
 	skipped int
 	failed  int
 }
@@ -133,8 +134,12 @@ func (r *importReport) warn(format string, args ...any) {
 func (r *importReport) print(w io.Writer, dryRun bool) error {
 	for _, name := range r.entities {
 		c := r.counts[name]
-		if _, err := fmt.Fprintf(w, "%s: %d created, %d skipped (existing), %d failed\n",
-			name, c.created, c.skipped, c.failed); err != nil {
+		updated := ""
+		if c.updated > 0 {
+			updated = fmt.Sprintf(", %d updated", c.updated)
+		}
+		if _, err := fmt.Fprintf(w, "%s: %d created%s, %d skipped (existing), %d failed\n",
+			name, c.created, updated, c.skipped, c.failed); err != nil {
 			return err
 		}
 	}

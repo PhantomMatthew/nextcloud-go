@@ -191,6 +191,25 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4e2: `ncgo-cli import-nextcloud files` imports user
+  file trees from a PHP Nextcloud data directory (`--datadir`, `--user`
+  repeatable, `--verbose`, inherited `--dry-run`) into the configured ncgo
+  storage backend and filecache (ADR-0049). The datadir is walked directly —
+  `oc_filecache` is only a cache, so the source database flags are not
+  needed and the subcommand overrides the parent's source-DSN validation.
+  Ingest goes through `DAV.Write`/`DAV.Mkdir` wired exactly as production
+  wires them, so imports get checksums, etags, ancestor recalculation, and
+  version snapshots on overwrite for free; source mtimes are preserved at
+  second resolution. Skip-if-unchanged (same size + mtime, checked via the
+  read-only filecache so `--dry-run` performs zero writes) makes re-runs
+  cheap no-op scans and avoids spurious version snapshots. Only
+  `<uid>/files/` is descended into — `files_trashbin`, `files_versions`,
+  `uploads`, `cache`, `thumbnails`, `appdata_*`, and other non-user entries
+  are excluded by construction; dotfiles import, symlinks and special files
+  skip with warnings, and `files_encryption` users are skipped ("server-side
+  encrypted source not supported"). Per-file errors warn and continue
+  (best-effort, resumable). Unknown target users skip with a pointer to run
+  `import-nextcloud users` first. Shares (4e3) and dav (4e4) follow.
 - **2026-09-22** — Phase 4e1: `ncgo-cli import-nextcloud` scaffolding plus
   the `users` subcommand, importing users, groups, and group memberships
   directly from a PHP Nextcloud database (`oc_users`/`oc_groups`/
