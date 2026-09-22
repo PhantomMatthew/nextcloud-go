@@ -15,9 +15,12 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/plugins/internal/wasmgen"
 )
 
+// httpManifest builds a probe manifest granted the given outbound hosts and
+// private-target dialing: the allowlist tests below intentionally run
+// against loopback httptest servers.
 func httpManifest(grants ...string) *Manifest {
 	m := probeManifest()
-	m.Capabilities = Capabilities{HTTP: HTTPCapabilities{Outbound: grants}}
+	m.Capabilities = Capabilities{HTTP: HTTPCapabilities{Outbound: grants, OutboundAllowPrivate: true}}
 	return m
 }
 

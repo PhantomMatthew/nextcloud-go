@@ -94,6 +94,20 @@ func (h *Host) mapHTTPErr(ctx context.Context, err error) int32 {
 	switch {
 	case errors.Is(err, errHTTPRedirectDenied):
 		return pluginsdk.ErrCodePermissionDenied
+	case errors.Is(err, errEgressPrivateIP):
+		// SSRF guard fired: the allowlist passed but the resolved target IP
+		// is loopback/private/link-local/unspecified. This is a security
+		// signal (literal internal IP or DNS rebinding), so warn loudly.
+		if h.logger != nil {
+			var pluginID string
+			if info := callFromCtx(ctx); info.plugin != nil {
+				pluginID = info.plugin.manifest.Plugin.ID
+			}
+			h.logger.WarnContext(ctx, "plugins: http_request blocked by private-IP egress guard",
+				slog.String("plugin", pluginID),
+				slog.String("error", err.Error()))
+		}
+		return pluginsdk.ErrCodePermissionDenied
 	case errors.Is(err, context.DeadlineExceeded):
 		return pluginsdk.ErrCodeTimeout
 	case errors.Is(err, context.Canceled):
@@ -148,9 +162,10 @@ func (h *Host) httpRequest(ctx context.Context, mod api.Module, reqPtr, reqLen i
 		}
 		hreq.Header.Set(k, v)
 	}
-	// Shallow-copy the shared client so redirect re-validation does not
-	// mutate it; every redirect target must pass the same allowlist.
-	client := *h.cfg.HTTPClient
+	// Shallow-copy the per-plugin client (guarded unless the plugin holds
+	// http.outbound_allow_private) so redirect re-validation does not mutate
+	// it; every redirect target must pass the same allowlist.
+	client := *h.httpClientFor(caps)
 	prevCheck := client.CheckRedirect
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
 		if !caps.canHTTPOutbound(httpTarget(next.URL)) {

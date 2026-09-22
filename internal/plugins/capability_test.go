@@ -106,6 +106,20 @@ func TestCanHTTPOutbound(t *testing.T) {
 	}
 }
 
+func TestHTTPOutboundAllowPrivate(t *testing.T) {
+	var nilCaps *Capabilities
+	if nilCaps.httpOutboundAllowPrivate() {
+		t.Fatal("nil capabilities must deny private-target egress")
+	}
+	if (&Capabilities{}).httpOutboundAllowPrivate() {
+		t.Fatal("absent grant must deny private-target egress")
+	}
+	c := &Capabilities{HTTP: HTTPCapabilities{OutboundAllowPrivate: true}}
+	if !c.httpOutboundAllowPrivate() {
+		t.Fatal("outbound_allow_private grant must allow private-target egress")
+	}
+}
+
 func TestCanSubscribeEvent(t *testing.T) {
 	var nilCaps *Capabilities
 	if nilCaps.canSubscribeEvent("demo.x") {

@@ -24,6 +24,7 @@ webhook as a JSON POST, optionally signed with HMAC-SHA256.
 |---|---|
 | `events.subscribe = ["files.uploaded"]` | The trigger topic. |
 | `http.outbound = ["localhost:8080"]` | Outbound calls are allowed only to granted `host[:port]` targets (a host-only grant covers the default ports 80/443). **Edit this to your webhook receiver before packing.** |
+| `http.outbound_allow_private = true` | `localhost` is a private target that the dial-time SSRF guard (ADR-0057) refuses without this grant. Drop it if your receiver is a public host. |
 | `config.read = ["webhook.*"]` | Reads `webhook.url` / `webhook.secret`. The plugin never writes config, so no `config.write` grant. |
 
 ## Build and install

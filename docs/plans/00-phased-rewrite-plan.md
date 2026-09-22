@@ -191,6 +191,25 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4l: plugin HTTP egress private-IP guard (SSRF,
+  ADR-0057), the ADR-0043 follow-up that checks spec §13's last unchecked
+  egress item. Plugin `http_*` outbound dials now run a
+  `net.Dialer.Control` hook over the resolved IP and refuse loopback,
+  private (RFC1918 + ULA), link-local, and unspecified targets — closing the
+  literal-internal-IP (cloud metadata 169.254.169.254) and DNS-rebinding
+  bypasses of the hostname allowlist, with no TOCTOU window. Authorization
+  splits at client selection because Control has no request context:
+  plugins granted the new manifest boolean
+  `http.outbound_allow_private = true` use the configured
+  `HostConfig.HTTPClient` as-is, everyone else a guarded clone on a
+  separate transport (connection pools never mix authorization levels).
+  Escape hatches: custom RoundTripper or operator-set Dial/DialContext
+  disables the guard (debug log, operator owns egress policy); proxied
+  deployments see the proxy's address. CGNAT 100.64/10 and multicast are
+  deliberately not blocked. Refusals map to -3 with a warn-level security
+  log naming the plugin. The webhook-forwarder example declares the grant
+  (its default `localhost:8080` receiver is a private target). Spec §5/§6/§13
+  and the wasm-plugin-abi Change Log updated.
 - **2026-09-22** — Phase 4k: dead config key removal + plugin restart doc
   sync, from the same strict review line as Phase 4j. Eight keys were
   defined in `internal/config`, given defaults, and documented but never

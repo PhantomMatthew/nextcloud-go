@@ -52,8 +52,12 @@ type StorageCapabilities struct {
 }
 
 // HTTPCapabilities grants outbound HTTP to host[:port] entries.
+// OutboundAllowPrivate additionally lifts the dial-time block on loopback,
+// private, link-local, and unspecified target IPs (ADR-0057); without it
+// those targets are refused even when the hostname allowlist matches.
 type HTTPCapabilities struct {
-	Outbound []string `toml:"outbound"`
+	Outbound             []string `toml:"outbound"`
+	OutboundAllowPrivate bool     `toml:"outbound_allow_private"`
 }
 
 // EventsCapabilities grants event bus topics by glob.

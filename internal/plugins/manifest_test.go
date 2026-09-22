@@ -110,6 +110,7 @@ pool_size = 2
 db.read = ["file_tags", "filecache"]
 db.write = ["file_tags"]
 http.outbound = ["*.icloud.com:443"]
+http.outbound_allow_private = true
 events.publish = ["tagger.tagged"]
 events.subscribe = ["files.uploaded"]
 jobs.register = true
@@ -133,6 +134,9 @@ module = "tagger.wasm"
 	}
 	if !c.Jobs.Register || !c.canRegisterOCS("/apps/tagger/api/v1/list") {
 		t.Fatalf("caps = %+v", c)
+	}
+	if !c.httpOutboundAllowPrivate() {
+		t.Fatalf("http.outbound_allow_private not decoded: %+v", c.HTTP)
 	}
 	if !c.canProvideProp("tagger:score") || !c.hasConfigRead() {
 		t.Fatalf("caps = %+v", c)

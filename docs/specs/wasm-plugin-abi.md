@@ -138,6 +138,7 @@ install/upgrade.
 | `storage.read = ["user"\|"system"]` | Read user-scoped or system-scoped files | User scope = current request's user only |
 | `storage.write = ...` | Write files | Subject to user quota |
 | `http.outbound = [host:port]` | Outbound HTTP allowlist | Each request validated against list |
+| `http.outbound_allow_private = true|false` | Reach loopback/private/link-local/unspecified target IPs | Off by default; without it the dial-time IP check (SSRF guard) refuses internal targets even when the hostname allowlist matches |
 | `events.publish = [topics]` | Emit events | Topics namespaced; cannot publish to `core.*` |
 | `events.subscribe = [topics]` | Receive events | Includes wildcards |
 | `jobs.register` | Register background jobs | Jobs run with plugin's caps |
@@ -279,6 +280,11 @@ ncgo.http_response_close(handle: i32) -> i32
 
   Capability: http.outbound
 ```
+
+Outbound targets are also IP-checked at dial time: the resolved address is refused
+when it is loopback, private (RFC1918/ULA), link-local, or unspecified, unless the
+plugin additionally holds `http.outbound_allow_private = true` (SSRF guard,
+ADR-0057).
 
 #### Events
 
@@ -559,8 +565,10 @@ Per-plugin admin dashboard (Phase 4 UI):
 - [ ] No `wasi_snapshot_preview1` exposed
 - [ ] All SQL parsed and table-allowlisted before execution
 - [ ] All filesystem paths normalized + jailed to user/system root before any storage op
-- [ ] All HTTP outbound URLs resolved + IP-checked against host allowlist (block private
-      IP ranges unless explicitly granted)
+- [x] All HTTP outbound URLs resolved + IP-checked against host allowlist (block private
+      IP ranges unless explicitly granted) — enforced at dial time via
+      `net.Dialer.Control` on the resolved IP (loopback/private/link-local/unspecified
+      refused), opt out per plugin with `http.outbound_allow_private` (ADR-0057)
 - [ ] Plugin module signature verified at install (Phase 4: ed25519 signature in `.ncplugin`)
 - [ ] Resource limits enforced via wazero config, not soft checks
 - [ ] Trap on integer overflow in handle arithmetic
@@ -598,6 +606,28 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-22** — Phase 4l closed the §13 private-IP egress gap (ADR-0057).
+  The `http.outbound` allowlist is hostname-based, so literal internal IPs
+  (e.g. the cloud metadata endpoint 169.254.169.254) and DNS rebinding (a
+  granted hostname resolving to 127.0.0.1) bypassed it. Outbound dials now
+  install a `net.Dialer.Control` hook that checks the **resolved** IP — no
+  TOCTOU window, covering literal-IP URLs and DNS answers at the same point —
+  and refuses loopback, private (RFC1918 + ULA fc00::/7), link-local
+  unicast, and unspecified addresses (IPv4-mapped forms unmapped first;
+  CGNAT 100.64.0.0/10 and multicast deliberately NOT blocked, Tailscale and
+  carrier deployments use them legitimately). Because Control sees no
+  request context, per-plugin authorization happens at client selection: the
+  host builds a guarded clone of `HostConfig.HTTPClient` and plugins granted
+  the new manifest boolean `http.outbound_allow_private = true` use the
+  configured client as-is; the two clients sit on separate transports, so
+  connections pooled to private targets are never shared across
+  authorization levels. Escape hatches: a custom RoundTripper or an
+  operator-set Dial/DialContext disables the guard (debug log; the operator
+  client then owns egress policy), and proxied deployments see the proxy's
+  address, not the target's — private-ingress proxies need a custom client.
+  Guard refusals map to -3 (`ErrPermissionDenied`) with a warn-level
+  security log naming the plugin. The §13 "URLs resolved + IP-checked" item
+  is now checked; §5 and §6 document the new grant.
 - **2026-09-22** — Phase 4j closed three lifecycle gaps (ADR-0056).
   **(G1) The CLI install-time host is now the full host.** `ncgo-cli plugin
   install`/`uninstall` construct the plugin host with every subsystem the

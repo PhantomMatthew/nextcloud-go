@@ -94,6 +94,13 @@ func (c *Capabilities) hasHTTPOutbound() bool {
 	return c != nil && len(c.HTTP.Outbound) > 0
 }
 
+// httpOutboundAllowPrivate reports whether the plugin may dial loopback,
+// private, link-local, and unspecified targets; a nil capabilities pointer
+// denies, like every other check.
+func (c *Capabilities) httpOutboundAllowPrivate() bool {
+	return c != nil && c.HTTP.OutboundAllowPrivate
+}
+
 // canHTTPOutbound reports whether hostport ("host" or "host:port", already
 // default-port-normalized by the caller) is covered by the http.outbound
 // grants. Matching is exact and case-insensitive: a host-only grant covers

@@ -52,7 +52,10 @@ type HostConfig struct {
 	// HTTPClient backs the http_* host functions. Nil means a default client
 	// with a 30s timeout; per-request redirects are always re-validated
 	// against the calling plugin's allowlist on a shallow copy, never on the
-	// shared client.
+	// shared client. Plugins without http.outbound_allow_private dial through
+	// a guarded clone that refuses loopback/private/link-local/unspecified
+	// target IPs; a custom RoundTripper or custom dial hook disables that
+	// guard (the operator client then owns egress policy, ADR-0057).
 	HTTPClient *http.Client
 	// AppConfig backs the config_* host functions. Nil makes them return
 	// ErrUnavailable.
@@ -71,6 +74,9 @@ type Host struct {
 	rt     wazero.Runtime
 	logger *slog.Logger
 	cfg    HostConfig
+	// httpGuarded serves plugins without http.outbound_allow_private; equal
+	// to cfg.HTTPClient when the egress guard cannot be installed on it.
+	httpGuarded *http.Client
 
 	// handleTabs maps a live module instance to its handle table so host
 	// functions (which receive api.Module, not *instance) can find it.
@@ -113,6 +119,7 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 		WithCloseOnContextDone(true).
 		WithMemoryLimitPages(pages))
 	h := &Host{rt: rt, logger: logger, cfg: cfg, handleTabs: make(map[api.Module]*handleTable), dispatch: make(map[*Plugin]struct{})}
+	h.httpGuarded = guardedHTTPClient(ctx, cfg.HTTPClient, logger)
 	if cfg.Bus != nil {
 		h.unsubEvents = cfg.Bus.Subscribe(h.dispatchEvent)
 	}
@@ -121,6 +128,62 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 		return nil, fmt.Errorf("plugins: host module: %w", err)
 	}
 	return h, nil
+}
+
+// guardedHTTPClient returns a shallow copy of base whose transport refuses
+// to establish TCP connections to loopback, private, link-local, and
+// unspecified IPs (the ADR-0057 SSRF guard; the check runs on the resolved
+// address in net.Dialer.Control). When the guard cannot be installed — a
+// non-*http.Transport RoundTripper, or a transport with an operator-set
+// Dial/DialContext hook — base is returned unchanged and the operator
+// client owns egress policy.
+func guardedHTTPClient(ctx context.Context, base *http.Client, logger *slog.Logger) *http.Client {
+	debug := func(msg string) {
+		if logger != nil {
+			logger.DebugContext(ctx, msg)
+		}
+	}
+	guarded := *base
+	switch t := base.Transport.(type) {
+	case nil:
+		dt, ok := http.DefaultTransport.(*http.Transport)
+		if !ok {
+			// net/http documents DefaultTransport as a *Transport; stay open
+			// rather than guess if that ever changes.
+			debug("plugins: http.DefaultTransport is not a *http.Transport; private-IP egress guard not installed")
+			return base
+		}
+		clone := dt.Clone()
+		// DefaultTransport's dialer is the package-standard 30s/30s one, so
+		// swapping in the guarded equivalent changes nothing but the check.
+		clone.DialContext = egressGuardedDialContext()
+		guarded.Transport = clone
+	case *http.Transport:
+		//nolint:staticcheck // SA1019: reading the deprecated Dial field to detect an operator-set hook
+		if t.DialContext != nil || t.Dial != nil {
+			debug("plugins: HTTPClient sets a custom dial hook; private-IP egress guard not installed (operator client owns egress policy)")
+			return base
+		}
+		clone := t.Clone()
+		clone.DialContext = egressGuardedDialContext()
+		guarded.Transport = clone
+	default:
+		debug("plugins: HTTPClient uses a custom RoundTripper; private-IP egress guard not installed (operator client owns egress policy)")
+		return base
+	}
+	return &guarded
+}
+
+// httpClientFor picks the client for a plugin's outbound call. Plugins
+// granted http.outbound_allow_private use the configured client as-is;
+// everyone else dials through the guarded clone. The two clients sit on
+// distinct transports, so a connection an authorized plugin pooled to a
+// private target is never reused by an unauthorized one.
+func (h *Host) httpClientFor(caps *Capabilities) *http.Client {
+	if caps.httpOutboundAllowPrivate() {
+		return h.cfg.HTTPClient
+	}
+	return h.httpGuarded
 }
 
 // registerHandles associates an instance's handle table with its module.

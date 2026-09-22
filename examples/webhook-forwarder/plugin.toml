@@ -14,6 +14,9 @@ cpu_timeout_ms = 5000
 [capabilities]
 events.subscribe = ["files.uploaded"]
 http.outbound = ["localhost:8080"]
+# localhost is a private target: the dial-time SSRF guard (ADR-0057) refuses
+# it without this grant. Drop it if you point the webhook at a public host.
+http.outbound_allow_private = true
 config.read = ["webhook.*"]
 
 [entry_points]
