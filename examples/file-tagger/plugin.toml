@@ -1,0 +1,23 @@
+[plugin]
+id = "com.example.file-tagger"
+name = "Auto File Tagger"
+version = "0.1.0"
+abi = "ncgo-abi/1"
+description = "Tags uploaded *.invoice.pdf files via the files.uploaded event"
+license = "AGPL-3.0-or-later"
+
+[runtime]
+instance_model = "pooled"
+pool_size = 2
+memory_limit_mb = 16
+cpu_timeout_ms = 1000
+
+[capabilities]
+db.read = ["file_tags"]
+db.write = ["file_tags"]
+events.subscribe = ["files.uploaded"]
+
+[entry_points]
+module = "file-tagger.wasm"
+on_install = "ncgo_on_install"
+on_event = "ncgo_on_event"

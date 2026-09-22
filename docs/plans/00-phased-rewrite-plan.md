@@ -135,7 +135,9 @@ federated share round-trip; ≥80% golden cases for CalDAV/CardDAV pass.
 In scope:
 - Full WASM plugin ABI implementation (see [`../specs/wasm-plugin-abi.md`](../specs/wasm-plugin-abi.md))
 - Plugin packaging, signing (ed25519), install/upgrade UX
-- Reference plugins: file tagger, simple webhook, OAuth provider
+- Reference plugins: file tagger, simple webhook (both shipped in Phase 4d
+  as `examples/`); OAuth provider **deferred** (host primitives exist; needs
+  its own design pass — see Change Log 2026-09-22 Phase 4d)
 - Admin web UI integration (existing Nextcloud Vue frontend, served by `ncgo`)
 - `occ`-equivalent CLI (`ncgo-cli`) feature parity for operational commands
 - `ncgo-cli import-nextcloud` — migrate from running PHP Nextcloud
@@ -189,6 +191,33 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4d: reference plugins shipped as buildable
+  examples — `examples/file-tagger` (spec §10 walkthrough made real:
+  `files.uploaded` subscriber that DDL-creates its `file_tags` table in
+  `ncgo_on_install` and inserts `invoice` rows for `*.invoice.pdf`
+  uploads) and `examples/webhook-forwarder` (forwards `files.uploaded`
+  as a signed JSON POST using `config.*` for `webhook.url`/`webhook.secret`,
+  `crypto_hmac` for `X-Signature`, and `http_request` under an exact
+  `host[:port]` grant). Notable decisions, recorded here in lieu of an
+  ADR (examples, not architecture): (1) the third planned reference
+  plugin, the **OAuth provider, is DEFERRED** — the host primitives it
+  would need (routes/OCS, db, http, config, crypto) now all exist, but it
+  needs its own design pass rather than a rushed example; (2) the
+  file-tagger writes `created_at = 0` because ABI v1 exposes no wall
+  clock to freestanding guests (`ctx_deadline_unix_ms` is a deadline, not
+  a clock) — a clock host function is a follow-up; (3) plugin config has
+  no CLI yet, so the webhook-forwarder README documents the v1 mechanism
+  (`appconfig` rows under `appid='plugin'` keyed
+  `<plugin-id>.webhook.url`) and marks an `ncgo-cli` config command as
+  follow-up; (4) guests decode the event payload with
+  `github.com/vmihailenco/msgpack/v5` (already a host dependency), whose
+  TinyGo compatibility is assumed-but-unverified in this environment —
+  examples are validated via `ncgo-cli plugin check`, the `!tinygo` stub
+  build, `go vet`, and lint, and a new optional `make example-plugins`
+  target builds all three with TinyGo when available. No new tests: the
+  host paths these examples exercise (event→db, event→http, config read)
+  are covered by the 4c1–4c6 suites, and `cmd/ncgo-cli` has no `plugin
+  check` test to mirror.
 - **2026-09-22** — Phase 4c8: plugin WebDAV properties implemented —
   `webdav_register_prop` (hook-only, `webdav.props` grant) persists
   `prefix:local` name + getter/setter export names to a new

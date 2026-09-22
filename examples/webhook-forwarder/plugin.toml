@@ -1,0 +1,21 @@
+[plugin]
+id = "com.example.webhook-forwarder"
+name = "Webhook Forwarder"
+version = "0.1.0"
+abi = "ncgo-abi/1"
+description = "Forwards files.uploaded events to an HTTP webhook (edit http.outbound before packing)"
+license = "AGPL-3.0-or-later"
+
+[runtime]
+instance_model = "per_request"
+memory_limit_mb = 16
+cpu_timeout_ms = 5000
+
+[capabilities]
+events.subscribe = ["files.uploaded"]
+http.outbound = ["localhost:8080"]
+config.read = ["webhook.*"]
+
+[entry_points]
+module = "webhook-forwarder.wasm"
+on_event = "ncgo_on_event"
