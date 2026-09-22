@@ -27,6 +27,9 @@ func TestDefaultSnapshot(t *testing.T) {
 	if !got.Previews.Enabled || got.Previews.MaxDimension != 2048 {
 		t.Errorf("previews defaults: %+v", got.Previews)
 	}
+	if got.Web.StaticRoot != "" {
+		t.Errorf("web defaults: %+v", got.Web)
+	}
 	local, ok := got.Storage.Backends["local"]
 	if !ok || local.Type != "localfs" || local.Root != "/var/lib/ncgo/data" {
 		t.Errorf("local backend = %+v ok=%v", local, ok)
@@ -209,6 +212,7 @@ func TestValidateRules(t *testing.T) {
 		{"encryption_no_key", func(c *Config) { c.Encryption.Enabled = true }, "encryption.master_key_path"},
 		{"previews_dim_low", func(c *Config) { c.Previews.MaxDimension = 31 }, "previews.max_dimension"},
 		{"previews_dim_high", func(c *Config) { c.Previews.MaxDimension = 4097 }, "previews.max_dimension"},
+		{"web_static_root_relative", func(c *Config) { c.Web.StaticRoot = "relative/web" }, "web.static_root"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -249,6 +253,15 @@ func TestValidateJoinMultiple(t *testing.T) {
 	}
 	if n < 2 {
 		t.Errorf("joined errors = %d, want >= 2; err=%v", n, err)
+	}
+}
+
+func TestValidateWebStaticRootAbsoluteOK(t *testing.T) {
+	t.Parallel()
+	c := Default()
+	c.Web.StaticRoot = t.TempDir()
+	if err := c.Validate(); err != nil {
+		t.Errorf("Validate() with absolute web.static_root = %v", err)
 	}
 }
 

@@ -191,6 +191,28 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4h: static serving for the Nextcloud admin frontend
+  (ADR-0054). New `web.static_root` config (empty = disabled, absolute path
+  validated) points ncgo at an operator-provided directory of pre-compiled
+  frontend assets — a Nextcloud release web root or a built apps dir; ncgo
+  deliberately does not build, bundle, or rewrite the Vue frontend. The
+  handler (`internal/web.StaticUI`) mounts as a GET/HEAD catch-all on `/`
+  underneath every existing exact/prefix route (router longest-prefix wins),
+  serves files with containment guarantees (`..` segments, prefix checks,
+  per-request symlink resolution all enforced; canary tests prove nothing
+  outside the root is reachable), an explicit extension→MIME allowlist plus
+  the base chain's `nosniff`, immutable year-long caching for content-hashed
+  bundle names and `no-cache` for the shell, `Last-Modified`/
+  `If-Modified-Since` via `http.ServeContent`, and SPA fallback: extensionless
+  misses serve `index.html` with 200 while misses with an extension and
+  directories without an index 404. No CSRF weakening — static GETs are safe
+  methods; the unimplemented `requesttoken` flow means SPA form POSTs fail
+  412 in v1, with login v2 and Basic/app-password as the supported entry
+  points. API coverage is honest: frontend calls beyond Phases 1–3 surface
+  as frontend errors, not server crashes. Deferred: precompressed
+  gzip/brotli sidecars, requesttoken endpoint, embedded minimal admin
+  console, server-rendered bootstrap state.
+
 - **2026-09-22** — Phase 4g: server-side image preview generation
   (ADR-0053). Authenticated `GET /index.php/core/preview[.png]` serves
   aspect-preserving fit-box previews of JPEG/PNG/GIF files (GIF first frame

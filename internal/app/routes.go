@@ -308,6 +308,15 @@ func (a *App) mountRoutes() error {
 		}
 	}
 
+	// Static frontend catch-all: the router's longest-prefix matching keeps
+	// every exact and prefix route above ahead of this "/" mount, so only
+	// paths nothing else claimed reach the SPA/static handler. Static GETs
+	// are safe methods, so the CSRF chain passes them unchanged.
+	if a.staticUI != nil {
+		router.HandlePrefix(http.MethodGet, "/", a.staticUI)
+		router.HandlePrefix(http.MethodHead, "/", a.staticUI)
+	}
+
 	a.Router = router
 	return nil
 }

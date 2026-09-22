@@ -96,6 +96,7 @@ func defaultFlat() map[string]any {
 		"encryption.master_key_path":        "",
 		"previews.enabled":                  true,
 		"previews.max_dimension":            2048,
+		"web.static_root":                   "",
 		"auth.session_ttl":                  24 * time.Hour,
 		"auth.app_password_ttl":             time.Duration(0),
 		"auth.password_hash":                "argon2id",

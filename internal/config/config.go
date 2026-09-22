@@ -10,6 +10,7 @@ type Config struct {
 	Storage       StorageConfig       `koanf:"storage"`
 	Encryption    EncryptionConfig    `koanf:"encryption"`
 	Previews      PreviewsConfig      `koanf:"previews"`
+	Web           WebConfig           `koanf:"web"`
 	Auth          AuthConfig          `koanf:"auth"`
 	Jobs          JobsConfig          `koanf:"jobs"`
 	Plugin        PluginConfig        `koanf:"plugin"`
@@ -84,6 +85,14 @@ type EncryptionConfig struct {
 type PreviewsConfig struct {
 	Enabled      bool `koanf:"enabled"`
 	MaxDimension int  `koanf:"max_dimension"`
+}
+
+// WebConfig controls serving the pre-compiled Nextcloud web frontend
+// (ADR-0054). StaticRoot is an absolute path to a directory of compiled
+// frontend assets (for example a Nextcloud release's web root); empty
+// disables static serving entirely.
+type WebConfig struct {
+	StaticRoot string `koanf:"static_root"`
 }
 
 // AuthConfig covers sessions, app passwords, hashing, and bootstrap admin.

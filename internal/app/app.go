@@ -36,6 +36,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage/localfs"
 	s3store "github.com/PhantomMatthew/nextcloud-go/internal/storage/s3"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
+	"github.com/PhantomMatthew/nextcloud-go/internal/web"
 	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
 )
 
@@ -79,6 +80,7 @@ type App struct {
 	principalFS   *caldav.PrincipalDAV
 	davRootFS     *caldav.RootDAV
 	previewGen    *preview.Generator
+	staticUI      *web.StaticUI
 }
 
 // New opens dependencies and mounts routes.
@@ -232,6 +234,16 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	}
 	if cfg.Previews.Enabled {
 		a.previewGen = preview.NewGenerator(dav, st, "appdata_"+a.instanceID+"/previews", cfg.Previews.MaxDimension, logger)
+	}
+	if cfg.Web.StaticRoot != "" {
+		ui, err := web.NewStaticUI(cfg.Web.StaticRoot, logger)
+		if err != nil {
+			if cerr := a.closeResources(ctx); cerr != nil {
+				return nil, errors.Join(err, cerr)
+			}
+			return nil, err
+		}
+		a.staticUI = ui
 	}
 	if cfg.Plugin.Enabled {
 		reg := plugins.NewRegistry(a.DB)

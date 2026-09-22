@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"strings"
 )
 
@@ -77,6 +78,10 @@ func (c *Config) Validate() error {
 
 	if c.Previews.MaxDimension < 32 || c.Previews.MaxDimension > 4096 {
 		errs = append(errs, &ValidationError{Field: "previews.max_dimension", Reason: "must be between 32 and 4096"})
+	}
+
+	if strings.TrimSpace(c.Web.StaticRoot) != "" && !filepath.IsAbs(c.Web.StaticRoot) {
+		errs = append(errs, &ValidationError{Field: "web.static_root", Reason: "must be an absolute path"})
 	}
 
 	return errors.Join(errs...)

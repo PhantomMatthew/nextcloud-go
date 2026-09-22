@@ -21,6 +21,15 @@ go run ./cmd/ncgo-captest run --cases testdata/golden
 text debug logs. For a file-backed config, copy the YAML schema in
 `docs/plans/01-phase-0-blueprint.md` and pass `--config`.
 
+### Serving the web frontend
+
+ncgo serves — but does not build — the pre-compiled Nextcloud web UI. Point
+`web.static_root` in the config at a directory of compiled frontend assets
+(e.g. a Nextcloud release tarball's web root) and restart; with the default
+empty value no static UI is served. Serving rules, cache policy, security
+constraints, and the honest API-coverage caveats are in
+[`docs/adr/0054-admin-ui-static-serving.md`](docs/adr/0054-admin-ui-static-serving.md).
+
 ## Project Goals
 
 1. **Wire compatibility** — existing Nextcloud clients (desktop sync, iOS, Android,
