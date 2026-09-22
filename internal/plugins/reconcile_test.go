@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PhantomMatthew/nextcloud-go/internal/cache"
 	"github.com/PhantomMatthew/nextcloud-go/internal/httpx"
 	"github.com/PhantomMatthew/nextcloud-go/internal/jobs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/plugins/internal/wasmgen"
@@ -431,5 +432,70 @@ func TestReconcilerRunPolling(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not exit on ctx cancel")
+	}
+}
+
+// TestReconcileUninstallPurgesCache pins the ADR-0063 interaction between hot
+// reload and the 4m cache cleanup: a disable keeps the plugin's plugin:<id>:
+// keys (the row survives; the state belongs to a future re-enable), while an
+// uninstall (row gone) purges them — without it a same-process reinstall
+// would read the previous generation's memory-cache keys.
+func TestReconcileUninstallPurgesCache(t *testing.T) {
+	ctx := context.Background()
+	reg := NewRegistry(testDB(t))
+	mc, err := cache.NewMemory(cache.MemoryConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mc.Close)
+	h, _ := testHost(t, HostConfig{Registry: reg, Cache: mc})
+	router := httpx.NewRouter()
+	rec := NewReconciler(h, reg, router, nil, nil, nil, slog.New(slog.DiscardHandler))
+	t.Cleanup(func() { _ = rec.Close(context.Background()) })
+
+	const id = "com.example.purge"
+	reconcileUpsert(t, ctx, reg, id, "1.0.0",
+		writeReconcileArchive(t, t.TempDir(), id, "1.0.0", wasmgen.RouteModule(200, nil, "purge-body")))
+
+	key := cacheKeyPrefix(id) + "state"
+	if err := mc.Set(ctx, key, []byte("v"), time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := mc.Set(ctx, "plugin:other:k", []byte("v"), time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Disable: the registry row survives, and so must the cache keys.
+	if err := reg.SetEnabled(ctx, id, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mc.Get(ctx, key); err != nil {
+		t.Fatalf("disable must keep cache keys: %v", err)
+	}
+
+	// Re-enable, then uninstall (row deleted): the next Sync purges.
+	if err := reg.SetEnabled(ctx, id, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Delete(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mc.Get(ctx, key); !errors.Is(err, cache.ErrMiss) {
+		t.Fatalf("uninstall must purge cache keys, got %v", err)
+	}
+	if _, err := mc.Get(ctx, "plugin:other:k"); err != nil {
+		t.Fatalf("unrelated plugin key purged: %v", err)
 	}
 }

@@ -191,6 +191,15 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-22** — Phase 4q2: reconciler cache purge on uninstall detection
+  (ADR-0063). Hot reload (4q) broke ADR-0058's "memory L1 residue dies with
+  the restart" argument — a same-process uninstall → reinstall would read
+  the previous generation's `plugin:<id>:` keys, and the CLI-side purge only
+  covers Redis deployments. The reconciler now distinguishes the stop cause
+  by re-reading the registry: row gone (uninstall) → purge the plugin's
+  cache keys through the host cache; row present (disable/upgrade) → keep,
+  matching the jobs/appconfig/storage semantics. Registry read failures skip
+  conservatively; purge failures warn without interrupting the stop.
 - **2026-09-22** — Phase 4q: plugin hot reload (ADR-0062), closing the
   ADR-0041 boot-time-mount follow-up. A new `plugins.Reconciler` polls the
   registry every `plugin.refresh_interval` (new config key, default 10s;

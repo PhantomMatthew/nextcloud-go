@@ -134,13 +134,14 @@ gaps blocked a runtime refresh:
   bounds it. No request ever dispatches into a *closed* module.
 - Reconciler state is in-memory: a crash/restart simply rebuilds it from
   the registry at the boot-time `Sync`.
-- Follow-up: with hot reload, ADR-0058's "memory-cache uninstall residue
+- ~~Follow-up~~ (**resolved by ADR-0063**): with hot reload, ADR-0058's
+  "memory-cache uninstall residue
   dies with the restart uninstalls require" argument no longer holds —
   uninstall + reinstall within one process lifetime can read stale
-  `plugin:<id>:` keys from a memory L1. A reconciler-side cache purge
+  `plugin:<id>:` keys from a memory L1. ~~A reconciler-side cache purge
   when a stopped plugin's registry row is gone (uninstall, not disable)
-  is the documented fix; Redis deployments are already covered by the
-  CLI.
+  is the documented fix~~ The reconciler now purges exactly then; Redis
+  deployments are already covered by the CLI.
 
 ## Verification
 

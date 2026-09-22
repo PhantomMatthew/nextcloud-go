@@ -168,6 +168,43 @@ func (r *Reconciler) stopOne(ctx context.Context, id string, tr *trackedPlugin) 
 			slog.String("plugin.id", id), slog.String("error", err.Error()))
 	}
 	delete(r.tracked, id)
+	r.purgeCacheIfUninstalled(ctx, id)
+}
+
+// purgeCacheIfUninstalled drops the plugin's plugin:<id>: cache keys when the
+// stop is an uninstall (the registry row is gone) rather than a disable (the
+// row survives, and so does the plugin's state — matching 4j's
+// jobs/appconfig/storage semantics). Without this, hot reload (ADR-0062)
+// breaks 4m's "memory L1 residue dies with the restart" argument: a
+// same-process uninstall+reinstall would read the previous generation's
+// keys (ADR-0063). The CLI only purges Redis-backed caches (ADR-0058), so
+// this is the only purge for memory deployments. A registry read failure
+// skips the purge conservatively; a purge failure is logged and does not
+// interrupt the stop — the keys are inert data.
+func (r *Reconciler) purgeCacheIfUninstalled(ctx context.Context, id string) {
+	if r.host.cfg.Cache == nil {
+		return
+	}
+	_, err := r.reg.Get(ctx, id)
+	switch {
+	case err == nil:
+		return // disabled or upgraded, not uninstalled
+	case !errors.Is(err, ErrPluginNotFound):
+		if r.logger != nil {
+			r.logger.WarnContext(ctx, "plugins: reconcile registry check failed, cache purge skipped",
+				slog.String("plugin.id", id), slog.String("error", err.Error()))
+		}
+		return
+	}
+	n, perr := r.host.cfg.Cache.DeleteByPrefix(ctx, cacheKeyPrefix(id))
+	switch {
+	case perr != nil && r.logger != nil:
+		r.logger.WarnContext(ctx, "plugins: uninstall cache purge failed",
+			slog.String("plugin.id", id), slog.String("error", perr.Error()))
+	case perr == nil && n > 0 && r.logger != nil:
+		r.logger.InfoContext(ctx, "plugins: uninstall purged cache keys",
+			slog.String("plugin.id", id), slog.Int64("cache.deleted", n))
+	}
 }
 
 // unmount removes the plugin's tracked routes and unregisters its job

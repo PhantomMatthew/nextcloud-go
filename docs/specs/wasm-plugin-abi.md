@@ -614,6 +614,11 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-22** — Phase 4q2 closed the hot-reload × cache-cleanup
+  interaction (ADR-0063): the reconciler purges a plugin's `plugin:<id>:`
+  cache keys when a stop is an uninstall (registry row gone), and keeps them
+  on disable/upgrade — covering memory deployments the CLI-side purge
+  (ADR-0058) cannot reach.
 - **2026-09-22** — Phase 4q added plugin hot reload (ADR-0062), closing the
   ADR-0041 "routes mount at boot; runtime refresh is future work" follow-up:
   install/enable/disable/upgrade through `ncgo-cli` now take effect on the
