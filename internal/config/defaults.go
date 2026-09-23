@@ -66,8 +66,9 @@ func hardcodedDefault() *Config {
 			RefreshInterval:          10 * time.Second,
 		},
 		Observability: ObservabilityConfig{
-			LogLevel:  "info",
-			LogFormat: "json",
+			LogLevel:        "info",
+			LogFormat:       "json",
+			OTelSampleRatio: 1.0,
 		},
 	}
 }
@@ -115,6 +116,8 @@ func defaultFlat() map[string]any {
 		"observability.log_format":            "json",
 		"observability.metrics_enabled":       false,
 		"observability.metrics_token":         "",
+		"observability.otel_endpoint":         "",
+		"observability.otel_sample_ratio":     1.0,
 		"maintenance.enabled":                 false,
 		"maintenance.needs_db_upgrade":        false,
 		"instance.id":                         "",

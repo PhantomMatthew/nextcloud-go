@@ -48,6 +48,9 @@ func (c *Config) Validate() error {
 	if _, ok := validLogFmts[c.Observability.LogFormat]; !ok {
 		errs = append(errs, &ValidationError{Field: "observability.log_format", Reason: "must be json or text"})
 	}
+	if c.Observability.OTelSampleRatio < 0 || c.Observability.OTelSampleRatio > 1 {
+		errs = append(errs, &ValidationError{Field: "observability.otel_sample_ratio", Reason: "must be between 0 and 1"})
+	}
 
 	if c.Auth.Argon2id.MemoryKB == 0 {
 		errs = append(errs, &ValidationError{Field: "auth.argon2id.memory_kb", Reason: "must be > 0"})

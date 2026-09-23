@@ -143,11 +143,17 @@ type PluginConfig struct {
 // MetricsEnabled mounts GET /metrics (ADR-0055); MetricsToken, when set,
 // requires `Authorization: Bearer <token>` on scrapes (constant-time
 // compared). Network-level restriction is recommended regardless.
+// OTelEndpoint enables OpenTelemetry tracing when non-empty (ADR-0072): a
+// bare host:port means a plaintext-HTTP OTLP collector, a full http(s)://
+// URL keeps its scheme and path. OTelSampleRatio is the parent-based
+// head-sampling probability in [0,1]; 1.0 keeps every trace.
 type ObservabilityConfig struct {
-	LogLevel       string `koanf:"log_level"`
-	LogFormat      string `koanf:"log_format"`
-	MetricsEnabled bool   `koanf:"metrics_enabled"`
-	MetricsToken   string `koanf:"metrics_token"`
+	LogLevel        string  `koanf:"log_level"`
+	LogFormat       string  `koanf:"log_format"`
+	MetricsEnabled  bool    `koanf:"metrics_enabled"`
+	MetricsToken    string  `koanf:"metrics_token"`
+	OTelEndpoint    string  `koanf:"otel_endpoint"`
+	OTelSampleRatio float64 `koanf:"otel_sample_ratio"`
 }
 
 // MaintenanceConfig mirrors Nextcloud's maintenance and upgrade flags.

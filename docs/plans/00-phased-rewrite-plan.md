@@ -191,6 +191,28 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-23** — Phase 4z: OpenTelemetry spans (ADR-0072), resolving
+  the ADR-0055 OTel follow-up and restoring the `observability.otel_endpoint`
+  key Phase 4k had removed as dead. The project-wide zero-dependency posture
+  is opened **by explicit user approval (2026-09-23) for exactly three
+  modules**: `go.opentelemetry.io/otel`, `.../otel/sdk`, and
+  `.../otlp/otlptrace/otlptracehttp` (pinned at v1.44.0 — the version the
+  module graph already selected, so no other dependency moves; no gRPC
+  exporter, no contrib). `observability.otel_endpoint` (empty = completely
+  uninstalled, zero overhead; bare `host:port` = plaintext HTTP collector,
+  full URL keeps scheme+path) plus `observability.otel_sample_ratio`
+  (parent-based head sampling, default 1.0, validated to [0,1]) drive a
+  BatchSpanProcessor provider owned by `App` (Shutdown with a 5s flush
+  budget joined into the Close error chain). A ~80-line self-written
+  middleware (in lieu of contrib otelhttp) sits directly behind
+  `httpx.Recover` in the base chain: W3C traceparent extraction, low-cardinality
+  span names (`GET /status.php` from the registered route the router puts on
+  the request context — never the raw path, which lands only on
+  `http.target`), and 5xx → Error status. Plugin host calls get an
+  independent `plugin.host.<function>` span layer at the 4i wrapHostMetrics
+  hook (`plugin.id`/`ncgo.function`/`ncgo.result_code`, only ErrCodeInternal
+  marks Error), composed with — and switched separately from — the metrics
+  wrapper. DB spans remain a follow-up.
 - **2026-09-23** — Phase 4y: import-nextcloud completion (ADR-0071),
   resolving the ADR-0048 email/quota and ADR-0051 calendar-shares
   follow-ups. `import-nextcloud users` now maps email

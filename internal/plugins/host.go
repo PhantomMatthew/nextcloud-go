@@ -10,6 +10,7 @@ import (
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/appconfig"
 	"github.com/PhantomMatthew/nextcloud-go/internal/cache"
@@ -103,6 +104,10 @@ type HostConfig struct {
 	// the §12 counter/histogram/denial families. Nil disables instrumentation
 	// entirely (zero overhead: functions are registered unwrapped).
 	Metrics *observability.Registry
+	// TracerProvider, when non-nil, wraps every exported host function in a
+	// plugin.host.<function> span (ADR-0072). Nil disables wrapping entirely.
+	// Independent of Metrics; the two wrappers compose at registration.
+	TracerProvider trace.TracerProvider
 }
 
 // Host is a wazero-backed plugin runtime.

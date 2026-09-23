@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 // MethodAny is a sentinel method matching any HTTP verb on a prefix
@@ -176,11 +178,13 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.mu.RLock()
 	var handler http.Handler
 	var allow string
+	var routeName string
 	notAllowed := false
 	path := req.URL.Path
 	if methods, ok := r.exact[path]; ok {
 		if h, ok := methods[req.Method]; ok {
 			handler = h
+			routeName = path
 		} else {
 			allow = r.allowHeader(path)
 			notAllowed = true
@@ -196,6 +200,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				notAllowed = true
 			} else {
 				handler = pr.handler
+				routeName = pr.path
 			}
 			break
 		}
@@ -206,6 +211,13 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	switch {
 	case handler != nil:
+		// Rename any already-active span (an outer tracing layer) to the
+		// low-cardinality route form; on a no-op span the call is free. The
+		// default-chain tracing middleware starts its span after dispatch, so
+		// the matched route also travels via context for it to name the span
+		// at start.
+		trace.SpanFromContext(req.Context()).SetName(req.Method + " " + routeName)
+		req = req.WithContext(withRouteName(req.Context(), routeName))
 		handler.ServeHTTP(w, req)
 	case notAllowed:
 		writeMethodNotAllowed(w, req, methodNotAll, allow)

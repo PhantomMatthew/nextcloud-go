@@ -37,8 +37,11 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage/localfs"
 	s3store "github.com/PhantomMatthew/nextcloud-go/internal/storage/s3"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
+	"github.com/PhantomMatthew/nextcloud-go/internal/version"
 	"github.com/PhantomMatthew/nextcloud-go/internal/web"
 	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
+
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 // App is the wired server process.
@@ -55,6 +58,7 @@ type App struct {
 	reconciler *plugins.Reconciler
 	recCancel  context.CancelFunc
 	metrics    *observability.Registry
+	tracing    *sdktrace.TracerProvider
 
 	hasher        auth.PasswordHasher
 	authStore     auth.Store
@@ -252,6 +256,24 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	if cfg.Observability.MetricsEnabled {
 		a.metrics = observability.NewRegistry()
 	}
+	// An empty endpoint means no provider at all: the global default stays
+	// the no-op provider and neither the middleware nor the plugin wrapper is
+	// installed (ADR-0072), so disabled tracing is exactly zero overhead.
+	if cfg.Observability.OTelEndpoint != "" {
+		tp, err := observability.NewTracerProvider(ctx, observability.TracingConfig{
+			Endpoint:       cfg.Observability.OTelEndpoint,
+			SampleRatio:    cfg.Observability.OTelSampleRatio,
+			ServiceVersion: version.String(),
+			InstanceID:     a.instanceID,
+		})
+		if err != nil {
+			if cerr := a.closeResources(ctx); cerr != nil {
+				return nil, errors.Join(err, cerr)
+			}
+			return nil, err
+		}
+		a.tracing = tp
+	}
 	if cfg.Plugin.Enabled {
 		reg := plugins.NewRegistry(a.DB)
 		a.pluginReg = reg
@@ -272,6 +294,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 			AppConfig:                appconfig.NewStore(a.DB),
 			Jobs:                     jr,
 			Metrics:                  a.metrics,
+			TracerProvider:           a.tracing,
 		}, logger)
 		if err != nil {
 			if cerr := a.closeResources(ctx); cerr != nil {
@@ -362,6 +385,14 @@ func (a *App) closeResources(ctx context.Context) error {
 	if a.PluginHost != nil {
 		err = joinErr(err, a.PluginHost.Close(ctx))
 		a.PluginHost = nil
+	}
+	if a.tracing != nil {
+		// Flush in-flight spans with a bounded budget; ctx may already be
+		// done during teardown.
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err = joinErr(err, a.tracing.Shutdown(shutCtx))
+		cancel()
+		a.tracing = nil
 	}
 	if a.redisCache != nil {
 		err = joinErr(err, a.redisCache.Close())

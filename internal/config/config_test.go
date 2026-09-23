@@ -50,6 +50,9 @@ func TestDefaultSnapshot(t *testing.T) {
 	if got.Observability.MetricsEnabled || got.Observability.MetricsToken != "" {
 		t.Errorf("metrics defaults: %+v", got.Observability)
 	}
+	if got.Observability.OTelEndpoint != "" || got.Observability.OTelSampleRatio != 1.0 {
+		t.Errorf("otel defaults: %+v", got.Observability)
+	}
 	if got.Maintenance.Enabled || got.Instance.Secret != "" {
 		t.Errorf("maintenance/instance defaults: %+v %+v", got.Maintenance, got.Instance)
 	}
@@ -97,6 +100,9 @@ func TestLoadFullFile(t *testing.T) {
 	}
 	if cfg.Database.ConnMaxLifetime != time.Hour {
 		t.Errorf("conn_max_lifetime = %s", cfg.Database.ConnMaxLifetime)
+	}
+	if cfg.Observability.OTelEndpoint != "http://otel-collector:4318" || cfg.Observability.OTelSampleRatio != 0.5 {
+		t.Errorf("otel = %+v", cfg.Observability)
 	}
 }
 
@@ -185,8 +191,9 @@ func TestLoadMissingFile(t *testing.T) {
 
 // TestLoadUnknownKeysIgnored pins the lenient unmarshal contract: keys
 // removed in Phase 4k (server.trusted_proxies, observability.metrics_listen,
-// observability.otel_endpoint, ...) may still sit in existing config files
-// and must not fail startup — they are silently ignored.
+// ...) may still sit in existing config files and must not fail startup —
+// they are silently ignored. observability.otel_endpoint left this list in
+// Phase 4z, when the OTel SDK landed and the key went live again (ADR-0072).
 func TestLoadUnknownKeysIgnored(t *testing.T) {
 	cfg, err := Load(LoadOptions{
 		EnvPrefix: unusedEnvPrefix,
@@ -194,7 +201,6 @@ func TestLoadUnknownKeysIgnored(t *testing.T) {
 			"server.trusted_proxies":       []string{"10.0.0.0/8"},
 			"auth.session_ttl":             "24h",
 			"observability.metrics_listen": "127.0.0.1:9090",
-			"observability.otel_endpoint":  "http://otel:4317",
 		},
 	})
 	if err != nil {
@@ -227,6 +233,8 @@ func TestValidateRules(t *testing.T) {
 		{"dsn", func(c *Config) { c.Database.DSN = "  " }, "database.dsn"},
 		{"log_level", func(c *Config) { c.Observability.LogLevel = "fatal" }, "observability.log_level"},
 		{"log_format", func(c *Config) { c.Observability.LogFormat = "pretty" }, "observability.log_format"},
+		{"otel_ratio_low", func(c *Config) { c.Observability.OTelSampleRatio = -0.1 }, "observability.otel_sample_ratio"},
+		{"otel_ratio_high", func(c *Config) { c.Observability.OTelSampleRatio = 1.1 }, "observability.otel_sample_ratio"},
 		{"argon_memory", func(c *Config) { c.Auth.Argon2id.MemoryKB = 0 }, "auth.argon2id.memory_kb"},
 		{"argon_iter", func(c *Config) { c.Auth.Argon2id.Iterations = 0 }, "auth.argon2id.iterations"},
 		{"argon_par", func(c *Config) { c.Auth.Argon2id.Parallelism = 0 }, "auth.argon2id.parallelism"},

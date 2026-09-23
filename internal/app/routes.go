@@ -14,6 +14,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/httpx"
 	"github.com/PhantomMatthew/nextcloud-go/internal/login"
 	notifpkg "github.com/PhantomMatthew/nextcloud-go/internal/notifications"
+	"github.com/PhantomMatthew/nextcloud-go/internal/observability"
 	"github.com/PhantomMatthew/nextcloud-go/internal/ocm"
 	"github.com/PhantomMatthew/nextcloud-go/internal/ocs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/plugins"
@@ -79,12 +80,19 @@ func (a *App) mountRoutes() error {
 	}
 	baseChain := []httpx.Middleware{
 		httpx.Recover(a.Logger),
+	}
+	// Tracing sits directly behind Recover: downstream panics are recorded as
+	// error spans before Recover converts them to 500s (ADR-0072).
+	if a.tracing != nil {
+		baseChain = append(baseChain, observability.Tracing(a.tracing))
+	}
+	baseChain = append(baseChain,
 		httpx.RequestID(),
 		httpx.Logging(a.Logger),
 		httpx.SecurityHeaders(httpx.DefaultSecurityHeaders()),
 		httpx.Maintenance(maintenance),
 		httpx.CSRF(csrfCfg),
-	}
+	)
 	router := httpx.NewRouter(baseChain...)
 
 	statusHandler := status.Provider{

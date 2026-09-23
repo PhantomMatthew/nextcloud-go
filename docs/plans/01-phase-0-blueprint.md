@@ -247,6 +247,9 @@ plugin:
 observability:
   log_level: "info"        # debug | info | warn | error
   log_format: "json"       # json | text
+  otel_endpoint: ""        # OTLP/HTTP collector; empty = tracing disabled (ADR-0072).
+                           # bare host:port = plaintext HTTP; http(s):// URL keeps scheme+path
+  otel_sample_ratio: 1.0   # parent-based head sampling in [0,1]
 ```
 
 ## Initial DB Schema (`migrations/0001_init.sql`)

@@ -89,10 +89,14 @@ hundred lines of stdlib Go.
 
 ## Deferred
 
-- **OTel spans** (`plugin.host_call` with plugin.id/abi.version/function/
+- ~~**OTel spans** (`plugin.host_call` with plugin.id/abi.version/function/
   error attrs): no OTel SDK in v1, consistent with the stdlib-first
   constraint. The result-classification and label scheme here is the future
-  span-attribute mapping.
+  span-attribute mapping.~~ **Resolved by ADR-0072** (Phase 4z, 2026-09-23):
+  the OTel SDK landed by explicit user approval; host calls now emit
+  `plugin.host.<function>` spans with `plugin.id` / `ncgo.function` /
+  `ncgo.result_code` attributes — the mapping this label scheme predicted —
+  and requests emit router-named server spans.
 - **Per-plugin admin dashboard** (request count, error rate, p50/p95/p99,
   memory high-water, denial events): a UI concern; the Prometheus families
   above already carry the data it needs. Memory high-water marks require
@@ -105,3 +109,6 @@ hundred lines of stdlib Go.
   keys are silent no-ops for operators. `/metrics` is served on the main
   listener behind the token; both keys return when the separate listener
   and the OTel SDK land.
+  - `observability.otel_endpoint`: **returned in Phase 4z** (2026-09-23,
+    ADR-0072), joined by `observability.otel_sample_ratio`.
+  - `observability.metrics_listen`: still deferred.
