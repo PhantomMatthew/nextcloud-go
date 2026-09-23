@@ -191,6 +191,31 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-23** — Phase 4y: import-nextcloud completion (ADR-0071),
+  resolving the ADR-0048 email/quota and ADR-0051 calendar-shares
+  follow-ups. `import-nextcloud users` now maps email
+  (`oc_preferences` `settings/primary_email` → `settings/email` →
+  `oc_accounts.data` JSON fallback — `oc_users` never had an email or
+  quota column in any Nextcloud release) and quota (`files/quota`
+  preference: `none`/`default`/empty → NULL, 1024-based human sizes →
+  bytes, invalid → NULL + warning). `import-nextcloud dav` replaces the
+  counted-warning stub with a real calendar-share mapping: research
+  pinned `oc_dav_shares` as the only share table Nextcloud ever had
+  (`access` 2 = read-write, 3 = read; `type` also covers addressbooks;
+  `resourceid` → `oc_calendars.id`; **no invite state** — every row is an
+  effective share, so the ADR-0051 never-show-unaccepted principle holds
+  structurally). Only the unambiguous subset imports: user principals,
+  sharee in target, and a calendar the run actually imported (a new
+  resolved-set gate prevents shares attaching to a foreign calendar that
+  owns a colliding uri); group/circle principals, orphans, unmappable
+  access, and self-shares skip with per-row warnings; addressbook shares
+  are counted (ncgo has no addressbook sharing). Idempotent re-runs skip;
+  differing access updates per `UpsertCalendarShare`. Authtoken verdict:
+  sessions not importable (ncgo session family is its own); app passwords
+  are hash-compatible by design (`sha512(token+instance.secret)` on both
+  sides) — carry the source `secret` over and copy rows manually per the
+  ADR recipe, or (default) reissue after migration; a `tokens` subcommand
+  is the one remaining follow-up.
 - **2026-09-23** — Phase 4x: `encryption encrypt-all`/`decrypt-all` CLI
   sweep (ADR-0070), resolving the ADR-0052 follow-up. Transparent
   seal-on-write left legacy plaintext on the backend until organic

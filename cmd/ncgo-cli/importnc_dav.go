@@ -22,7 +22,7 @@ const ncUserPrincipalPrefix = "principals/users/"
 func newImportNCDAV(f *importNCFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "dav",
-		Short: "Import calendars, calendar objects, address books, and contacts",
+		Short: "Import calendars, objects, calendar shares, address books, and contacts",
 		Long: "Import calendars and address books (with their objects) from the\n" +
 			"source <prefix>calendars, <prefix>calendarobjects, <prefix>addressbooks,\n" +
 			"and <prefix>cards tables.\n\n" +
@@ -40,10 +40,15 @@ func newImportNCDAV(f *importNCFlags) *cobra.Command {
 			"preserved; Nextcloud's per-calendar components list and transparent flag\n" +
 			"have no ncgo counterpart and are dropped (one summary warning each).\n" +
 			"Empty or unparseable calendardata/carddata is skipped with a warning.\n\n" +
-			"Calendar sharing (<prefix>calendarshares, or <prefix>dav_shares on newer\n" +
-			"Nextcloud) is NOT imported in v1 — invite-state mapping is out of scope;\n" +
-			"affected rows are counted and reported once, and calendars must be\n" +
-			"re-shared after migration.\n\n" +
+			"Calendar sharing (<prefix>dav_shares on all supported Nextcloud versions,\n" +
+			"legacy <prefix>calendarshares also recognized) IS imported for the\n" +
+			"unambiguous subset: user principals whose sharee and target calendar\n" +
+			"exist in the target, access read (3) or read-write (2) — Nextcloud keeps\n" +
+			"no invite state for these rows, and ncgo shares take effect immediately\n" +
+			"too, so the mapping is faithful. Group/circle principals, unknown\n" +
+			"sharees, calendars that were not imported, and unmappable access values\n" +
+			"are skipped with per-row warnings. Address book shares are counted and\n" +
+			"reported but NOT imported (ncgo has no address book sharing).\n\n" +
 			"The import is idempotent: an existing calendar/addressbook with the same\n" +
 			"owner+uri is skipped (an existing one with different properties is a\n" +
 			"collision and is skipped wholesale, objects included, with a warning),\n" +
@@ -81,13 +86,14 @@ func newImportNCDAV(f *importNCFlags) *cobra.Command {
 // importNCDAV imports calendars + objects and address books + cards from the
 // PHP Nextcloud database. Best-effort: per-row failures warn and continue.
 func importNCDAV(ctx context.Context, src database.DB, us *users.SQLStore, cs *calendar.SQLStore, bs *contacts.SQLStore, prefix string, dryRun bool, r *importReport) error {
-	if err := importNCCalendars(ctx, src, us, cs, prefix, dryRun, r); err != nil {
+	resolved, err := importNCCalendars(ctx, src, us, cs, prefix, dryRun, r)
+	if err != nil {
 		return err
 	}
 	if err := importNCAddressbooks(ctx, src, us, bs, prefix, dryRun, r); err != nil {
 		return err
 	}
-	return warnNCCalendarShares(ctx, src, prefix, r)
+	return importNCCalendarShares(ctx, src, us, cs, prefix, dryRun, r, resolved)
 }
 
 // ncPrincipalUID extracts the uid from a principals/users/<uid> principaluri.
@@ -113,13 +119,24 @@ type ncCalendarRow struct {
 	transparent int
 }
 
-func importNCCalendars(ctx context.Context, src database.DB, us *users.SQLStore, cs *calendar.SQLStore, prefix string, dryRun bool, r *importReport) error {
+// ncResolvedCalendar records how one source calendar landed in the target:
+// it was created (or dry-run-planned, targetID 0) or an equivalent calendar
+// already owned the uri. Shares resolve against this set, so a share never
+// attaches to a foreign calendar that merely shares the uri (collision skip).
+type ncResolvedCalendar struct {
+	ownerUID string
+	uri      string
+	targetID int64
+}
+
+func importNCCalendars(ctx context.Context, src database.DB, us *users.SQLStore, cs *calendar.SQLStore, prefix string, dryRun bool, r *importReport) (map[int64]ncResolvedCalendar, error) {
 	cc := r.entity("calendars")
+	resolved := map[int64]ncResolvedCalendar{}
 	rows, err := src.Query(ctx, `
 SELECT id, principaluri, uri, displayname, description, calendarorder, calendarcolor, timezone, components, transparent
 FROM `+prefix+`calendars ORDER BY id`)
 	if err != nil {
-		return fmt.Errorf("import dav: read source calendars: %w", err)
+		return nil, fmt.Errorf("import dav: read source calendars: %w", err)
 	}
 	defer rows.Close()
 	componentsDropped, transparentDropped := 0, 0
@@ -128,7 +145,7 @@ FROM `+prefix+`calendars ORDER BY id`)
 		var display, description, color, timezone, components *string
 		if err := rows.Scan(&row.id, &row.principal, &row.uri, &display, &description,
 			&row.order, &color, &timezone, &components, &row.transparent); err != nil {
-			return fmt.Errorf("import dav: scan calendar: %w", err)
+			return nil, fmt.Errorf("import dav: scan calendar: %w", err)
 		}
 		row.displayName = derefStr(display)
 		row.description = derefStr(description)
@@ -141,10 +158,10 @@ FROM `+prefix+`calendars ORDER BY id`)
 		if row.transparent != 0 {
 			transparentDropped++
 		}
-		importNCCalendar(ctx, src, &row, us, cs, prefix, dryRun, r, cc)
+		importNCCalendar(ctx, src, &row, us, cs, prefix, dryRun, r, cc, resolved)
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("import dav: read source calendars: %w", err)
+		return nil, fmt.Errorf("import dav: read source calendars: %w", err)
 	}
 	if componentsDropped > 0 {
 		r.warn("%d calendar components list(s) not imported (ncgo has no components field)", componentsDropped)
@@ -152,12 +169,14 @@ FROM `+prefix+`calendars ORDER BY id`)
 	if transparentDropped > 0 {
 		r.warn("%d transparent calendar flag(s) not imported (ncgo has no transparent field)", transparentDropped)
 	}
-	return nil
+	return resolved, nil
 }
 
 // importNCCalendar imports one calendar and — unless the calendar is skipped
-// wholesale — its objects.
-func importNCCalendar(ctx context.Context, src database.DB, row *ncCalendarRow, us *users.SQLStore, cs *calendar.SQLStore, prefix string, dryRun bool, r *importReport, cc *importCounts) {
+// wholesale — its objects. Calendars that land in the target (created,
+// dry-run-planned, or matched to an equivalent existing one) are recorded in
+// resolved for the share pass.
+func importNCCalendar(ctx context.Context, src database.DB, row *ncCalendarRow, us *users.SQLStore, cs *calendar.SQLStore, prefix string, dryRun bool, r *importReport, cc *importCounts, resolved map[int64]ncResolvedCalendar) {
 	uid, ok := ncPrincipalUID(row.principal)
 	if !ok {
 		r.warn("calendar %d: principal %q is not a user principal, skipped with its objects", row.id, row.principal)
@@ -201,9 +220,11 @@ func importNCCalendar(ctx context.Context, src database.DB, row *ncCalendarRow, 
 		}
 		// Idempotent re-run (or resume after a partial failure): import
 		// whichever objects are still missing.
+		resolved[row.id] = ncResolvedCalendar{ownerUID: uid, uri: row.uri, targetID: existing.ID}
 	case errors.Is(err, calendar.ErrNotFound):
 		if dryRun {
 			cc.created++
+			resolved[row.id] = ncResolvedCalendar{ownerUID: uid, uri: row.uri}
 			countNCObjects(ctx, src, prefix+`calendarobjects`, "calendarid", "calendardata", row.id, r.entity("calendar objects"), r)
 			return
 		}
@@ -217,6 +238,7 @@ func importNCCalendar(ctx context.Context, src database.DB, row *ncCalendarRow, 
 			return
 		}
 		cc.created++
+		resolved[row.id] = ncResolvedCalendar{ownerUID: uid, uri: row.uri, targetID: want.ID}
 	default:
 		r.warn("calendar %d: lookup uri %q: %v", row.id, row.uri, err)
 		cc.failed++
@@ -507,21 +529,246 @@ func countNCSourceRows(ctx context.Context, src database.DB, table, column strin
 	return n
 }
 
-// warnNCCalendarShares counts source calendar-share rows without importing
-// them (invite-state mapping is out of scope in v1) and reports the deferral
-// once. Newer Nextcloud versions store calendar shares in dav_shares instead
-// of calendarshares; whichever table exists is counted.
-func warnNCCalendarShares(ctx context.Context, src database.DB, prefix string, r *importReport) error {
-	for _, table := range []string{prefix + "calendarshares", prefix + "dav_shares"} {
-		var n int
-		if err := src.QueryRow(ctx, `SELECT COUNT(*) FROM `+table).Scan(&n); err != nil {
+// ncCalShareRow is one calendar-share row from either source share table:
+// <prefix>dav_shares (Nextcloud 9+) or the legacy <prefix>calendarshares
+// layout (same mapping, calendarid column read as resource, type implied
+// "calendar").
+type ncCalShareRow struct {
+	table     string
+	id        int64
+	principal string
+	typ       string
+	access    int64
+	resource  int64 // oc_calendars.id
+}
+
+// ncAccessRead / ncAccessReadWrite are Nextcloud's dav_shares access values
+// (apps/dav/lib/DAV/Sharing/Backend.php): 1 = owner (never a shareable row
+// meaning), 2 = read-write, 3 = read.
+const (
+	ncAccessOwner     = 1
+	ncAccessReadWrite = 2
+	ncAccessRead      = 3
+)
+
+// readNCShareRows reads both share tables when present (a source migrated
+// across many Nextcloud versions can carry both) and returns the combined
+// row set. Absent tables are skipped silently; with no rows at all the
+// caller reports nothing.
+func readNCShareRows(ctx context.Context, src database.DB, prefix string) []ncCalShareRow {
+	var out []ncCalShareRow
+	if rows, err := src.Query(ctx, `
+SELECT id, principaluri, type, access, resourceid FROM `+prefix+`dav_shares ORDER BY id`); err == nil {
+		out = append(out, scanNCShareRows(rows, prefix+"dav_shares", false)...)
+	}
+	if rows, err := src.Query(ctx, `
+SELECT id, principaluri, access, calendarid FROM `+prefix+`calendarshares ORDER BY id`); err == nil {
+		out = append(out, scanNCShareRows(rows, prefix+"calendarshares", true)...)
+	}
+	return out
+}
+
+func scanNCShareRows(rows database.Rows, table string, legacy bool) []ncCalShareRow {
+	defer rows.Close()
+	var out []ncCalShareRow
+	for rows.Next() {
+		var row ncCalShareRow
+		var typ *string
+		var access *int64
+		row.table = table
+		var err error
+		if legacy {
+			err = rows.Scan(&row.id, &row.principal, &access, &row.resource)
+		} else {
+			err = rows.Scan(&row.id, &row.principal, &typ, &access, &row.resource)
+		}
+		if err != nil {
 			continue
 		}
-		if n > 0 {
-			r.entity("calendar shares").skipped += n
-			r.warn("%d calendar share(s) in %s not imported (invite-state mapping out of scope; re-share calendars after migration)", n, table)
+		row.typ = "calendar"
+		if typ != nil && *typ != "" {
+			row.typ = *typ
 		}
+		if access != nil {
+			row.access = *access
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+// importNCCalendarShares maps source calendar shares onto ncgo
+// calendar_shares. Only the unambiguous subset is imported: user principals
+// (groups/circles skipped), sharee present in the target, and a target
+// calendar that this run (or a previous one) actually imported — resolved
+// holds exactly those, so a share never attaches to a foreign calendar that
+// merely owns the same uri. Nextcloud's dav_shares carries no invite state —
+// every row is an effective share (Backend.php hardcodes status accepted),
+// and ncgo shares take effect immediately as well, so the mapping is
+// faithful. Idempotent: an existing share with the same access is skipped, a
+// differing access is updated (UpsertCalendarShare semantics).
+func importNCCalendarShares(ctx context.Context, src database.DB, us *users.SQLStore, cs *calendar.SQLStore, prefix string, dryRun bool, r *importReport, resolved map[int64]ncResolvedCalendar) error {
+	rows := readNCShareRows(ctx, src, prefix)
+	if len(rows) == 0 {
 		return nil
 	}
+	sc := r.entity("calendar shares")
+	cals, err := readNCCalendarRefs(ctx, src, prefix)
+	if err != nil {
+		return err
+	}
+	// Per-sharee existing shares, lazily loaded and kept in sync with what
+	// this run writes (dry-run included) so duplicate source rows and re-runs
+	// count exactly.
+	existing := map[int64]map[int64]string{}
+	var addressbookShares int
+	for _, row := range rows {
+		if row.typ != "calendar" {
+			if row.typ == "addressbook" {
+				addressbookShares++
+				r.entity("addressbook shares").skipped++
+			} else {
+				r.warn("calendar share %s:%d: unknown type %q, skipped", row.table, row.id, row.typ)
+				sc.skipped++
+			}
+			continue
+		}
+		importNCCalendarShare(ctx, row, cals, resolved, us, cs, existing, dryRun, r, sc)
+	}
+	if addressbookShares > 0 {
+		r.warn("%d addressbook share(s) not imported (ncgo has no addressbook sharing; re-share address books after migration)", addressbookShares)
+	}
 	return nil
+}
+
+// importNCCalendarShare maps one source share row; every skip category warns.
+func importNCCalendarShare(ctx context.Context, row ncCalShareRow, cals map[int64]ncCalendarRef, resolved map[int64]ncResolvedCalendar, us *users.SQLStore, cs *calendar.SQLStore, existing map[int64]map[int64]string, dryRun bool, r *importReport, sc *importCounts) {
+	shareeUID, ok := ncPrincipalUID(row.principal)
+	if !ok {
+		r.warn("calendar share %s:%d: principal %q is not a user principal, skipped", row.table, row.id, row.principal)
+		sc.skipped++
+		return
+	}
+	sharee, err := us.GetByUID(ctx, shareeUID)
+	switch {
+	case err == nil:
+	case errors.Is(err, users.ErrNotFound):
+		r.warn("calendar share %s:%d: sharee %s not in target, skipped", row.table, row.id, shareeUID)
+		sc.skipped++
+		return
+	default:
+		r.warn("calendar share %s:%d: lookup sharee %s: %v", row.table, row.id, shareeUID, err)
+		sc.failed++
+		return
+	}
+	if _, ok := cals[row.resource]; !ok {
+		r.warn("calendar share %s:%d: source calendar %d not found, skipped", row.table, row.id, row.resource)
+		sc.skipped++
+		return
+	}
+	target, ok := resolved[row.resource]
+	if !ok {
+		r.warn("calendar share %s:%d: calendar %s not imported, share skipped", row.table, row.id, ncCalendarLabel(cals, row.resource))
+		sc.skipped++
+		return
+	}
+	if target.ownerUID == shareeUID {
+		r.warn("calendar share %s:%d: %s is the calendar owner, self-share skipped", row.table, row.id, shareeUID)
+		sc.skipped++
+		return
+	}
+	var access string
+	switch row.access {
+	case ncAccessRead:
+		access = calendar.ShareAccessRead
+	case ncAccessReadWrite:
+		access = calendar.ShareAccessReadWrite
+	default:
+		r.warn("calendar share %s:%d: access %d not mappable (2=read-write, 3=read), skipped", row.table, row.id, row.access)
+		sc.skipped++
+		return
+	}
+	if target.targetID == 0 {
+		// Dry-run with the calendar only planned: no shares can exist yet.
+		sc.created++
+		return
+	}
+	byCal, loaded := existing[sharee.ID]
+	if !loaded {
+		byCal = map[int64]string{}
+		shared, err := cs.ListSharedCalendars(ctx, sharee.ID)
+		if err != nil {
+			r.warn("calendar share %s:%d: list shares of %s: %v", row.table, row.id, shareeUID, err)
+			sc.failed++
+			return
+		}
+		for _, s := range shared {
+			byCal[s.ID] = s.Access
+		}
+		existing[sharee.ID] = byCal
+	}
+	cur, found := byCal[target.targetID]
+	switch {
+	case found && cur == access:
+		sc.skipped++
+		return
+	case found && !dryRun:
+		if err := cs.UpsertCalendarShare(ctx, target.targetID, sharee.ID, access); err != nil {
+			r.warn("calendar share %s:%d: update failed: %v", row.table, row.id, err)
+			sc.failed++
+			return
+		}
+		sc.updated++
+	case found:
+		sc.updated++
+	case !dryRun:
+		if err := cs.UpsertCalendarShare(ctx, target.targetID, sharee.ID, access); err != nil {
+			r.warn("calendar share %s:%d: create failed: %v", row.table, row.id, err)
+			sc.failed++
+			return
+		}
+		sc.created++
+	default:
+		sc.created++
+	}
+	byCal[target.targetID] = access
+}
+
+// ncCalendarLabel renders source calendar id as owner/uri for warnings.
+func ncCalendarLabel(cals map[int64]ncCalendarRef, id int64) string {
+	ref := cals[id]
+	uid := ref.principal
+	if u, ok := ncPrincipalUID(ref.principal); ok {
+		uid = u
+	}
+	return uid + "/" + ref.uri
+}
+
+// ncCalendarRef is the owner+uri of one source calendar, used to resolve
+// share resourceids against the calendars this run (or a previous one)
+// imported.
+type ncCalendarRef struct {
+	principal string
+	uri       string
+}
+
+func readNCCalendarRefs(ctx context.Context, src database.DB, prefix string) (map[int64]ncCalendarRef, error) {
+	rows, err := src.Query(ctx, `SELECT id, principaluri, uri FROM `+prefix+`calendars ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("import dav: read source calendars for shares: %w", err)
+	}
+	defer rows.Close()
+	out := map[int64]ncCalendarRef{}
+	for rows.Next() {
+		var id int64
+		var ref ncCalendarRef
+		if err := rows.Scan(&id, &ref.principal, &ref.uri); err != nil {
+			return nil, fmt.Errorf("import dav: scan calendar for shares: %w", err)
+		}
+		out[id] = ref
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("import dav: read source calendars for shares: %w", err)
+	}
+	return out, nil
 }

@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -37,13 +40,19 @@ func newImportNextcloud() *cobra.Command {
 			"The import is phased; each subcommand imports one entity family and is\n" +
 			"idempotent and resumable (existing rows are skipped, so an interrupted\n" +
 			"run can simply be repeated):\n" +
-			"  users   users, groups, and group memberships\n" +
+			"  users   user accounts (with email and quota), groups, and memberships\n" +
 			"  files   user files from a Nextcloud data directory\n" +
 			"  shares  internal and public-link shares\n" +
-			"  dav     calendars, calendar objects, address books, and contacts\n\n" +
-			"Sessions and app passwords are NOT imported: Nextcloud authtokens are\n" +
-			"cryptographically bound to the source instance secret, so users must log\n" +
-			"in again and reissue app passwords after migrating.",
+			"  dav     calendars, calendar objects, calendar shares, address books,\n" +
+			"          and contacts\n\n" +
+			"Sessions are NOT imported: ncgo browser sessions are its own token\n" +
+			"family, so users must log in again. App passwords are not imported by\n" +
+			"this tool either, but ncgo deliberately hashes tokens exactly like\n" +
+			"Nextcloud (SHA-512 of token+instance secret): an operator who copies\n" +
+			"the source instance's config.php 'secret' into ncgo's instance.secret\n" +
+			"can carry oc_authtoken rows over by hand — see\n" +
+			"docs/adr/0071-import-calendar-shares-users-fields.md for the recipe\n" +
+			"and the caveats. Otherwise users reissue app passwords after migrating.",
 		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
 			switch database.Dialect(f.sourceDriver) {
 			case database.DialectMySQL, database.DialectPostgres, database.DialectSQLite:
@@ -175,6 +184,12 @@ func newImportNCUsers(f *importNCFlags) *cobra.Command {
 			"Source uids that do not satisfy ncgo's uid rules (non-empty, no whitespace,\n" +
 			"control characters, '/', or '\\\\') fall back to uid_lower; if neither is\n" +
 			"valid the user is skipped with a warning.\n\n" +
+			"Email and quota are mapped from <prefix>preferences (settings/primary_email,\n" +
+			"settings/email, files/quota) and — as an email fallback — the\n" +
+			"<prefix>accounts JSON blob. Quota values \"none\", \"default\", and empty map\n" +
+			"to no quota (ncgo has no instance default); human-readable sizes like\n" +
+			"\"5 GB\" or \"512 MB\" convert to bytes (1024-based, as Nextcloud computes\n" +
+			"them); unparseable values import without a quota plus a warning.\n\n" +
 			"Existing users, groups, and memberships in the target are skipped unchanged,\n" +
 			"so the import is idempotent and resumable. Writes are committed per entity.\n" +
 			"Sessions and app passwords are NOT imported (see the parent command help).",
@@ -241,6 +256,7 @@ func importNCUserRows(ctx context.Context, src database.DB, dst *users.SQLStore,
 	uc := r.entity("users")
 	mapped := map[string]string{}
 	planned := map[string]bool{}
+	extras := readNCUserExtras(ctx, src, prefix, r)
 	rows, err := src.Query(ctx, `SELECT uid, uid_lower, displayname, password FROM `+prefix+`users ORDER BY uid`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("import users: read source users: %w", err)
@@ -281,12 +297,25 @@ func importNCUserRows(ctx context.Context, src database.DB, dst *users.SQLStore,
 		if display != nil && *display != "" {
 			name = *display
 		}
+		var email string
+		var quota *int64
+		if ex, ok := extras[uid]; ok {
+			email = ex.email
+			if q, qok := parseNCQuota(ex.quotaRaw); qok {
+				quota = q
+			} else {
+				r.warn("user %s: quota %q not understood, imported without quota", target, ex.quotaRaw)
+			}
+			if ex.accountsBroken && ex.email == "" {
+				r.warn("user %s: accounts data not parseable, email not imported from it", target)
+			}
+		}
 		if dryRun {
 			uc.created++
 			planned[target] = true
 			continue
 		}
-		if err := dst.Create(ctx, &users.User{UID: target, DisplayName: name, PasswordHash: hash, Enabled: true}); err != nil {
+		if err := dst.Create(ctx, &users.User{UID: target, DisplayName: name, Email: email, PasswordHash: hash, QuotaBytes: quota, Enabled: true}); err != nil {
 			if errors.Is(err, users.ErrExists) {
 				uc.skipped++
 				continue
@@ -307,6 +336,161 @@ func importNCUserRows(ctx context.Context, src database.DB, dst *users.SQLStore,
 // format both PHP's password_hash and ncgo's Argon2id verifier parse.
 func isArgon2idPHC(hash string) bool {
 	return strings.HasPrefix(hash, "$argon2id$")
+}
+
+// ncUserExtras carries the email and quota of one source user, gathered from
+// <prefix>preferences and <prefix>accounts (oc_users itself has neither
+// column in any Nextcloud release).
+type ncUserExtras struct {
+	email          string // resolved: settings/primary_email > settings/email > oc_accounts
+	quotaRaw       string // raw files/quota preference value; "" when unset
+	accountsBroken bool   // oc_accounts.data held invalid JSON
+}
+
+// readNCUserExtras collects per-source-uid email and quota. oc_preferences
+// holds quota (appid files, key quota) and email (appid settings, keys
+// primary_email and email); oc_accounts.data (Nextcloud 13+) is a JSON blob
+// whose "email" property is the fallback. A missing table (very old sources)
+// degrades to one warning instead of failing the run.
+func readNCUserExtras(ctx context.Context, src database.DB, prefix string, r *importReport) map[string]*ncUserExtras {
+	extras := map[string]*ncUserExtras{}
+	extra := func(uid string) *ncUserExtras {
+		e, ok := extras[uid]
+		if !ok {
+			e = &ncUserExtras{}
+			extras[uid] = e
+		}
+		return e
+	}
+	rows, err := src.Query(ctx, `
+SELECT userid, configkey, configvalue FROM `+prefix+`preferences
+WHERE (appid = ? AND configkey = ?) OR (appid = ? AND (configkey = ? OR configkey = ?))
+ORDER BY userid`,
+		"files", "quota", "settings", "email", "primary_email")
+	if err != nil {
+		r.warn("read %spreferences: %v (user email/quota from preferences not imported)", prefix, err)
+	} else {
+		primary := map[string]string{}
+		for rows.Next() {
+			var uid, key string
+			var value *string
+			if err := rows.Scan(&uid, &key, &value); err != nil {
+				r.warn("scan %spreferences: %v", prefix, err)
+				continue
+			}
+			if value == nil {
+				continue
+			}
+			switch key {
+			case "quota":
+				extra(uid).quotaRaw = *value
+			case "email":
+				extra(uid).email = *value
+			case "primary_email":
+				primary[uid] = *value
+			}
+		}
+		if err := rows.Err(); err != nil {
+			r.warn("read %spreferences: %v", prefix, err)
+		}
+		rows.Close()
+		for uid, p := range primary {
+			if p != "" {
+				extra(uid).email = p
+			}
+		}
+	}
+	arow, err := src.Query(ctx, `SELECT uid, data FROM `+prefix+`accounts ORDER BY uid`)
+	if err != nil {
+		// oc_accounts exists since Nextcloud 13; older sources only have
+		// the preferences rows above.
+		r.warn("read %saccounts: %v (user email from accounts not imported)", prefix, err)
+		return extras
+	}
+	defer arow.Close()
+	for arow.Next() {
+		var uid, data string
+		if err := arow.Scan(&uid, &data); err != nil {
+			r.warn("scan %saccounts: %v", prefix, err)
+			continue
+		}
+		email, err := ncAccountEmail(data)
+		if err != nil {
+			extra(uid).accountsBroken = true
+			continue
+		}
+		if e := extra(uid); e.email == "" {
+			e.email = email
+		}
+	}
+	if err := arow.Err(); err != nil {
+		r.warn("read %saccounts: %v", prefix, err)
+	}
+	return extras
+}
+
+// ncAccountEmail extracts the email property value from an oc_accounts.data
+// JSON blob, shaped {"email": {"value": "...", "scope": "...", ...}, ...}.
+func ncAccountEmail(data string) (string, error) {
+	var props map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(data), &props); err != nil {
+		return "", fmt.Errorf("accounts data: %w", err)
+	}
+	raw, ok := props["email"]
+	if !ok {
+		return "", nil
+	}
+	var prop struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &prop); err != nil {
+		return "", fmt.Errorf("accounts email property: %w", err)
+	}
+	return prop.Value, nil
+}
+
+// parseNCQuota converts an oc_preferences files/quota value to bytes.
+// "none", "default", and "" all mean no explicit quota (nil); ncgo has no
+// instance default quota, so "default" maps to unlimited like "none". Sizes
+// follow Nextcloud's OC_Helper::computerFileSize: a number (bytes, float
+// allowed) with an optional 1024-based unit suffix (k/m/g/t/p with optional
+// trailing b, case-insensitive). ok=false marks an unparseable value; the
+// caller warns and imports the user without a quota.
+func parseNCQuota(raw string) (quota *int64, ok bool) {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	switch s {
+	case "", "none", "default":
+		return nil, true
+	}
+	mult := int64(1)
+	num := strings.TrimSuffix(s, "b")
+	if len(num) > 0 {
+		switch num[len(num)-1] {
+		case 'k':
+			mult = 1 << 10
+		case 'm':
+			mult = 1 << 20
+		case 'g':
+			mult = 1 << 30
+		case 't':
+			mult = 1 << 40
+		case 'p':
+			mult = 1 << 50
+		}
+		if mult != 1 {
+			num = num[:len(num)-1]
+		}
+	}
+	f, err := strconv.ParseFloat(strings.TrimSpace(num), 64)
+	if err != nil {
+		return nil, false
+	}
+	b := math.Round(f * float64(mult))
+	if math.IsNaN(b) || math.IsInf(b, 0) || b < 0 || b > math.MaxInt64 {
+		return nil, false
+	}
+	q := int64(b)
+	return &q, true
 }
 
 // importNCGroupRows imports <prefix>groups and returns the set of gids

@@ -63,7 +63,12 @@ sibling subcommands with minimal churn.
    must log in again and reissue app passwords after migrating. This is a
    deliberate deviation from the plan's full `import-nextcloud` list
    ("Users, groups, app passwords, sessions"), recorded here for the whole
-   4e series and stated in the command's long help.
+   4e series and stated in the command's long help. (Refined by ADR-0071:
+   the binding turned out to be a plain `sha512(token+secret)` hash that
+   ncgo mirrors exactly, so app passwords — not sessions — are importable
+   when the operator carries the secret over; the no-import-code decision
+   stands, with the carry-over recipe and a `tokens` follow-up recorded
+   there.)
 
 6. **Idempotent, resumable, per-entity commits.** Every write is checked
    against the target first: existing users/groups/memberships are skipped
@@ -110,9 +115,11 @@ sibling subcommands with minimal churn.
   login; all users must re-login (no session import) and reissue app
   passwords.
 - 4e2–4e4 reuse `importNCFlags`, `openSourceDB`, and `importReport`.
-- `oc_preferences` / `oc_accounts` (display-name metadata beyond
+- ~~`oc_preferences` / `oc_accounts` (display-name metadata beyond
   `oc_users.displayname`, email, quota) are out of scope for v1 of the
-  importer; email/quota follow-ups can extend the `users` subcommand.
+  importer; email/quota follow-ups can extend the `users` subcommand.~~
+  (**resolved by ADR-0071**: email and quota are mapped from
+  `oc_preferences`/`oc_accounts`.)
 
 ## Verification
 

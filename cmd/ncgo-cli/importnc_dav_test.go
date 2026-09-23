@@ -138,9 +138,25 @@ func importDAVSourceEnv(t *testing.T, prefix string) string {
 			t.Fatal(err)
 		}
 	}
-	for i := 1; i <= 2; i++ {
+	// Legacy calendarshares layout: one importable user share plus every skip
+	// category (group principal, unknown source calendar, sharee not in
+	// target, unimported calendar, unmappable access, self-share).
+	for _, s := range []struct {
+		id        int
+		calID     int
+		principal string
+		access    int
+	}{
+		{1, 1, "principals/users/bob", 3},   // read share, imported
+		{2, 1, "principals/groups/team", 3}, // group principal, skipped
+		{3, 99, "principals/users/bob", 3},  // unknown source calendar, skipped
+		{4, 1, "principals/users/carol", 2}, // sharee not in target, skipped
+		{5, 3, "principals/users/bob", 3},   // calendar not imported, skipped
+		{6, 2, "principals/users/bob", 1},   // access 1 (owner), skipped
+		{7, 1, "principals/users/alice", 3}, // self-share, skipped
+	} {
 		if _, err := db.Exec(ctx, `INSERT INTO `+prefix+`calendarshares (id, calendarid, principaluri, access)
-			VALUES (?, 1, 'principals/users/bob', 1)`, i); err != nil {
+			VALUES (?, ?, ?, ?)`, s.id, s.calID, s.principal, s.access); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -174,6 +190,7 @@ func TestImportNCDAV(t *testing.T) {
 	cfgPath := cliEnv(t)
 	dsn := importDAVSourceEnv(t, "oc_")
 	createTargetUser(t, cfgPath, "alice")
+	createTargetUser(t, cfgPath, "bob")
 
 	out, err := runCLI(t, "", importDAVArgs(cfgPath, dsn)...)
 	if err != nil {
@@ -184,7 +201,7 @@ func TestImportNCDAV(t *testing.T) {
 		"calendar objects: 3 created, 2 skipped (existing), 0 failed",
 		"addressbooks: 1 created, 1 skipped (existing), 0 failed",
 		"cards: 2 created, 2 skipped (existing), 0 failed",
-		"calendar shares: 0 created, 2 skipped (existing), 0 failed",
+		"calendar shares: 1 created, 6 skipped (existing), 0 failed",
 		"warning: calendar 3: owner ghost not in target (run 'import-nextcloud users' first), skipped with its objects",
 		`warning: calendar 4: principal "principals/groups/team" is not a user principal, skipped with its objects`,
 		"warning: calendar object 3 (empty.ics): empty calendardata, skipped",
@@ -192,7 +209,12 @@ func TestImportNCDAV(t *testing.T) {
 		"warning: card 3 (empty.vcf): empty carddata, skipped",
 		"warning: 4 calendar components list(s) not imported (ncgo has no components field)",
 		"warning: 1 transparent calendar flag(s) not imported (ncgo has no transparent field)",
-		"warning: 2 calendar share(s) in oc_calendarshares not imported (invite-state mapping out of scope; re-share calendars after migration)",
+		`warning: calendar share oc_calendarshares:2: principal "principals/groups/team" is not a user principal, skipped`,
+		"warning: calendar share oc_calendarshares:3: source calendar 99 not found, skipped",
+		"warning: calendar share oc_calendarshares:4: sharee carol not in target, skipped",
+		"warning: calendar share oc_calendarshares:5: calendar ghost/personal not imported, share skipped",
+		"warning: calendar share oc_calendarshares:6: access 1 not mappable (2=read-write, 3=read), skipped",
+		"warning: calendar share oc_calendarshares:7: alice is the calendar owner, self-share skipped",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
@@ -306,6 +328,21 @@ func TestImportNCDAV(t *testing.T) {
 		t.Errorf("cards = %d, want 2 (empty-data row skipped)", len(cards))
 	}
 
+	// The one importable share (alice/personal → bob, access 3 = read) is
+	// visible through the production shared-calendar read path.
+	bob, err := us.GetByUID(ctx, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, err := cs.ListSharedCalendars(ctx, bob.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shared) != 1 || shared[0].URI != "personal" ||
+		shared[0].Access != calendar.ShareAccessRead || shared[0].OwnerUID != "alice" {
+		t.Errorf("bob shared calendars = %+v, want alice/personal read", shared)
+	}
+
 	// Second run: fully idempotent, everything skipped, counts flat.
 	out, err = runCLI(t, "", importDAVArgs(cfgPath, dsn)...)
 	if err != nil {
@@ -316,6 +353,7 @@ func TestImportNCDAV(t *testing.T) {
 		"calendar objects: 0 created, 5 skipped (existing), 0 failed",
 		"addressbooks: 0 created, 2 skipped (existing), 0 failed",
 		"cards: 0 created, 4 skipped (existing), 0 failed",
+		"calendar shares: 0 created, 7 skipped (existing), 0 failed",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("second run output missing %q:\n%s", want, out)
@@ -326,6 +364,9 @@ func TestImportNCDAV(t *testing.T) {
 	}
 	if n := countRows(t, cfgPath, "addressbook_objects"); n != 2 {
 		t.Errorf("addressbook_objects after re-run = %d, want 2", n)
+	}
+	if n := countRows(t, cfgPath, "calendar_shares"); n != 1 {
+		t.Errorf("calendar_shares after re-run = %d, want 1", n)
 	}
 }
 
@@ -343,13 +384,14 @@ func TestImportNCDAVDryRun(t *testing.T) {
 		"calendar objects: 3 created, 2 skipped (existing), 0 failed",
 		"addressbooks: 1 created, 1 skipped (existing), 0 failed",
 		"cards: 2 created, 2 skipped (existing), 0 failed",
+		"calendar shares: 0 created, 7 skipped (existing), 0 failed",
 		"dry-run: no changes written",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("dry-run output missing %q:\n%s", want, out)
 		}
 	}
-	for _, table := range []string{"calendars", "calendar_objects", "addressbooks", "addressbook_objects"} {
+	for _, table := range []string{"calendars", "calendar_objects", "addressbooks", "addressbook_objects", "calendar_shares"} {
 		if n := countRows(t, cfgPath, table); n != 0 {
 			t.Errorf("dry-run must not write %s, got %d rows", table, n)
 		}

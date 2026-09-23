@@ -12,8 +12,8 @@ import (
 
 // importDAVEdgeSourceEnv builds a minimal DAV source exercising the
 // object-level skip categories (unparseable ICS, unsupported VJOURNAL, UID
-// conflict), an addressbook uri collision, and the newer-Nextcloud dav_shares
-// calendar-share table.
+// conflict), an addressbook uri collision, and the real-Nextcloud dav_shares
+// calendar-share table (type + resourceid columns).
 func importDAVEdgeSourceEnv(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -35,8 +35,8 @@ func importDAVEdgeSourceEnv(t *testing.T) string {
 			displayname TEXT, description TEXT, synctoken INTEGER)`,
 		`CREATE TABLE oc_cards (id INTEGER PRIMARY KEY, addressbookid INTEGER, uri TEXT,
 			carddata BLOB, lastmodified INTEGER, etag TEXT, size INTEGER, uid TEXT)`,
-		`CREATE TABLE oc_dav_shares (id INTEGER PRIMARY KEY, calendarid INTEGER,
-			principaluri TEXT, access INTEGER)`,
+		`CREATE TABLE oc_dav_shares (id INTEGER PRIMARY KEY, principaluri TEXT,
+			type TEXT, access INTEGER, resourceid INTEGER, publicuri TEXT)`,
 	} {
 		if _, err := db.Exec(ctx, stmt); err != nil {
 			t.Fatal(err)
@@ -90,8 +90,8 @@ func importDAVEdgeSourceEnv(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	if _, err := db.Exec(ctx, `INSERT INTO oc_dav_shares (id, calendarid, principaluri, access)
-		VALUES (1, 1, 'principals/users/bob', 1)`); err != nil {
+	if _, err := db.Exec(ctx, `INSERT INTO oc_dav_shares (id, principaluri, type, access, resourceid)
+		VALUES (1, 'principals/users/bob', 'calendar', 3, 1)`); err != nil {
 		t.Fatal(err)
 	}
 	return dsn
@@ -133,7 +133,7 @@ func TestImportNCDAVEdgeCases(t *testing.T) {
 		`warning: addressbook 1: uri "contacts" already exists for alice with different properties, skipped with its cards`,
 		"warning: card 3 (bad.vcf): not importable (contacts: invalid: want exactly one VCARD), skipped",
 		"warning: card 4 (dup.vcf): UID already used by another card, skipped",
-		"warning: 1 calendar share(s) in oc_dav_shares not imported (invite-state mapping out of scope; re-share calendars after migration)",
+		"warning: calendar share oc_dav_shares:1: sharee bob not in target, skipped",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)

@@ -102,8 +102,11 @@ recompute, and how to handle sync tokens.
    invite/accept state and group principals that have no clean v1 mapping.
    The importer counts whichever table exists and reports the rows as skipped
    with one warning ("re-share calendars after migration"); it never writes
-   `calendar_shares`. Follow-up: map accepted user shares to
-   `calendar_shares` rows.
+   `calendar_shares`. ~~Follow-up: map accepted user shares to
+   `calendar_shares` rows.~~ (**resolved by ADR-0071** — research showed
+   `dav_shares` carries no invite state at all, so the mapping is faithful
+   for the user-principal subset; this section's deferral is replaced by
+   the ADR-0071 mapping table.)
 
 7. **Idempotency keys.** A calendar/addressbook is skipped when owner+uri
    already exists in the target. If the existing collection's mapped
@@ -140,7 +143,10 @@ recompute, and how to handle sync tokens.
 - Cons: invite state (pending/accepted), group shares, and access-bit
   differences (Nextcloud's bitmask vs ncgo's read/read-write) make a partial
   mapping worse than none — sharees would see calendars they never accepted.
-  Deferred; counted warning instead.
+  ~~Deferred; counted warning instead.~~ (**resolved by ADR-0071**: the
+  invite-state premise was wrong for Nextcloud's actual schema —
+  `dav_shares` has no pending state — and the access values turned out to
+  be enum-like, not a bitmask; ADR-0071 imports the unambiguous subset.)
 
 ### Preserving Nextcloud etags verbatim
 - Pros: byte-level continuity of the ETag header.
