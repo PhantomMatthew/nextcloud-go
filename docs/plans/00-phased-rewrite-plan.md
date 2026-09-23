@@ -191,6 +191,34 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-23** — Phase 5c: database query spans (ADR-0075), resolving the
+  DB-spans follow-up ADR-0072 pinned. `database.WithTracing(inner, tp)`
+  decorates the DB interface — the single choke point every store hangs
+  off — chosen over driver-level otelsql (no contrib dependency beyond the
+  ADR-0072 approval, and the decorator sees the pre-Rebind `?`-placeholder
+  SQL, the static-per-call-site form) and over per-store wrapping (one wrap
+  at the source covers all stores by construction). `App.New` now builds
+  the TracerProvider immediately after `database.Open` and migrations (the
+  `instanceID` assignment moved ahead of it for the resource's
+  `service.instance.id`) and wraps the pool before any store is built, so
+  users, sessions, shares, DAV meta, jobs, appconfig, the plugin registry,
+  and the plugin host's DB access are all traced by the single wrap; a nil
+  provider returns the inner DB untouched, keeping disabled tracing exactly
+  zero overhead. Spans are SpanKindClient named by the uppercase first SQL
+  keyword (`SELECT`/`INSERT`/`BEGIN`/...; empty statement → `SQL`;
+  statement text never in the name) with `db.system`, `db.operation`, and
+  `db.statement` attributes (truncated at 4096 bytes, rune-safe); Exec
+  success adds `db.rows_affected`, Query end adds `db.rows_returned`.
+  Errors record an exception plus Error status, except QueryRow's
+  `ErrNoRows` — a normal not-found, mirroring the 4xx-is-not-Error stance.
+  Lifecycle ends every span exactly once (sync.Once): Query on Close or
+  iteration exhaustion, QueryRow at the first Scan (a never-Scanned Row is
+  a missing span, never wrong data), Exec/Begin/Commit/Rollback/Ping at
+  return, with in-transaction spans parented to BEGIN; Close stays
+  untraced. No new config — `otel_endpoint`/`otel_sample_ratio` govern (the
+  per-query span volume is why ratio < 1.0 exists for busy instances); the
+  CLI is deliberately untraced (short-lived process, no provider
+  lifecycle). ADR-0072's DB-spans bullet struck through as resolved.
 - **2026-09-23** — Phase 5b: server-encryption key rotation (ADR-0074),
   resolving the key-rotation follow-ups ADR-0052 and ADR-0070 pinned. The
   sealed-file header gains a format version: v2 is `NCGOENC2` + a 1-byte

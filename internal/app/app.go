@@ -121,6 +121,36 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 			return nil, err
 		}
 	}
+	// The instance id feeds the tracing resource below (and the storage
+	// prefixes further down), so it must exist before any store is built.
+	a.instanceID = cfg.Instance.ID
+	if a.instanceID == "" {
+		a.instanceID = "oc" + randomHex(logger, 5, "NCGO_INSTANCE_ID / instance.id")
+	}
+	// An empty endpoint means no provider at all: the global default stays
+	// the no-op provider and neither the middleware nor the plugin wrapper is
+	// installed (ADR-0072), so disabled tracing is exactly zero overhead.
+	if cfg.Observability.OTelEndpoint != "" {
+		tp, err := observability.NewTracerProvider(ctx, observability.TracingConfig{
+			Endpoint:       cfg.Observability.OTelEndpoint,
+			SampleRatio:    cfg.Observability.OTelSampleRatio,
+			ServiceVersion: version.String(),
+			InstanceID:     a.instanceID,
+		})
+		if err != nil {
+			if cerr := a.closeResources(ctx); cerr != nil {
+				return nil, errors.Join(err, cerr)
+			}
+			return nil, err
+		}
+		a.tracing = tp
+	}
+	// One wrap at the source traces every store built below and the plugin
+	// host's DB access alike (ADR-0075); with no provider the DB is untouched.
+	if a.tracing != nil {
+		db = database.WithTracing(db, a.tracing)
+		a.DB = db
+	}
 	a.hasher = auth.NewArgon2id(auth.Argon2idParams{
 		MemoryKB:    cfg.Auth.Argon2id.MemoryKB,
 		Iterations:  cfg.Auth.Argon2id.Iterations,
@@ -236,10 +266,6 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	if a.secret == "" {
 		a.secret = randomHex(logger, 32, "NCGO_SECRET / instance.secret")
 	}
-	a.instanceID = cfg.Instance.ID
-	if a.instanceID == "" {
-		a.instanceID = "oc" + randomHex(logger, 5, "NCGO_INSTANCE_ID / instance.id")
-	}
 	if cfg.Previews.Enabled {
 		a.previewGen = preview.NewGenerator(dav, st, "appdata_"+a.instanceID+"/previews", cfg.Previews.MaxDimension, logger)
 	}
@@ -255,24 +281,6 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	}
 	if cfg.Observability.MetricsEnabled {
 		a.metrics = observability.NewRegistry()
-	}
-	// An empty endpoint means no provider at all: the global default stays
-	// the no-op provider and neither the middleware nor the plugin wrapper is
-	// installed (ADR-0072), so disabled tracing is exactly zero overhead.
-	if cfg.Observability.OTelEndpoint != "" {
-		tp, err := observability.NewTracerProvider(ctx, observability.TracingConfig{
-			Endpoint:       cfg.Observability.OTelEndpoint,
-			SampleRatio:    cfg.Observability.OTelSampleRatio,
-			ServiceVersion: version.String(),
-			InstanceID:     a.instanceID,
-		})
-		if err != nil {
-			if cerr := a.closeResources(ctx); cerr != nil {
-				return nil, errors.Join(err, cerr)
-			}
-			return nil, err
-		}
-		a.tracing = tp
 	}
 	if cfg.Plugin.Enabled {
 		reg := plugins.NewRegistry(a.DB)

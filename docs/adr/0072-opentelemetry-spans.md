@@ -151,10 +151,10 @@ children of the request span with no extra plumbing (verified by test with
 
 ### What is deliberately not here
 
-- **DB query spans**: need a `database`-package-level hook (the DB interface
-  is used by every store); a separate increment must evaluate where the
-  hook sits and what statement-attribute policy is safe (SQL text is
-  high-cardinality and may carry literals).
+- ~~**DB query spans**: need a `database`-package-level hook (the DB
+  interface is used by every store); a separate increment must evaluate
+  where the hook sits and what statement-attribute policy is safe (SQL text
+  is high-cardinality and may carry literals).~~ (resolved by ADR-0075)
 - Metrics export via OTel: the Prometheus registry (ADR-0055) stays the
   metrics path.
 - CLI processes: server-only assembly.
