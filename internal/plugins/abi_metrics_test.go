@@ -68,6 +68,78 @@ func TestMetricsCapabilityDenialCounted(t *testing.T) {
 	}
 }
 
+func TestStorageBytesMetricsUserWrite(t *testing.T) {
+	f := newStorageFixture(t)
+	reg := observability.NewRegistry()
+	cfg := f.hostConfig()
+	cfg.Metrics = reg
+	h, buf := testHost(t, cfg)
+	installModuleCtx(t, aliceCtx(), h, storageManifest(nil, []string{"user"}),
+		wasmgen.StorageWriteProbeModule("user:/m.txt", "0123456789", 10))
+	if !strings.Contains(buf.String(), "spool-ok") {
+		t.Fatalf("log %q", buf.String())
+	}
+	out := renderMetrics(t, reg)
+	want := `ncgo_plugin_storage_bytes_total{op="write",plugin="com.example.probe",scope="user"} 10`
+	if !strings.Contains(out, want) {
+		t.Fatalf("missing user write series %q:\n%s", want, out)
+	}
+	// A write-only flow records no read series.
+	if strings.Contains(out, `op="read"`) {
+		t.Fatalf("unexpected read series:\n%s", out)
+	}
+}
+
+func TestStorageBytesMetricsSystemWrite(t *testing.T) {
+	f := newStorageFixture(t)
+	reg := observability.NewRegistry()
+	cfg := f.hostConfig()
+	cfg.Metrics = reg
+	h, buf := testHost(t, cfg)
+	installModuleCtx(t, aliceCtx(), h, storageManifest(nil, []string{"system"}),
+		wasmgen.StorageWriteProbeModule("system:/conf/app.json", "sys-bytes", 9))
+	if !strings.Contains(buf.String(), "spool-ok") {
+		t.Fatalf("log %q", buf.String())
+	}
+	out := renderMetrics(t, reg)
+	want := `ncgo_plugin_storage_bytes_total{op="write",plugin="com.example.probe",scope="system"} 9`
+	if !strings.Contains(out, want) {
+		t.Fatalf("missing system write series %q:\n%s", want, out)
+	}
+}
+
+func TestStorageBytesMetricsRead(t *testing.T) {
+	f := newStorageFixture(t)
+	f.mkdirAndWrite(t, "/docs", "/docs/a.txt", "read-content")
+	reg := observability.NewRegistry()
+	cfg := f.hostConfig()
+	cfg.Metrics = reg
+	h, _ := testHost(t, cfg)
+	installModuleCtx(t, aliceCtx(), h, storageManifest([]string{"user"}, nil),
+		wasmgen.StorageReadProbeModule("user:/docs/a.txt", "user:/docs"))
+	out := renderMetrics(t, reg)
+	want := `ncgo_plugin_storage_bytes_total{op="read",plugin="com.example.probe",scope="user"} 12`
+	if !strings.Contains(out, want) {
+		t.Fatalf("missing read series %q:\n%s", want, out)
+	}
+	if strings.Contains(out, `op="write"`) {
+		t.Fatalf("unexpected write series:\n%s", out)
+	}
+}
+
+func TestStorageBytesNilMetricsNoPanic(t *testing.T) {
+	// No registry: the full storage flow (mkdir + write commit + read) runs
+	// with the count points inert.
+	f := newStorageFixture(t)
+	h, buf := testHost(t, f.hostConfig())
+	installModuleCtx(t, aliceCtx(), h, storageManifest([]string{"user"}, []string{"user"}),
+		wasmgen.StorageMkdirModule("user:/nm", "user:/nm/note.txt", "no-metrics"))
+	out := buf.String()
+	if !strings.Contains(out, "mkdir-ok") || !strings.Contains(out, "no-metrics") {
+		t.Fatalf("nil-metrics storage flow failed: %q", out)
+	}
+}
+
 func TestMetricsNilRegistryPassthrough(t *testing.T) {
 	// No registry: the export helper must register functions unwrapped, so a
 	// full module run works and there is nothing to render.

@@ -38,6 +38,65 @@ func TestRegistryCounterRender(t *testing.T) {
 	}
 }
 
+func TestRegistryAddCounter(t *testing.T) {
+	r := NewRegistry()
+	labels := func() []Label {
+		return []Label{
+			{Name: "plugin", Value: "com.example.probe"},
+			{Name: "op", Value: "write"},
+			{Name: "scope", Value: "user"},
+		}
+	}
+	r.AddCounter(MetricPluginStorageBytesTotal, 14, labels()...)
+	r.AddCounter(MetricPluginStorageBytesTotal, 6, labels()...)
+	// Non-positive deltas are no-ops: no series movement, no new series.
+	r.AddCounter(MetricPluginStorageBytesTotal, 0, labels()...)
+	r.AddCounter(MetricPluginStorageBytesTotal, -3, labels()...)
+	r.AddCounter(MetricPluginStorageBytesTotal, 0,
+		Label{Name: "plugin", Value: "p"}, Label{Name: "op", Value: "read"}, Label{Name: "scope", Value: "system"})
+	out := render(t, r)
+	want := `ncgo_plugin_storage_bytes_total{op="write",plugin="com.example.probe",scope="user"} 20`
+	if !strings.Contains(out, want) {
+		t.Fatalf("render missing accumulated series %q:\n%s", want, out)
+	}
+	if strings.Contains(out, `scope="system"`) {
+		t.Fatalf("zero delta must not create a series:\n%s", out)
+	}
+}
+
+func TestRegistryAddCounterConcurrent(t *testing.T) {
+	r := NewRegistry()
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				r.AddCounter(MetricPluginStorageBytesTotal, 3,
+					Label{Name: "plugin", Value: "p"},
+					Label{Name: "op", Value: "read"},
+					Label{Name: "scope", Value: "user"})
+			}
+		}()
+	}
+	wg.Wait()
+	out := render(t, r)
+	want := `ncgo_plugin_storage_bytes_total{op="read",plugin="p",scope="user"} 12000`
+	if !strings.Contains(out, want) {
+		t.Fatalf("missing %q:\n%s", want, out)
+	}
+}
+
+func TestRegistryAddCounterPanicsOnMisuse(t *testing.T) {
+	r := NewRegistry()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic on unregistered family")
+		}
+	}()
+	r.AddCounter("nope_total", 1, Label{Name: "plugin", Value: "p"})
+}
+
 func TestRegistryLabelCanonicalization(t *testing.T) {
 	r := NewRegistry()
 	r.IncCounter(MetricPluginHostCallsTotal,
@@ -103,6 +162,7 @@ func TestRegistryZeroSeriesRender(t *testing.T) {
 		{MetricPluginHostCallsTotal, "counter"},
 		{MetricPluginHostCallDurationSeconds, "histogram"},
 		{MetricPluginCapabilityDenialsTotal, "counter"},
+		{MetricPluginStorageBytesTotal, "counter"},
 	} {
 		if !strings.Contains(out, "# HELP "+fam.name+" ") {
 			t.Errorf("zero-series render missing HELP for %s:\n%s", fam.name, out)

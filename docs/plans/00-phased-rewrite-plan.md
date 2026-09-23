@@ -191,6 +191,25 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-23** — Phase 4u: plugin `storage_mkdir` host function +
+  per-plugin storage byte metrics (ADR-0067), closing two ADR-0042/0061
+  storage follow-ups. `storage_mkdir(path_ptr, path_len) -> i32` creates a
+  single directory (no implicit parents) under the scope's write grant: user
+  scope through the DAV (filecache-consistent, incoming-mount aware), system
+  scope through the plugin's system tree; existing target → -5, missing
+  parent → -4 (backed by `localfs.Mkdir` now mapping that case to the
+  `storage.ErrNotFound` sentinel like `Stat`/`Open` do), and directories
+  carry no bytes so no quota applies. The §12 metrics surface gains
+  `ncgo_plugin_storage_bytes_total{plugin, op, scope}` (op ∈ read|write,
+  scope ∈ user|system) via a new `Registry.AddCounter` (non-positive deltas
+  no-op), counted where bytes actually move: per stream read (the open
+  handle now carries its scope) and per successful stream-close commit —
+  quota-refused commits count nothing; nil registry stays zero overhead and
+  the plugin id follows the 4n/4o nil-guard. Chunked/resumable plugin writes
+  are conditionally deferred (spool covers 1 GiB under quota; plugin state
+  is small; the DAV chunked machinery serves human clients; a plugin-side
+  chunked ABI is not worth its surface in v1 — reopens on a concrete plugin
+  need). ABI stays `ncgo-abi/1` per §9; pluginsdk gains `StorageMkdir`.
 - **2026-09-23** — Phase 4t: plugin outbound request body streaming
   (ADR-0066), closing the ADR-0043 ">1 MiB uploads" follow-up. Three new
   host functions stage a body in a temp-file spool —

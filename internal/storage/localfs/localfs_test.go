@@ -117,6 +117,9 @@ func TestLocalFSErrors(t *testing.T) {
 	if err := fs.Mkdir(ctx, "d"); !errors.Is(err, storage.ErrExists) {
 		t.Fatalf("mkdir exists = %v", err)
 	}
+	if err := fs.Mkdir(ctx, "missing/child"); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("mkdir parent missing = %v, want ErrNotFound", err)
+	}
 	w, err := fs.Create(ctx, "d/a.txt", 0)
 	if err != nil {
 		t.Fatal(err)

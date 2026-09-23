@@ -261,6 +261,10 @@ ncgo.storage_stream_close(handle: i32) -> i32
 ncgo.storage_delete(path_ptr, path_len) -> i32
 ncgo.storage_list(path_ptr, path_len, out_ptr, out_max) -> i32
 ncgo.storage_rename(src_ptr, src_len, dst_ptr, dst_len) -> i32
+ncgo.storage_mkdir(path_ptr, path_len) -> i32
+  Creates a single directory; no implicit parents. Existing target -> -5,
+  missing parent -> -4. Directories carry no bytes: no quota applies
+  (ADR-0061/0067).
 
   Capability: storage.read / storage.write
   All paths relative to user's root (or system root if "system" granted)
@@ -624,6 +628,13 @@ Each host call emits:
 - Prometheus histogram `ncgo_plugin_host_call_duration_seconds{plugin, function}`
 - OTel span (sampled) `plugin.host_call` with attrs: plugin.id, abi.version, function, error
 
+Storage transfers additionally emit (ADR-0067):
+
+- Prometheus counter `ncgo_plugin_storage_bytes_total{plugin, op, scope}` with
+  `op ∈ read|write`, `scope ∈ user|system`, counted where the bytes actually
+  move — per stream read and per successful stream-close commit (quota-refused
+  commits count nothing)
+
 Per-plugin admin dashboard (Phase 4 UI):
 
 - Request count, error rate, p50/p95/p99 latency
@@ -676,6 +687,28 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-23** — Phase 4u implemented `storage_mkdir` and per-plugin
+  storage byte metrics (ADR-0067), closing two ADR-0042/0061 follow-ups. The
+  new §6.3 host function `storage_mkdir(path_ptr, path_len) -> i32` creates a
+  single directory (no implicit parents) under the write capability of its
+  scope: user scope commits through the DAV (filecache-consistent,
+  incoming-mount aware), system scope through the plugin's system tree; an
+  existing target answers -5, a missing parent -4 (`localfs.Mkdir` now maps
+  that to the `storage.ErrNotFound` sentinel like `Stat`/`Open` do), and
+  directories carry no bytes so no quota applies. The §12 observability
+  surface gains `ncgo_plugin_storage_bytes_total{plugin, op, scope}` (op ∈
+  read|write, scope ∈ user|system) backed by a new `Registry.AddCounter`
+  (non-positive deltas are no-ops); count points sit where bytes actually
+  move — per `storage_stream_read` read (the open handle now carries its
+  scope) and per successful stream-close commit (user spool / system write;
+  quota-refused commits count nothing) — with the 4i nil-registry zero
+  overhead and the 4n/4o plugin-id nil-guard. The third storage follow-up,
+  chunked/resumable plugin writes, is conditionally deferred: the spool
+  covers single files to 1 GiB under quota, plugin state is small, the DAV
+  chunked machinery serves human large-upload clients, and a plugin-side
+  upload_init/chunk/finish ABI costs more surface than v1 has use for — it
+  reopens on a concrete plugin need. Adding functions within `ncgo-abi/1` is
+  permitted by §9. The pluginsdk gains `StorageMkdir`.
 - **2026-09-23** — Phase 4t implemented outbound request body streaming
   (ADR-0066), closing the ADR-0043 ">1 MiB uploads" follow-up. Three new
   §6.3 host functions stage a body in a temp-file spool:

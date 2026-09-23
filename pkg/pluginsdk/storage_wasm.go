@@ -33,6 +33,9 @@ func hostStorageList(pathPtr, pathLen, outPtr, outMax int32) int32
 //go:wasmimport ncgo storage_rename
 func hostStorageRename(srcPtr, srcLen, dstPtr, dstLen int32) int32
 
+//go:wasmimport ncgo storage_mkdir
+func hostStorageMkdir(pathPtr, pathLen int32) int32
+
 // storageOutCap bounds stat/list responses decoded through the bindings.
 const storageOutCap = 1 << 20
 
@@ -141,4 +144,11 @@ func StorageRename(src, dst string) int32 {
 	srcPtr, srcLen := bytesPtr([]byte(src))
 	dstPtr, dstLen := bytesPtr([]byte(dst))
 	return hostStorageRename(srcPtr, srcLen, dstPtr, dstLen)
+}
+
+// StorageMkdir creates a single directory at path; parents must already
+// exist.
+func StorageMkdir(path string) int32 {
+	pathPtr, pathLen := bytesPtr([]byte(path))
+	return hostStorageMkdir(pathPtr, pathLen)
 }

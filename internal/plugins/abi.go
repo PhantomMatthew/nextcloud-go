@@ -59,6 +59,7 @@ func (h *Host) registerHostModule(ctx context.Context) error {
 	export("storage_delete", h.storageDelete)
 	export("storage_list", h.storageList)
 	export("storage_rename", h.storageRename)
+	export("storage_mkdir", h.storageMkdir)
 
 	export("http_request", h.httpRequest)
 	export("http_response_status", h.httpResponseStatus)

@@ -156,7 +156,7 @@ func TestStorageUserQuotaOverwriteDelta(t *testing.T) {
 func TestStorageSystemQuotaCreateRejected(t *testing.T) {
 	f := newStorageFixture(t)
 	// 8 bytes already in the plugin tree; quota 10.
-	f.systemWrite(t, "com.example.probe", "conf/app.json", "12345678")
+	f.systemWrite(t, "conf/app.json", "12345678")
 	cfg := f.hostConfig()
 	cfg.PluginSystemQuotaBytes = 10
 	h, buf := testHost(t, cfg)
@@ -202,7 +202,7 @@ func TestStorageSystemQuotaOverwriteDelta(t *testing.T) {
 	f := newStorageFixture(t)
 	// Existing 8-byte target; quota 10: a 6-byte overwrite costs only the
 	// delta (8 - 8 + 6 = 6 <= 10).
-	f.systemWrite(t, "com.example.probe", "conf/app.json", "12345678")
+	f.systemWrite(t, "conf/app.json", "12345678")
 	cfg := f.hostConfig()
 	cfg.PluginSystemQuotaBytes = 10
 	h, buf := testHost(t, cfg)

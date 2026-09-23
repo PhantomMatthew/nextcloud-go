@@ -71,6 +71,26 @@ func (h *Host) wrapHostMetrics(name string, fn any) any {
 	}).Interface()
 }
 
+// countStorageBytes records n actually-transferred storage bytes in the §12
+// bytes family, labeled by calling plugin, operation, and scope. A nil
+// registry is zero overhead (the 4i posture), and the plugin id follows the
+// 4n/4o nil-guard: no call context means an empty id, which is still
+// counted.
+func (h *Host) countStorageBytes(ctx context.Context, op, scope string, n int64) {
+	reg := h.cfg.Metrics
+	if reg == nil {
+		return
+	}
+	var plugin string
+	if info := callFromCtx(ctx); info.plugin != nil {
+		plugin = info.plugin.manifest.Plugin.ID
+	}
+	reg.AddCounter(observability.MetricPluginStorageBytesTotal, n,
+		observability.Label{Name: "plugin", Value: plugin},
+		observability.Label{Name: "op", Value: op},
+		observability.Label{Name: "scope", Value: scope})
+}
+
 // assertHostFuncShape panics at registration time unless fn is
 // func(context.Context, api.Module, ...int32|int64) (int32|int64) — the only
 // shapes registerHostModule exports.

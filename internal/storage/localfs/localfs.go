@@ -237,7 +237,10 @@ func (f *FS) Mkdir(_ context.Context, p string) error {
 		if errors.Is(err, fs.ErrExist) {
 			return storage.ErrExists
 		}
-		return err
+		// A missing parent reports the sentinel like Stat/Open do, so
+		// callers (DAV, plugin ABI) can map it instead of seeing a raw
+		// *PathError.
+		return mapExistErr(err)
 	}
 	return nil
 }

@@ -41,3 +41,6 @@ func StorageDelete(string) int32 { return ErrCodeUnsupported }
 
 // StorageRename is a no-op on non-wasm builds.
 func StorageRename(string, string) int32 { return ErrCodeUnsupported }
+
+// StorageMkdir is a no-op on non-wasm builds.
+func StorageMkdir(string) int32 { return ErrCodeUnsupported }

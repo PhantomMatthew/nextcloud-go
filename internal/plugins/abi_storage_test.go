@@ -63,10 +63,11 @@ func (f *storageFixture) mkdirAndWrite(t *testing.T, dir, path, content string) 
 	}
 }
 
-// systemWrite places content directly in the system backend for plugin id.
-func (f *storageFixture) systemWrite(t *testing.T, pluginID, rel, content string) {
+// systemWrite places content directly in the system backend under the probe
+// plugin's tree.
+func (f *storageFixture) systemWrite(t *testing.T, rel, content string) {
 	t.Helper()
-	full := testSystemPrefix + "/" + pluginID + "/" + rel
+	full := testSystemPrefix + "/com.example.probe/" + rel
 	wc, err := f.sysSt.Create(context.Background(), full, int64(len(content)))
 	if err != nil {
 		t.Fatal(err)
@@ -273,7 +274,7 @@ func TestStorageUserReadOnly(t *testing.T) {
 
 func TestStorageSystemReadOnly(t *testing.T) {
 	f := newStorageFixture(t)
-	f.systemWrite(t, "com.example.probe", "conf/app.json", "cfg")
+	f.systemWrite(t, "conf/app.json", "cfg")
 	h, buf := testHost(t, f.hostConfig())
 	m := storageManifest([]string{"system"}, nil)
 	installModuleCtx(t, aliceCtx(), h, m, wasmgen.StorageReadProbeModule("system:/conf/app.json", "system:/conf"))
@@ -287,6 +288,110 @@ func TestStorageSystemReadOnly(t *testing.T) {
 	}
 	if !strings.Contains(out, "cfg") {
 		t.Fatalf("read content missing: %q", out)
+	}
+}
+
+func TestStorageMkdirUserRoundTrip(t *testing.T) {
+	f := newStorageFixture(t)
+	ctx := context.Background()
+	h, buf := testHost(t, f.hostConfig())
+	installModuleCtx(t, aliceCtx(), h, storageManifest([]string{"user"}, []string{"user"}),
+		wasmgen.StorageMkdirModule("user:/mk", "user:/mk/note.txt", "mkdir-content"))
+	out := buf.String()
+	if !strings.Contains(out, "mkdir-ok") || !strings.Contains(out, "mkdir-content") {
+		t.Fatalf("mkdir round trip failed: %q", out)
+	}
+	// The directory is filecache-consistent and on disk; the file landed in it.
+	ent, err := f.dav.Stat(ctx, "alice", "/mk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ent.IsDir {
+		t.Fatalf("/mk entry = %+v, want directory", ent)
+	}
+	if info, err := os.Stat(filepath.Join(f.root, "alice", "mk")); err != nil || !info.IsDir() {
+		t.Fatalf("/mk on disk: %v", err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(f.root, "alice", "mk", "note.txt")); err != nil || string(raw) != "mkdir-content" {
+		t.Fatalf("note.txt = %q, %v", raw, err)
+	}
+}
+
+func TestStorageMkdirSystemRoundTrip(t *testing.T) {
+	f := newStorageFixture(t)
+	// Backends create no implicit parents for Mkdir: the plugin tree root
+	// must already exist (a first storage_create would materialize it).
+	f.systemWrite(t, "seed/seed.txt", "seed")
+	h, buf := testHost(t, f.hostConfig())
+	installModuleCtx(t, aliceCtx(), h, storageManifest([]string{"system"}, []string{"system"}),
+		wasmgen.StorageMkdirModule("system:/mk", "system:/mk/note.txt", "sys-mkdir"))
+	out := buf.String()
+	if !strings.Contains(out, "mkdir-ok") || !strings.Contains(out, "sys-mkdir") {
+		t.Fatalf("system mkdir round trip failed: %q", out)
+	}
+	pluginDir := filepath.Join(f.sysRoot, testSystemPrefix, "com.example.probe")
+	if info, err := os.Stat(filepath.Join(pluginDir, "mk")); err != nil || !info.IsDir() {
+		t.Fatalf("system:/mk on disk: %v", err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(pluginDir, "mk", "note.txt")); err != nil || string(raw) != "sys-mkdir" {
+		t.Fatalf("note.txt = %q, %v", raw, err)
+	}
+}
+
+func TestStorageMkdirDuplicate(t *testing.T) {
+	f := newStorageFixture(t)
+	f.mkdirAndWrite(t, "/docs", "/docs/a.txt", "hello")
+	f.systemWrite(t, "conf/app.json", "cfg")
+	h, buf := testHost(t, f.hostConfig())
+	m := storageManifest(nil, []string{"user", "system"})
+	installModuleCtx(t, aliceCtx(), h, m, wasmgen.StorageOpProbeModule("mkdir", "user:/docs", "", ErrCodeAlreadyExists))
+	installModuleCtx(t, aliceCtx(), h, m, wasmgen.StorageOpProbeModule("mkdir", "system:/conf", "", ErrCodeAlreadyExists))
+	// The scope root itself already exists.
+	installModuleCtx(t, aliceCtx(), h, m, wasmgen.StorageOpProbeModule("mkdir", "user:/", "", ErrCodeAlreadyExists))
+	if n := strings.Count(buf.String(), "probe-ok"); n != 3 {
+		t.Fatalf("probe-ok count = %d, want 3: %q", n, buf.String())
+	}
+}
+
+func TestStorageMkdirDenied(t *testing.T) {
+	f := newStorageFixture(t)
+	h, buf := testHost(t, f.hostConfig())
+	// No grants at all, then a read-only grant: mkdir needs storage.write.
+	installModuleCtx(t, aliceCtx(), h, probeManifest(), wasmgen.StorageOpProbeModule("mkdir", "user:/x", "", ErrCodePermissionDenied))
+	installModuleCtx(t, aliceCtx(), h, probeManifest(), wasmgen.StorageOpProbeModule("mkdir", "system:/x", "", ErrCodePermissionDenied))
+	m := storageManifest([]string{"user", "system"}, nil)
+	installModuleCtx(t, aliceCtx(), h, m, wasmgen.StorageOpProbeModule("mkdir", "user:/x", "", ErrCodePermissionDenied))
+	installModuleCtx(t, aliceCtx(), h, m, wasmgen.StorageOpProbeModule("mkdir", "system:/x", "", ErrCodePermissionDenied))
+	if n := strings.Count(buf.String(), "probe-ok"); n != 4 {
+		t.Fatalf("probe-ok count = %d, want 4: %q", n, buf.String())
+	}
+}
+
+func TestStorageMkdirParentMissing(t *testing.T) {
+	f := newStorageFixture(t)
+	f.systemWrite(t, "seed/seed.txt", "seed")
+	h, buf := testHost(t, f.hostConfig())
+	m := storageManifest(nil, []string{"user", "system"})
+	// Single-level semantics: no implicit parents in either scope.
+	installModuleCtx(t, aliceCtx(), h, m, wasmgen.StorageOpProbeModule("mkdir", "user:/missing/child", "", ErrCodeNotFound))
+	installModuleCtx(t, aliceCtx(), h, m, wasmgen.StorageOpProbeModule("mkdir", "system:/missing/child", "", ErrCodeNotFound))
+	if n := strings.Count(buf.String(), "probe-ok"); n != 2 {
+		t.Fatalf("probe-ok count = %d, want 2: %q", n, buf.String())
+	}
+}
+
+func TestStorageMkdirNilDeps(t *testing.T) {
+	f := newStorageFixture(t)
+	m := storageManifest(nil, []string{"user", "system"})
+	h, buf := testHost(t, HostConfig{SystemStorage: f.sysSt, SystemPrefix: testSystemPrefix})
+	installModuleCtx(t, aliceCtx(), h, m, wasmgen.StorageOpProbeModule("mkdir", "user:/x", "", ErrCodeUnavailable))
+	h2, buf2 := testHost(t, HostConfig{Files: f.dav})
+	installModuleCtx(t, aliceCtx(), h2, m, wasmgen.StorageOpProbeModule("mkdir", "system:/x", "", ErrCodeUnavailable))
+	if !strings.Contains(buf.String(), "probe-ok") {
+		t.Fatalf("nil Files log %q", buf.String())
+	}
+	if !strings.Contains(buf2.String(), "probe-ok") {
+		t.Fatalf("nil SystemStorage log %q", buf2.String())
 	}
 }
 

@@ -133,6 +133,18 @@ func entryFromDAV(e *webdav.Entry, fallback string) storageEntry {
 	return storageEntry{Path: p, Size: e.Size, MtimeUnixMS: e.ModTime.UnixMilli(), IsDir: e.IsDir}
 }
 
+// storageReadStream tags a storage_open stream with its scope so
+// storageStreamRead can attribute the bytes to the right metric series
+// without re-resolving the path.
+type storageReadStream struct {
+	rc     io.ReadCloser
+	system bool
+}
+
+func (s *storageReadStream) Read(p []byte) (int, error) { return s.rc.Read(p) }
+
+func (s *storageReadStream) Close() error { return s.rc.Close() }
+
 // storageWriteSpool buffers a user-scope create in a temp file; the content
 // is committed through the DAV (filecache-consistent, one-shot) when the
 // stream closes. Close without commit discards the spool.
@@ -185,6 +197,7 @@ func (h *Host) commitSpool(ctx context.Context, s *storageWriteSpool) (code int3
 	if _, _, err := h.cfg.Files.Write(commitCtx, s.user, s.path, s.f, nil); err != nil {
 		return h.mapStorageErr(ctx, "stream_close", err)
 	}
+	h.countStorageBytes(ctx, "write", "user", s.written)
 	return pluginsdk.ErrCodeOK
 }
 
@@ -234,6 +247,7 @@ func (h *Host) commitSystemWrite(ctx context.Context, w *systemQuotaWriter) int3
 		h.warnStorageQuota(ctx, "system", w.full, quota, w.tree, w.written)
 		return pluginsdk.ErrCodeQuotaExceeded
 	}
+	h.countStorageBytes(ctx, "write", "system", w.written)
 	return pluginsdk.ErrCodeOK
 }
 
@@ -286,7 +300,7 @@ func (h *Host) storageOpen(ctx context.Context, mod api.Module, pathPtr, pathLen
 		_ = rc.Close()
 		return packI64(pluginsdk.ErrCodeInvalidArgument, 0)
 	}
-	handle, err := tabs.add(handleStream, rc)
+	handle, err := tabs.add(handleStream, &storageReadStream{rc: rc, system: t.system})
 	if err != nil {
 		_ = rc.Close()
 		return packI64(pluginsdk.ErrCodeUnavailable, 0)
@@ -354,7 +368,7 @@ func (h *Host) storageCreate(ctx context.Context, mod api.Module, pathPtr, pathL
 	return packI64(pluginsdk.ErrCodeOK, handle)
 }
 
-func (h *Host) storageStreamRead(_ context.Context, mod api.Module, handle, bufPtr, bufMax int32) int32 {
+func (h *Host) storageStreamRead(ctx context.Context, mod api.Module, handle, bufPtr, bufMax int32) int32 {
 	tabs := h.handlesFor(mod)
 	if tabs == nil {
 		return pluginsdk.ErrCodeInvalidArgument
@@ -363,7 +377,7 @@ func (h *Host) storageStreamRead(_ context.Context, mod api.Module, handle, bufP
 	if !ok {
 		return pluginsdk.ErrCodeNotFound
 	}
-	rc, ok := v.(io.ReadCloser)
+	rs, ok := v.(*storageReadStream)
 	if !ok {
 		return pluginsdk.ErrCodeInvalidArgument
 	}
@@ -374,8 +388,13 @@ func (h *Host) storageStreamRead(_ context.Context, mod api.Module, handle, bufP
 		return pluginsdk.ErrCodeOK
 	}
 	buf := make([]byte, bufMax)
-	n, err := rc.Read(buf)
+	n, err := rs.Read(buf)
 	if n > 0 {
+		scope := "user"
+		if rs.system {
+			scope = "system"
+		}
+		h.countStorageBytes(ctx, "read", scope, int64(n))
 		return writeBytes(mod, bufPtr, bufMax, buf[:n])
 	}
 	if errors.Is(err, io.EOF) {
@@ -524,6 +543,27 @@ func (h *Host) storageRename(ctx context.Context, mod api.Module, srcPtr, srcLen
 	}
 	if err != nil {
 		return h.mapStorageErr(ctx, "rename", err)
+	}
+	return pluginsdk.ErrCodeOK
+}
+
+// storageMkdir creates one directory (no implicit parents). The user scope
+// goes through the DAV (filecache-consistent, incoming-mount aware), the
+// system scope through the plugin's system tree. Directories carry no
+// bytes, so neither the user nor the system quota (ADR-0061) applies.
+func (h *Host) storageMkdir(ctx context.Context, mod api.Module, pathPtr, pathLen int32) int32 {
+	t, code := h.resolveStorage(ctx, mod, pathPtr, pathLen, true)
+	if code != pluginsdk.ErrCodeOK {
+		return code
+	}
+	var err error
+	if t.system {
+		err = h.cfg.SystemStorage.Mkdir(ctx, t.full)
+	} else {
+		_, err = h.cfg.Files.Mkdir(ctx, t.user, t.path)
+	}
+	if err != nil {
+		return h.mapStorageErr(ctx, "mkdir", err)
 	}
 	return pluginsdk.ErrCodeOK
 }

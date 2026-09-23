@@ -1905,7 +1905,7 @@ func StorageReadProbeModule(path, listPath string) []byte {
 
 // StorageOpProbeModule runs one write-class storage op on install and logs
 // "probe-ok" when it returns want. op is "create" (packed high-32 code),
-// "delete" (path), or "rename" (path → dst).
+// "delete" (path), "rename" (path → dst), or "mkdir" (path).
 func StorageOpProbeModule(op, path, dst string, want int32) []byte {
 	s := guestSpec{
 		data: [][]byte{[]byte(path), []byte(dst), []byte("probe-ok")},
@@ -1934,6 +1934,12 @@ func StorageOpProbeModule(op, path, dst string, want int32) []byte {
 		call = append(call, i32c(i32n(len(path)))...)
 		call = append(call, i32c(offs[1])...)
 		call = append(call, i32c(i32n(len(dst)))...)
+		call = append(call, opCall, 0x01)
+	case "mkdir":
+		s.imports = []imp{{"log", tLog}, {"storage_mkdir", tOutMax}}
+		offs := s.dataOffsets()
+		call = i32c(offs[0])
+		call = append(call, i32c(i32n(len(path)))...)
 		call = append(call, opCall, 0x01)
 	default:
 		return nil
@@ -2035,6 +2041,88 @@ func StorageWriteCloseProbeModule(path, content string, wantClose int32) []byte 
 	expr = append(expr, i32c(0)...)
 	s.onInstall = expr
 	s.onInstallLocals = 1
+	s.onInstallLocals64 = 1
+	return s.build()
+}
+
+// StorageMkdirModule runs a mkdir round trip on install: storage_mkdir(dir),
+// create+write+close a file inside the new directory, open+read it back, and
+// log the content plus "mkdir-ok". Markers only appear when every step
+// answers as expected.
+func StorageMkdirModule(dir, filePath, content string) []byte {
+	const (
+		outBuf = 8192
+		outMax = 4096
+	)
+	s := guestSpec{
+		imports: []imp{
+			{"log", tLog},                    // 0
+			{"storage_mkdir", tOutMax},       // 1
+			{"storage_create", tCreateI64},   // 2
+			{"storage_stream_write", tLog},   // 3
+			{"storage_stream_close", tAlloc}, // 4
+			{"storage_open", tTwoI32I64},     // 5
+			{"storage_stream_read", tLog},    // 6
+		},
+		data: [][]byte{[]byte(dir), []byte(filePath), []byte(content), []byte("mkdir-ok")},
+	}
+	offs := s.dataOffsets()
+	dirOff, dirLen := offs[0], i32n(len(dir))
+	fileOff, fileLen := offs[1], i32n(len(filePath))
+	contentOff, contentLen := offs[2], i32n(len(content))
+
+	packedOK := func() []byte {
+		e := []byte{opLocalGet, 0x02}
+		e = append(e, i64c(32)...)
+		return append(e, opI64ShrU, opI32WrapI64, opI32Eqz)
+	}
+
+	// locals: 0 = handle (i32), 1 = n (i32), 2 = packed (i64)
+	expr := make([]byte, 0, 128)
+	// 1. mkdir(dir); everything else hangs off its success.
+	expr = append(expr, i32c(dirOff)...)
+	expr = append(expr, i32c(dirLen)...)
+	expr = append(expr, opCall, 0x01, opI32Eqz, opIf, blockVoid)
+	// 2. create + write + close (commit) the file inside the new directory.
+	expr = append(expr, i32c(fileOff)...)
+	expr = append(expr, i32c(fileLen)...)
+	expr = append(expr, i64c(-1)...)
+	expr = append(expr, opCall, 0x02, opLocalSet, 0x02)
+	expr = append(expr, packedOK()...)
+	expr = append(expr, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x02, opI32WrapI64, opLocalSet, 0x00)
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i32c(contentOff)...)
+	expr = append(expr, i32c(contentLen)...)
+	expr = append(expr, opCall, 0x03, opDrop)                   // stream_write
+	expr = append(expr, opLocalGet, 0x00, opCall, 0x04, opDrop) // close (commit)
+	expr = append(expr, opEnd)
+	// 3. open + read back; log the content and "mkdir-ok", then close.
+	expr = append(expr, i32c(fileOff)...)
+	expr = append(expr, i32c(fileLen)...)
+	expr = append(expr, opCall, 0x05, opLocalSet, 0x02)
+	expr = append(expr, packedOK()...)
+	expr = append(expr, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x02, opI32WrapI64, opLocalSet, 0x00)
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i32c(outBuf)...)
+	expr = append(expr, i32c(outMax)...)
+	expr = append(expr, opCall, 0x06, opLocalSet, 0x01) // n = stream_read
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opI32GtS, opIf, blockVoid)
+	expr = append(expr, i32c(1)...)
+	expr = append(expr, i32c(outBuf)...)
+	expr = append(expr, opLocalGet, 0x01, opCall, 0x00, opDrop) // log content
+	expr = append(expr, logCall(offs[3], i32n(len("mkdir-ok")))...)
+	expr = append(expr, opDrop)
+	expr = append(expr, opEnd)
+	expr = append(expr, opLocalGet, 0x00, opCall, 0x04, opDrop) // close read stream
+	expr = append(expr, opEnd)
+	expr = append(expr, opEnd) // mkdir if
+	expr = append(expr, i32c(0)...)
+	s.onInstall = expr
+	s.onInstallLocals = 2
 	s.onInstallLocals64 = 1
 	return s.build()
 }

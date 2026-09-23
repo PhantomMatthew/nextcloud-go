@@ -16,8 +16,8 @@ import (
 
 // Metric family names registered by NewRegistry. Label cardinality is
 // deliberately bounded: plugin and function come from the fixed ABI surface,
-// and result is a small classified set (see ClassifyResult) — never a raw
-// error code.
+// result is a small classified set (see ClassifyResult) — never a raw error
+// code — and op/scope are two-value enumerations.
 const (
 	// MetricPluginHostCallsTotal counts ABI host calls by plugin, function,
 	// and result class.
@@ -28,6 +28,11 @@ const (
 	// MetricPluginCapabilityDenialsTotal counts host calls rejected for a
 	// missing capability grant (a security signal).
 	MetricPluginCapabilityDenialsTotal = "ncgo_plugin_capability_denials_total"
+	// MetricPluginStorageBytesTotal counts storage bytes transferred through
+	// the storage_* ABI by plugin, operation (read|write), and scope
+	// (user|system). Counted where the bytes actually move: stream reads and
+	// successful stream-close commits.
+	MetricPluginStorageBytesTotal = "ncgo_plugin_storage_bytes_total"
 )
 
 // histogramBuckets are the fixed latency bucket upper bounds (seconds) used
@@ -87,6 +92,8 @@ func NewRegistry() *Registry {
 		"Per-plugin ABI host call latency in seconds.", "plugin", "function")
 	r.RegisterCounter(MetricPluginCapabilityDenialsTotal,
 		"Per-plugin ABI host calls denied for a missing capability grant.", "plugin", "function")
+	r.RegisterCounter(MetricPluginStorageBytesTotal,
+		"Per-plugin storage bytes transferred through the storage ABI by operation and scope.", "plugin", "op", "scope")
 	return r
 }
 
@@ -159,6 +166,16 @@ func (f *family) canonical(labels []Label) ([]Label, string) {
 
 // IncCounter increments a counter series by one, creating it on first use.
 func (r *Registry) IncCounter(name string, labels ...Label) {
+	r.AddCounter(name, 1, labels...)
+}
+
+// AddCounter adds delta to a counter series, creating it on first use.
+// Non-positive deltas are no-ops: counters are monotonic, and a zero-byte
+// transfer must not create an empty series.
+func (r *Registry) AddCounter(name string, delta int64, labels ...Label) {
+	if delta <= 0 {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	f := r.families[name]
@@ -171,7 +188,7 @@ func (r *Registry) IncCounter(name string, labels ...Label) {
 		s = &counterSeries{labels: canonical}
 		f.counters[key] = s
 	}
-	s.value++
+	s.value += uint64(delta)
 }
 
 // ObserveHistogram records one observation (seconds) in a histogram series,
