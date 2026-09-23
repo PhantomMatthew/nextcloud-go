@@ -32,6 +32,39 @@ on_install = "ncgo_on_install"
 	}
 }
 
+func TestParseManifestRequestBodyStream(t *testing.T) {
+	raw := `
+[plugin]
+id = "com.example.hello"
+abi = "ncgo-abi/1"
+[runtime]
+request_body_stream = true
+[entry_points]
+module = "hello.wasm"
+`
+	m, err := ParseManifest(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.Runtime.RequestBodyStream {
+		t.Fatal("request_body_stream = true not parsed")
+	}
+	plain := `
+[plugin]
+id = "com.example.hello"
+abi = "ncgo-abi/1"
+[entry_points]
+module = "hello.wasm"
+`
+	m, err = ParseManifest(strings.NewReader(plain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Runtime.RequestBodyStream {
+		t.Fatal("request_body_stream must default to false")
+	}
+}
+
 func TestParseManifestDefaultInstanceModel(t *testing.T) {
 	raw := `
 [plugin]

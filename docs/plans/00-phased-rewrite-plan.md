@@ -191,6 +191,23 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-23** — Phase 4s: plugin route request body streaming
+  (ADR-0065), closing the ADR-0041 `body_handle` follow-up as a manifest
+  opt-in. Plugins with `runtime.request_body_stream = true` receive the
+  specced §7 request map (`body_handle`, no inline `body_bytes`): dispatch
+  wraps `req.Body` as a handle on the instance's `handleStream` table
+  (sharing the §8 64-stream budget) before `ncgo_on_request` runs, and the
+  guest pulls the body via the two new host functions
+  `request_body_read`/`request_body_close` (mirroring
+  `http_response_body_read`/`http_response_close`: -11 above the 1 MiB
+  `buf_max`, -4 missing, -2 foreign type). The 1 MiB inline cap — and its
+  413 — no longer applies to opt-in plugins; non-opt-in plugins are
+  byte-identical to 4c3. Leftover handles are dropped by the instance
+  handle-table cleanup (the wrapper's Close is a no-op; `req.Body` stays
+  owned by net/http). ABI stays `ncgo-abi/1` per §9 (new functions within a
+  major); pluginsdk gains `RequestBodyRead`/`RequestBodyClose` and a
+  `BodyHandle` field on `HTTPRequest`. Outbound streaming (>1 MiB
+  `http_request` uploads) remains a follow-up.
 - **2026-09-22** — Phase 4r: requesttoken + CSRF validation + SPA browser
   login (ADR-0064), completing two ADR-0054 follow-ups. Per-session CSRF
   tokens are derived statelessly as

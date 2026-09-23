@@ -325,6 +325,26 @@ ncgo.ocs_register(method_ptr, method_len, path_ptr, path_len,
   Capability: ocs.register
 ```
 
+#### Route request body (streaming, opt-in)
+
+```
+ncgo.request_body_read(handle, buf_ptr, buf_max) -> i32
+ncgo.request_body_close(handle: i32) -> i32
+```
+
+These pull the inbound route request body behind the §7 `body_handle` and
+mirror `http_response_body_read`/`http_response_close` semantics:
+`request_body_read` returns the byte count (>0), 0 at EOF, or a negative
+error code; `buf_max` above the host payload cap (1 MiB) fails with -11
+(`ErrTooLarge`). `request_body_close` releases the handle early; reading a
+closed handle answers -4 (`ErrNotFound`), and a handle of any other type
+answers -2 (`ErrInvalidArgument`). Only plugins with
+`runtime.request_body_stream = true` receive a `body_handle` (§7); the body
+is the plugin's own inbound request, so no capability gates these functions.
+The handle shares the §8 stream budget (64 per instance) and, if never
+closed, is released by handle-table cleanup when the instance is released —
+the body itself remains owned by the host's HTTP server throughout.
+
 #### WebDAV property registration (on_install)
 
 ```
@@ -376,6 +396,16 @@ ncgo_on_event(topic_ptr, topic_len, payload_ptr, payload_len) -> i32
 // WebDAV property getter/setter (names match those given to webdav_register_prop)
 <plugin-defined>(resource_path_ptr, len) -> i64           // returns value MessagePack or err
 ```
+
+The `body_handle` request map is **opt-in**: it is sent only to plugins with
+`runtime.request_body_stream = true` in the manifest, and the body is pulled
+via `ncgo.request_body_read`/`ncgo.request_body_close` (§6.3). Without the
+opt-in the map carries the body inline instead —
+`{ method, path, headers, query, body_bytes }` with `body_bytes` capped at
+1 MiB (the host answers 413 above without invoking the plugin) — which keeps
+pre-existing guests byte-compatible. Once `ncgo_on_request` has returned, the
+response streaming phase begins and the guest must not read the body any
+longer.
 
 ## 8. Sandboxing & Resource Limits
 
@@ -614,6 +644,26 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-23** — Phase 4s implemented the §7 `body_handle` request map as
+  a manifest opt-in (ADR-0065): plugins with
+  `runtime.request_body_stream = true` no longer have their route request
+  body pre-read; dispatch wraps `req.Body` as a stream handle on the
+  instance's `handleStream` table (sharing the §8 64-stream budget) and the
+  map carries `{method, path, headers, query, body_handle}` with no inline
+  `body_bytes`, so the 1 MiB inline cap (and its 413) does not apply. The
+  new §6.3 host functions `request_body_read`/`request_body_close` mirror
+  `http_response_body_read`/`http_response_close` (bytes read >0, 0 at EOF,
+  -11 above the 1 MiB `buf_max`, -4 missing handle, -2 foreign handle type);
+  they are always granted — the body is the plugin's own inbound request.
+  The handle is registered before `ncgo_on_request` runs, may be closed
+  early by the guest, and is otherwise dropped by handle-table cleanup when
+  the instance is released; `req.Body` itself stays owned by net/http (the
+  handle's Close is a no-op, never a double close). Plugins without the
+  opt-in get byte-identical legacy behavior (inline `body_bytes`, 413 above
+  1 MiB). Adding functions within `ncgo-abi/1` is permitted by §9. The
+  pluginsdk gains `RequestBodyRead`/`RequestBodyClose` and a `BodyHandle`
+  field on `HTTPRequest`. Outbound streaming (>1 MiB `http_request`
+  uploads) remains a follow-up.
 - **2026-09-22** — Phase 4q2 closed the hot-reload × cache-cleanup
   interaction (ADR-0063): the reconciler purges a plugin's `plugin:<id>:`
   cache keys when a stop is an uninstall (registry row gone), and keeps them
@@ -904,7 +954,9 @@ Full ABI implementation is the bulk of Phase 4.
   at boot on the app router — plain routes behind the DAV auth chain, OCS
   endpoints under both `/ocs/v1.php` and `/ocs/v2.php` with JSON-body
   envelope wrapping. **Spec deviations:** the §7 request map carries
-  `body_bytes` inline (≤ 1 MiB, 413 above) instead of `body_handle`, and
+  `body_bytes` inline (≤ 1 MiB, 413 above) unless the plugin opts into the
+  specced `body_handle` map via `runtime.request_body_stream` (opt-in added
+  in Phase 4s, see the 2026-09-23 entry), and
   `ncgo_response_header_at` lines use the `"Name: Value"` format (host
   splits on the first `": "`, ignores plugin Content-Length).
 - **2026-09-22** — Phase 4c2 implemented events (ADR-0040): §6

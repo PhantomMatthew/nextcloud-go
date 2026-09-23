@@ -46,6 +46,7 @@ func TestModulesCompile(t *testing.T) {
 		{"route-fail", RouteFailModule(-7)},
 		{"route-trap", RouteTrapModule()},
 		{"route-no-response", RouteNoResponseModule()},
+		{"request-body", RequestBodyModule()},
 		{"storage", StorageModule("user:/d/a.txt", "user:/d/b.txt", "user:/d", "hello", "system:/x", -3)},
 		{"storage-stat-probe", StorageStatProbeModule("user:/a", -3)},
 		{"storage-open-loop", StorageOpenLoopModule("user:/a", 65, -12)},

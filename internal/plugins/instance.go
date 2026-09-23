@@ -81,6 +81,15 @@ func (t *handleTable) get(id int32, kind handleKind) (any, bool) {
 	return e.val, true
 }
 
+// getAny returns the raw entry for id regardless of kind, for host functions
+// that must distinguish "no such id" from "id of another handle type".
+func (t *handleTable) getAny(id int32) (handleEntry, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	e, ok := t.items[id]
+	return e, ok
+}
+
 func (t *handleTable) remove(id int32, kind handleKind) (any, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

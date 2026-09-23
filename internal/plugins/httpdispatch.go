@@ -249,9 +249,20 @@ func (p *Plugin) logRequest(req *http.Request, msg string, err error) {
 		slog.String("error", err.Error()))
 }
 
+// requestHeaders flattens multi-value headers with ", " joins (RFC 9110
+// list semantics) for the request map.
+func requestHeaders(req *http.Request) map[string]string {
+	headers := make(map[string]string, len(req.Header))
+	for k, vs := range req.Header {
+		headers[k] = strings.Join(vs, ", ")
+	}
+	return headers
+}
+
 // packRequest reads the body (capped at maxPayloadArg) and marshals the
-// request as a MessagePack map. Deviation from spec §7: the body travels
-// inline as body_bytes instead of a body_handle.
+// request as a MessagePack map with the body inline as body_bytes. It is the
+// map shape for plugins without runtime.request_body_stream; the opt-in spec
+// §7 shape with body_handle is built by packRequestStream.
 func packRequest(req *http.Request) ([]byte, error) {
 	var body []byte
 	if req.Body != nil {
@@ -264,16 +275,44 @@ func packRequest(req *http.Request) ([]byte, error) {
 		}
 		body = b
 	}
-	headers := make(map[string]string, len(req.Header))
-	for k, vs := range req.Header {
-		headers[k] = strings.Join(vs, ", ")
-	}
 	payload, err := msgpack.Marshal(map[string]any{
 		"method":     req.Method,
 		"path":       req.URL.Path,
 		"query":      req.URL.RawQuery,
-		"headers":    headers,
+		"headers":    requestHeaders(req),
 		"body_bytes": body,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("plugins: marshal request: %w", err)
+	}
+	return payload, nil
+}
+
+// packRequestStream marshals the opt-in spec §7 request map: the body is not
+// pre-read; it is wrapped as a requestBodyHandle on the instance's
+// stream-handle table and referenced as body_handle (the guest pulls it via
+// request_body_read), so the 1 MiB inline cap does not apply. The handle is
+// in the table before on_request runs; once on_request has returned the
+// response streaming phase begins and the guest should not read the body any
+// longer — a handle it never closed is dropped by the instance's
+// handle-table cleanup on release.
+func packRequestStream(req *http.Request, inst *instance) ([]byte, error) {
+	body := req.Body
+	if body == nil {
+		body = http.NoBody
+	}
+	handle, err := inst.handles.add(handleStream, &requestBodyHandle{body: body})
+	if err != nil {
+		return nil, fmt.Errorf("plugins: request body handle: %w", err)
+	}
+	payload, err := msgpack.Marshal(map[string]any{
+		"method":  req.Method,
+		"path":    req.URL.Path,
+		"query":   req.URL.RawQuery,
+		"headers": requestHeaders(req),
+		// int (not int32) so the value gets msgpack's compact fixint
+		// encoding for the small handle ids guests actually see.
+		"body_handle": int(handle),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("plugins: marshal request: %w", err)
@@ -302,10 +341,17 @@ type pendingResponse struct {
 // beginRequest packs the request, invokes the plugin's on_request entry
 // point (alloc/write/call/free like deliverEvent), and reads the response
 // status and headers. The body is streamed later on the same instance.
+// Plugins opted into runtime.request_body_stream get the spec §7 body_handle
+// map (packRequestStream); others get the inline body_bytes map.
 func (p *Plugin) beginRequest(req *http.Request) (*pendingResponse, error) {
-	payload, err := packRequest(req)
-	if err != nil {
-		return nil, err
+	streamBody := p.manifest.Runtime.RequestBodyStream
+	var payload []byte
+	if !streamBody {
+		var err error
+		payload, err = packRequest(req)
+		if err != nil {
+			return nil, err
+		}
 	}
 	cc := CallContext{
 		RequestID: httpx.RequestIDFromContext(req.Context()),
@@ -329,6 +375,14 @@ func (p *Plugin) beginRequest(req *http.Request) (*pendingResponse, error) {
 			release(broken)
 			cancel()
 		},
+	}
+	if streamBody {
+		var err error
+		payload, err = packRequestStream(req, inst)
+		if err != nil {
+			pr.release(false)
+			return nil, err
+		}
 	}
 
 	entry := p.manifest.EntryPoints.OnRequest

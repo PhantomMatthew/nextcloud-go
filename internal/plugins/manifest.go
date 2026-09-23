@@ -104,13 +104,17 @@ type PluginSection struct {
 	License     string `toml:"license"`
 }
 
-// RuntimeSection is resource and instance policy.
+// RuntimeSection is resource and instance policy. RequestBodyStream opts the
+// plugin into the spec §7 request map: the body arrives as a stream handle
+// (body_handle, pulled via request_body_read) instead of inline body_bytes,
+// lifting the 1 MiB inline cap; unset keeps the legacy inline map.
 type RuntimeSection struct {
-	InstanceModel string `toml:"instance_model"`
-	PoolSize      int    `toml:"pool_size"`
-	MemoryLimitMB int    `toml:"memory_limit_mb"`
-	CPUTimeoutMS  int    `toml:"cpu_timeout_ms"`
-	FuelPerCall   uint64 `toml:"fuel_per_call"`
+	InstanceModel     string `toml:"instance_model"`
+	PoolSize          int    `toml:"pool_size"`
+	MemoryLimitMB     int    `toml:"memory_limit_mb"`
+	CPUTimeoutMS      int    `toml:"cpu_timeout_ms"`
+	FuelPerCall       uint64 `toml:"fuel_per_call"`
+	RequestBodyStream bool   `toml:"request_body_stream"`
 }
 
 // EntryPointsSection names exported WASM functions.

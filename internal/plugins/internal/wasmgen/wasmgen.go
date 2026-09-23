@@ -1,6 +1,8 @@
 // Package wasmgen builds minimal WASM binaries for plugin host tests.
 package wasmgen
 
+import "encoding/binary"
+
 const (
 	i32           = 0x7f
 	i64           = 0x7e
@@ -13,6 +15,10 @@ const (
 	opI32Eq       = 0x46
 	opI64Eq       = 0x51
 	opI64Load     = 0x29
+	opI32Load     = 0x28
+	opI32Store    = 0x36
+	opI32DivU     = 0x6e
+	opI32RemU     = 0x70
 	opLocalGet    = 0x20
 	opLocalSet    = 0x21
 	opGlobalGet   = 0x23
@@ -1190,6 +1196,241 @@ func RouteNoResponseModule() []byte {
 	onRequest := routeRequestExpr()
 	onRequest = append(onRequest, i64c(1)...)
 	s.extras = append(s.extras, extraFn{name: "ncgo_on_request", typ: tTwoI32I64, expr: onRequest})
+	return s.build()
+}
+
+// RequestBodyModule builds an opt-in request-body-stream probe (spec §7
+// body_handle). ncgo_on_request scans the packed request map for the
+// "\xabbody_handle" fixstr key — a substring probe, not a full MessagePack
+// walk; the key is unique in the §7 map — decodes the small positive integer
+// handle after it (fixint, uint8, or uint16), drains the handle via
+// request_body_read (64 KiB reads) counting bytes and capturing the first
+// 256, closes it, and prepares the JSON response
+// {"mode":"handle","bytes":N,"head":"<captured>"} which the ncgo_response_*
+// exports serve. A request map without body_handle (legacy inline body_bytes
+// dispatch) yields {"error":"no body_handle"} instead, so a test can tell
+// the two map shapes apart.
+func RequestBodyModule() []byte {
+	const (
+		headCap   = 256
+		allocJSON = 512
+	)
+	key := []byte("\xabbody_handle")
+	keyLo := int64(binary.LittleEndian.Uint64(key[:8])) //nolint:gosec // G115: bit pattern
+	keyHi := int32(binary.LittleEndian.Uint32(key[8:])) //nolint:gosec // G115: bit pattern
+
+	s := guestSpec{
+		imports: []imp{
+			{"request_body_read", tLog},    // 0
+			{"request_body_close", tAlloc}, // 1
+		},
+		counter:   true,
+		onInstall: i32c(0),
+		data: [][]byte{
+			make([]byte, 16), // state: bodyPtr, bodyLen (+0/+4)
+			[]byte(`{"mode":"handle","bytes":`),
+			[]byte(`,"head":"`),
+			[]byte(`"}`),
+			[]byte(`{"error":"no body_handle"}`),
+		},
+	}
+	offs := s.dataOffsets()
+	stateOff := offs[0]
+	prefixOff, prefixLen := offs[1], i32n(len(s.data[1]))
+	midOff, midLen := offs[2], i32n(len(s.data[2]))
+	tailOff, tailLen := offs[3], i32n(len(s.data[3]))
+	errOff, errLen := offs[4], i32n(len(s.data[4]))
+	allocIdx := uint32(len(s.imports)) + 1 //nolint:gosec // G115: test modules have few imports
+
+	// on_request params: 0=reqPtr 1=reqLen
+	// locals: 2=i 3=found 4=handle 5=n 6=total 7=scratch 8=head 9=headN
+	//         10=bodyPtr 11=pos 12=t/memcpyIdx 13=digits
+	expr := make([]byte, 0, 512)
+	// Reset the response read offset (global 1).
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opGlobalSet, 0x01)
+	// found = -1; i = 0
+	expr = append(expr, i32c(-1)...)
+	expr = append(expr, opLocalSet, 0x03)
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opLocalSet, 0x02)
+	// Scan [reqPtr, reqPtr+reqLen) for the key, matched as 8+4-byte LE
+	// constants.
+	expr = append(expr, opBlock, blockVoid, opLoop, blockVoid)
+	expr = append(expr, opLocalGet, 0x02)
+	expr = append(expr, i32c(12)...)
+	expr = append(expr, opI32Add, opLocalGet, 0x01, opI32GtU, opBrIf, 0x01) // i+12 > reqLen → done
+	expr = append(expr, opLocalGet, 0x00, opLocalGet, 0x02, opI32Add, opI64Load, 0x00, 0x00)
+	expr = append(expr, i64c(keyLo)...)
+	expr = append(expr, opI64Eq)
+	expr = append(expr, opLocalGet, 0x00, opLocalGet, 0x02, opI32Add, opI32Load, 0x00, 0x08)
+	expr = append(expr, i32c(keyHi)...)
+	expr = append(expr, opI32Eq, opI32And, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x02, opLocalSet, 0x03, opBr, 0x02) // found = i → done
+	expr = append(expr, opEnd)
+	expr = append(expr, opLocalGet, 0x02)
+	expr = append(expr, i32c(1)...)
+	expr = append(expr, opI32Add, opLocalSet, 0x02, opBr, 0x00)
+	expr = append(expr, opEnd, opEnd)
+	// No key: static error body.
+	expr = append(expr, opLocalGet, 0x03)
+	expr = append(expr, i32c(-1)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, i32c(stateOff)...)
+	expr = append(expr, i32c(errOff)...)
+	expr = append(expr, opI32Store, 0x00, 0x00)
+	expr = append(expr, i32c(stateOff)...)
+	expr = append(expr, i32c(errLen)...)
+	expr = append(expr, opI32Store, 0x00, 0x04)
+	expr = append(expr, opElse)
+	// Handle value after the key: fixint, 0xcc uint8, or 0xcd uint16;
+	// anything else leaves handle = -1 so the reads fail loudly.
+	expr = append(expr, i32c(-1)...)
+	expr = append(expr, opLocalSet, 0x04)
+	expr = append(expr, opLocalGet, 0x00, opLocalGet, 0x03, opI32Add) // pos = reqPtr+found+12
+	expr = append(expr, i32c(12)...)
+	expr = append(expr, opI32Add, opLocalSet, 0x05)
+	expr = append(expr, opLocalGet, 0x05, opI32Load8U, 0x00, 0x00)
+	expr = append(expr, i32c(0x80)...)
+	expr = append(expr, opI32LtU, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x05, opI32Load8U, 0x00, 0x00, opLocalSet, 0x04)
+	expr = append(expr, opElse)
+	expr = append(expr, opLocalGet, 0x05, opI32Load8U, 0x00, 0x00)
+	expr = append(expr, i32c(0xcc)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x05, opI32Load8U, 0x00, 0x01, opLocalSet, 0x04)
+	expr = append(expr, opElse)
+	expr = append(expr, opLocalGet, 0x05, opI32Load8U, 0x00, 0x00)
+	expr = append(expr, i32c(0xcd)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x05, opI32Load8U, 0x00, 0x01)
+	expr = append(expr, i32c(8)...)
+	expr = append(expr, opI32Shl)
+	expr = append(expr, opLocalGet, 0x05, opI32Load8U, 0x00, 0x02, opI32Add, opLocalSet, 0x04)
+	expr = append(expr, opEnd, opEnd, opEnd)
+	// scratch = alloc(65536); head = alloc(headCap); total = 0; headN = 0
+	expr = append(expr, i32c(65536)...)
+	expr = append(expr, opCall)
+	expr = append(expr, u32(allocIdx)...)
+	expr = append(expr, opLocalSet, 0x07)
+	expr = append(expr, i32c(headCap)...)
+	expr = append(expr, opCall)
+	expr = append(expr, u32(allocIdx)...)
+	expr = append(expr, opLocalSet, 0x08)
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opLocalSet, 0x06)
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opLocalSet, 0x09)
+	// Drain loop: n = request_body_read(handle, scratch, 65536) until n <= 0.
+	expr = append(expr, opBlock, blockVoid, opLoop, blockVoid)
+	expr = append(expr, opLocalGet, 0x04, opLocalGet, 0x07)
+	expr = append(expr, i32c(65536)...)
+	expr = append(expr, opCall, 0x00, opLocalSet, 0x05)
+	expr = append(expr, opLocalGet, 0x05)
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opI32GtS, opI32Eqz, opBrIf, 0x01)
+	// First chunk: headN = min(n, headCap); memcpy(head, scratch, headN).
+	expr = append(expr, opLocalGet, 0x06, opI32Eqz, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x05)
+	expr = append(expr, i32c(headCap)...)
+	expr = append(expr, opLocalGet, 0x05)
+	expr = append(expr, i32c(headCap)...)
+	expr = append(expr, opI32LtU, opSelect, opLocalSet, 0x09)
+	expr = append(expr, memcpy([]byte{opLocalGet, 0x08}, []byte{opLocalGet, 0x07}, []byte{opLocalGet, 0x09}, 12)...)
+	expr = append(expr, opEnd)
+	expr = append(expr, opLocalGet, 0x06, opLocalGet, 0x05, opI32Add, opLocalSet, 0x06)
+	expr = append(expr, opBr, 0x00)
+	expr = append(expr, opEnd, opEnd)
+	expr = append(expr, opLocalGet, 0x04, opCall, 0x01, opDrop) // request_body_close
+	// Build the JSON body: bodyPtr = alloc(allocJSON); pos = bodyPtr.
+	expr = append(expr, i32c(allocJSON)...)
+	expr = append(expr, opCall)
+	expr = append(expr, u32(allocIdx)...)
+	expr = append(expr, opLocalSet, 0x0a)
+	expr = append(expr, opLocalGet, 0x0a, opLocalSet, 0x0b)
+	expr = append(expr, memcpy([]byte{opLocalGet, 0x0b}, i32c(prefixOff), i32c(prefixLen), 12)...)
+	expr = append(expr, opLocalGet, 0x0b)
+	expr = append(expr, i32c(prefixLen)...)
+	expr = append(expr, opI32Add, opLocalSet, 0x0b)
+	// Decimal-render total at pos: count digits (t = total, d = digits).
+	expr = append(expr, opLocalGet, 0x06, opLocalSet, 0x0c)
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opLocalSet, 0x0d)
+	expr = append(expr, opBlock, blockVoid, opLoop, blockVoid)
+	expr = append(expr, opLocalGet, 0x0d)
+	expr = append(expr, i32c(1)...)
+	expr = append(expr, opI32Add, opLocalSet, 0x0d)
+	expr = append(expr, opLocalGet, 0x0c)
+	expr = append(expr, i32c(10)...)
+	expr = append(expr, opI32DivU, opLocalSet, 0x0c)
+	expr = append(expr, opLocalGet, 0x0c, opBrIf, 0x00)
+	expr = append(expr, opEnd, opEnd)
+	// Fill digits backwards (i = d).
+	expr = append(expr, opLocalGet, 0x0d, opLocalSet, 0x02)
+	expr = append(expr, opBlock, blockVoid, opLoop, blockVoid)
+	expr = append(expr, opLocalGet, 0x02)
+	expr = append(expr, i32c(1)...)
+	expr = append(expr, opI32Sub, opLocalSet, 0x02)
+	expr = append(expr, opLocalGet, 0x0b, opLocalGet, 0x02, opI32Add)
+	expr = append(expr, i32c(0x30)...)
+	expr = append(expr, opLocalGet, 0x06)
+	expr = append(expr, i32c(10)...)
+	expr = append(expr, opI32RemU, opI32Add, opI32Store8, 0x00, 0x00)
+	expr = append(expr, opLocalGet, 0x06)
+	expr = append(expr, i32c(10)...)
+	expr = append(expr, opI32DivU, opLocalSet, 0x06)
+	expr = append(expr, opLocalGet, 0x02, opBrIf, 0x00)
+	expr = append(expr, opEnd, opEnd)
+	expr = append(expr, opLocalGet, 0x0b, opLocalGet, 0x0d, opI32Add, opLocalSet, 0x0b) // pos += d
+	// ","head":" + captured head + "}".
+	expr = append(expr, memcpy([]byte{opLocalGet, 0x0b}, i32c(midOff), i32c(midLen), 12)...)
+	expr = append(expr, opLocalGet, 0x0b)
+	expr = append(expr, i32c(midLen)...)
+	expr = append(expr, opI32Add, opLocalSet, 0x0b)
+	expr = append(expr, memcpy([]byte{opLocalGet, 0x0b}, []byte{opLocalGet, 0x08}, []byte{opLocalGet, 0x09}, 12)...)
+	expr = append(expr, opLocalGet, 0x0b, opLocalGet, 0x09, opI32Add, opLocalSet, 0x0b)
+	expr = append(expr, memcpy([]byte{opLocalGet, 0x0b}, i32c(tailOff), i32c(tailLen), 12)...)
+	expr = append(expr, opLocalGet, 0x0b)
+	expr = append(expr, i32c(tailLen)...)
+	expr = append(expr, opI32Add, opLocalSet, 0x0b)
+	// state.bodyPtr = bodyPtr; state.bodyLen = pos - bodyPtr.
+	expr = append(expr, i32c(stateOff)...)
+	expr = append(expr, opLocalGet, 0x0a, opI32Store, 0x00, 0x00)
+	expr = append(expr, i32c(stateOff)...)
+	expr = append(expr, opLocalGet, 0x0b, opLocalGet, 0x0a, opI32Sub, opI32Store, 0x00, 0x04)
+	expr = append(expr, opEnd)
+	expr = append(expr, i64c(1)...) // packed: err 0, response handle 1
+	s.extras = append(s.extras, extraFn{name: "ncgo_on_request", typ: tTwoI32I64, locals: 12, expr: expr})
+
+	s.extras = append(s.extras, extraFn{name: "ncgo_response_status", typ: tAlloc, expr: i32c(200)})
+	s.extras = append(s.extras, extraFn{name: "ncgo_response_header_count", typ: tAlloc, expr: i32c(0)})
+	s.extras = append(s.extras, extraFn{name: "ncgo_response_header_at", typ: tFourI32, expr: i32c(0)})
+
+	// params: 0=handle 1=bufPtr 2=bufMax; locals: 3=n 4=i
+	bodyRead := make([]byte, 0, 96)
+	bodyRead = append(bodyRead, opGlobalGet, 0x01)
+	bodyRead = append(bodyRead, i32c(stateOff)...)
+	bodyRead = append(bodyRead, opI32Load, 0x00, 0x04, opI32GeU, opIf, i32) // EOF: offset >= bodyLen
+	bodyRead = append(bodyRead, i32c(0)...)
+	bodyRead = append(bodyRead, opElse)
+	bodyRead = append(bodyRead, i32c(stateOff)...)
+	bodyRead = append(bodyRead, opI32Load, 0x00, 0x04, opGlobalGet, 0x01, opI32Sub, opLocalSet, 0x03) // remaining
+	bodyRead = append(bodyRead, opLocalGet, 0x02, opLocalGet, 0x03, opI32LtU, opIf, blockVoid)
+	bodyRead = append(bodyRead, opLocalGet, 0x02, opLocalSet, 0x03) // n = min(bufMax, remaining)
+	bodyRead = append(bodyRead, opEnd)
+	src := make([]byte, 0, 8)
+	src = append(src, i32c(stateOff)...)
+	src = append(src, opI32Load, 0x00, 0x00, opGlobalGet, 0x01, opI32Add)
+	bodyRead = append(bodyRead, memcpy([]byte{opLocalGet, 0x01}, src, []byte{opLocalGet, 0x03}, 4)...)
+	bodyRead = append(bodyRead, opGlobalGet, 0x01, opLocalGet, 0x03, opI32Add, opGlobalSet, 0x01)
+	bodyRead = append(bodyRead, opLocalGet, 0x03)
+	bodyRead = append(bodyRead, opEnd)
+	s.extras = append(s.extras, extraFn{name: "ncgo_response_body_read", typ: tLog, locals: 2, expr: bodyRead})
+
+	closeExpr := i32c(0)
+	closeExpr = append(closeExpr, opGlobalSet, 0x01)
+	closeExpr = append(closeExpr, i32c(0)...)
+	s.extras = append(s.extras, extraFn{name: "ncgo_response_close", typ: tAlloc, expr: closeExpr})
 	return s.build()
 }
 
