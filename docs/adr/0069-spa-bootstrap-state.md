@@ -204,13 +204,15 @@ stay byte-identical; no new dependencies.
 - `ShellBootstrap` implementers move from `RequestToken(w, r) string` to
   `Bootstrap(w, r) (string, BootstrapState)`; the only two implementations
   (BrowserBootstrap, the test stub) are updated here.
-- Known casualty (accepted): with `modRewriteWorking: true` the files app
+- ~~Known casualty (accepted): with `modRewriteWorking: true` the files app
   builds preview URLs as `/core/preview?...`, which ncgo does not mount
   (only `/index.php/core/preview`). Follow-up: dual-mount the preview route
-  extensionless.
+  extensionless.~~ **Resolved by ADR-0077** (Phase 5e, 2026-09-23):
+  `/core/preview` and `/core/preview.png` are mounted alongside the
+  `/index.php` pair, same middleware, same path-agnostic handler.
 - Follow-ups: initial-state hidden inputs on the trigger condition in
   §5; `_theme` with branding; `oc_userconfig` with an avatar endpoint;
-  extensionless `/core/preview` mount.
+  ~~extensionless `/core/preview` mount~~ (resolved by ADR-0077).
 - `internal/version` gains `String()`; `status.Provider` now uses it.
 
 ## Verification

@@ -217,7 +217,11 @@ func (a *App) mountRoutes() error {
 	router.Handle(http.MethodPost, "/index.php/logout", http.HandlerFunc(browserLogin.HandleLogout))
 
 	if a.previewGen != nil {
-		for _, p := range []string{"/index.php/core/preview", "/index.php/core/preview.png"} {
+		// The extensionless pair is what the NC web UI generates when
+		// mod_rewrite works — and the SPA bootstrap advertises exactly that
+		// (window._oc_config modRewriteWorking: true, ADR-0069), so without
+		// these mounts the UI's own preview URLs 404 (ADR-0077).
+		for _, p := range []string{"/index.php/core/preview", "/index.php/core/preview.png", "/core/preview", "/core/preview.png"} {
 			router.Handle(http.MethodGet, p, a.previewGen, httpx.Middleware(webdav.Auth(authCfg)))
 		}
 	}

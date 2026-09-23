@@ -191,6 +191,18 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-23** — Phase 5e: extensionless `/core/preview` mounts
+  (ADR-0077), resolving the ADR-0069 follow-up. The 4w SPA bootstrap
+  advertises `modRewriteWorking: true`, so the NC web frontend strips the
+  `/index.php` prefix from its generated preview URLs — and every such
+  request 404'd against ncgo, which only mounted the `/index.php/...`
+  pair. `GET /core/preview` and `/core/preview.png` are now mounted
+  alongside, same `webdav.Auth` middleware, same path-agnostic
+  `preview.Generator` handler (two route lines, no handler change). A
+  generic index.php-stripping middleware was rejected: explicit mounts
+  keep the route table — and the router-named tracing spans — honest.
+  Other pretty URLs join only when a captured client request shows a
+  real 404 (the wire-compat evidence rule).
 - **2026-09-23** — Phase 5d: dedicated metrics listener (ADR-0076),
   resolving the last deferred item of ADR-0055. The
   `observability.metrics_listen` key — removed in Phase 4k as
