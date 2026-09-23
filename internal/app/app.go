@@ -359,14 +359,61 @@ func (a *App) Handler() http.Handler {
 	return a.Router
 }
 
-// Run serves HTTP until ctx is done.
+// Run serves HTTP until ctx is done. When observability.metrics_listen is
+// set, /metrics is served on a dedicated listener (ADR-0076) running in a
+// goroutine alongside the main server: a metrics-server failure (e.g. a bind
+// error) cancels the shared context so the main server shuts down gracefully
+// and the metrics error is returned; on normal shutdown the metrics result is
+// collected and errors.Join'd with the main one.
 func (a *App) Run(ctx context.Context) error {
 	srv := httpx.NewServer(httpx.ServerConfig{
 		Addr:    a.Cfg.Server.Listen,
 		Handler: a.Router,
 		Logger:  a.Logger,
 	})
-	return srv.Run(ctx)
+	msrv := a.metricsServer()
+	if msrv == nil {
+		return srv.Run(ctx)
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	metricsErrCh := make(chan error, 1)
+	go func() {
+		err := msrv.Run(ctx)
+		if err != nil {
+			// The dedicated listener died: take the main server down too.
+			cancel()
+		}
+		metricsErrCh <- err
+	}()
+	mainErr := srv.Run(ctx)
+	cancel()
+	return errors.Join(mainErr, <-metricsErrCh)
+}
+
+// metricsHandler is the dedicated listener's entire surface (ADR-0076): only
+// GET /metrics, behind the same bearer token as the main-listener mount. The
+// Go 1.22+ pattern makes other methods 405 and other paths 404 on its own.
+func (a *App) metricsHandler() http.Handler {
+	mux := http.NewServeMux()
+	if a.metrics != nil {
+		mux.Handle("GET /metrics", a.metrics.Handler(a.Cfg.Observability.MetricsToken))
+	}
+	return mux
+}
+
+// metricsServer builds the dedicated metrics listener, or nil when metrics
+// are disabled or observability.metrics_listen is empty (today's behavior:
+// /metrics on the main router). ServerConfig zero-value timeouts are fine —
+// the handler is a cheap in-memory render.
+func (a *App) metricsServer() *httpx.Server {
+	if a.metrics == nil || a.Cfg.Observability.MetricsListen == "" {
+		return nil
+	}
+	return httpx.NewServer(httpx.ServerConfig{
+		Addr:    a.Cfg.Observability.MetricsListen,
+		Handler: a.metricsHandler(),
+		Logger:  a.Logger,
+	})
 }
 
 // Close releases dependencies in reverse order.

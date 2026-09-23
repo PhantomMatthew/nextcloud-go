@@ -191,6 +191,31 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-23** — Phase 5d: dedicated metrics listener (ADR-0076),
+  resolving the last deferred item of ADR-0055. The
+  `observability.metrics_listen` key — removed in Phase 4k as
+  defined-but-dead — returns: when set, `/metrics` is served on a dedicated
+  HTTP listener at that address instead of the main listener. Move, not
+  copy: the separate listener exists precisely for network-level
+  restriction (bind localhost or an inner interface while the main listener
+  is public), so the main-router mount is skipped and only the token-guarded
+  dedicated mux answers scrapes. Validation pins the 4k principle —
+  `metrics_listen` requires `metrics_enabled` (a listener without metrics
+  would be another silent no-op, now a startup-fatal error that says so)
+  and must parse as host:port (empty host = all interfaces, matching
+  `server.listen`). The dedicated server is a stdlib mux serving only
+  `GET /metrics` (other paths 404, other methods 405 for free from the Go
+  1.22+ pattern; no /healthz, no /status) on a second `httpx.Server` with
+  default timeouts, built by a testable `App.metricsServer()` helper.
+  Lifecycle: `App.Run` derives a cancellable context, runs the metrics
+  server in a goroutine on a buffered error channel and the main server in
+  the foreground; a metrics failure (e.g. bind error) cancels the context
+  so the main server shuts down gracefully and the metrics error is
+  returned, while normal shutdown collects the goroutine's result and
+  `errors.Join`s it. `TestLoadUnknownKeysIgnored` drops the key (live
+  again, mirroring the Phase 4z `otel_endpoint` precedent), full.yaml
+  gains the `metrics_enabled` + `metrics_listen` pair, and ADR-0055's
+  deferred list is now empty. Zero new dependencies.
 - **2026-09-23** — Phase 5c: database query spans (ADR-0075), resolving the
   DB-spans follow-up ADR-0072 pinned. `database.WithTracing(inner, tp)`
   decorates the DB interface — the single choke point every store hangs

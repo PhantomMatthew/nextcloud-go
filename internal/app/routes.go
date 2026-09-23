@@ -343,7 +343,11 @@ func (a *App) mountRoutes() error {
 		a.reconciler = rec
 	}
 
-	if a.metrics != nil {
+	// With a dedicated metrics listener (observability.metrics_listen,
+	// ADR-0076) /metrics moves off the main router entirely: the separate
+	// listener exists for network-level restriction, and serving both would
+	// defeat it.
+	if a.metrics != nil && a.Cfg.Observability.MetricsListen == "" {
 		router.Handle(http.MethodGet, "/metrics", a.metrics.Handler(a.Cfg.Observability.MetricsToken))
 	}
 

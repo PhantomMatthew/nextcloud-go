@@ -111,4 +111,7 @@ hundred lines of stdlib Go.
   and the OTel SDK land.
   - `observability.otel_endpoint`: **returned in Phase 4z** (2026-09-23,
     ADR-0072), joined by `observability.otel_sample_ratio`.
-  - `observability.metrics_listen`: still deferred.
+  - ~~`observability.metrics_listen`: still deferred.~~ **Resolved by
+    ADR-0076** (Phase 5d, 2026-09-23): the key returned — when set,
+    `/metrics` is served only on a dedicated listener at that address
+    (move, not copy), and `metrics_enabled` is mandatory with it.

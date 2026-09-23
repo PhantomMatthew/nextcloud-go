@@ -113,6 +113,9 @@ func TestLoadFullFile(t *testing.T) {
 	if cfg.Observability.OTelEndpoint != "http://otel-collector:4318" || cfg.Observability.OTelSampleRatio != 0.5 {
 		t.Errorf("otel = %+v", cfg.Observability)
 	}
+	if !cfg.Observability.MetricsEnabled || cfg.Observability.MetricsListen != "127.0.0.1:9090" {
+		t.Errorf("metrics listener = %+v", cfg.Observability)
+	}
 }
 
 func TestLoadPrecedenceFileEnvOverrides(t *testing.T) {
@@ -199,17 +202,18 @@ func TestLoadMissingFile(t *testing.T) {
 }
 
 // TestLoadUnknownKeysIgnored pins the lenient unmarshal contract: keys
-// removed in Phase 4k (server.trusted_proxies, observability.metrics_listen,
-// ...) may still sit in existing config files and must not fail startup —
-// they are silently ignored. observability.otel_endpoint left this list in
-// Phase 4z, when the OTel SDK landed and the key went live again (ADR-0072).
+// removed in Phase 4k (server.trusted_proxies, auth.session_ttl, ...) may
+// still sit in existing config files and must not fail startup — they are
+// silently ignored. observability.otel_endpoint left this list in Phase 4z,
+// when the OTel SDK landed and the key went live again (ADR-0072);
+// observability.metrics_listen left it in Phase 5d, when the dedicated
+// metrics listener landed (ADR-0076).
 func TestLoadUnknownKeysIgnored(t *testing.T) {
 	cfg, err := Load(LoadOptions{
 		EnvPrefix: unusedEnvPrefix,
 		Overrides: map[string]any{
-			"server.trusted_proxies":       []string{"10.0.0.0/8"},
-			"auth.session_ttl":             "24h",
-			"observability.metrics_listen": "127.0.0.1:9090",
+			"server.trusted_proxies": []string{"10.0.0.0/8"},
+			"auth.session_ttl":       "24h",
 		},
 	})
 	if err != nil {
@@ -217,6 +221,24 @@ func TestLoadUnknownKeysIgnored(t *testing.T) {
 	}
 	if cfg.Server.Listen != "0.0.0.0:8080" {
 		t.Errorf("listen = %q", cfg.Server.Listen)
+	}
+}
+
+// TestLoadMetricsListen pins that the restored key parses into the struct
+// (it is live again — ADR-0076 — not silently ignored).
+func TestLoadMetricsListen(t *testing.T) {
+	cfg, err := Load(LoadOptions{
+		EnvPrefix: unusedEnvPrefix,
+		Overrides: map[string]any{
+			"observability.metrics_enabled": true,
+			"observability.metrics_listen":  "127.0.0.1:9090",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Observability.MetricsEnabled || cfg.Observability.MetricsListen != "127.0.0.1:9090" {
+		t.Errorf("observability = %+v", cfg.Observability)
 	}
 }
 
@@ -279,6 +301,17 @@ func TestValidateRules(t *testing.T) {
 		{"log_format", func(c *Config) { c.Observability.LogFormat = "pretty" }, "observability.log_format"},
 		{"otel_ratio_low", func(c *Config) { c.Observability.OTelSampleRatio = -0.1 }, "observability.otel_sample_ratio"},
 		{"otel_ratio_high", func(c *Config) { c.Observability.OTelSampleRatio = 1.1 }, "observability.otel_sample_ratio"},
+		{"metrics_listen_garbage", func(c *Config) {
+			c.Observability.MetricsEnabled = true
+			c.Observability.MetricsListen = "not-an-addr"
+		}, "observability.metrics_listen"},
+		{"metrics_listen_no_port", func(c *Config) {
+			c.Observability.MetricsEnabled = true
+			c.Observability.MetricsListen = "127.0.0.1"
+		}, "observability.metrics_listen"},
+		{"metrics_listen_without_enabled", func(c *Config) {
+			c.Observability.MetricsListen = "127.0.0.1:9090"
+		}, "observability.metrics_listen"},
 		{"argon_memory", func(c *Config) { c.Auth.Argon2id.MemoryKB = 0 }, "auth.argon2id.memory_kb"},
 		{"argon_iter", func(c *Config) { c.Auth.Argon2id.Iterations = 0 }, "auth.argon2id.iterations"},
 		{"argon_par", func(c *Config) { c.Auth.Argon2id.Parallelism = 0 }, "auth.argon2id.parallelism"},
@@ -360,6 +393,18 @@ func TestValidateWebStaticRootAbsoluteOK(t *testing.T) {
 	c.Web.StaticRoot = t.TempDir()
 	if err := c.Validate(); err != nil {
 		t.Errorf("Validate() with absolute web.static_root = %v", err)
+	}
+}
+
+func TestValidateMetricsListenOK(t *testing.T) {
+	t.Parallel()
+	for _, addr := range []string{"127.0.0.1:9090", ":9090"} {
+		c := Default()
+		c.Observability.MetricsEnabled = true
+		c.Observability.MetricsListen = addr
+		if err := c.Validate(); err != nil {
+			t.Errorf("Validate() with metrics_listen %q = %v", addr, err)
+		}
 	}
 }
 

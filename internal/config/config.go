@@ -148,6 +148,11 @@ type PluginConfig struct {
 // MetricsEnabled mounts GET /metrics (ADR-0055); MetricsToken, when set,
 // requires `Authorization: Bearer <token>` on scrapes (constant-time
 // compared). Network-level restriction is recommended regardless.
+// MetricsListen, when set, serves /metrics on a dedicated listener at that
+// host:port address instead of the main listener (ADR-0076) — move, not
+// copy: the separate listener exists for network-level restriction (bind
+// localhost or an inner interface while the main listener is public), and
+// serving both would defeat it. It requires MetricsEnabled.
 // OTelEndpoint enables OpenTelemetry tracing when non-empty (ADR-0072): a
 // bare host:port means a plaintext-HTTP OTLP collector, a full http(s)://
 // URL keeps its scheme and path. OTelSampleRatio is the parent-based
@@ -157,6 +162,7 @@ type ObservabilityConfig struct {
 	LogFormat       string  `koanf:"log_format"`
 	MetricsEnabled  bool    `koanf:"metrics_enabled"`
 	MetricsToken    string  `koanf:"metrics_token"`
+	MetricsListen   string  `koanf:"metrics_listen"`
 	OTelEndpoint    string  `koanf:"otel_endpoint"`
 	OTelSampleRatio float64 `koanf:"otel_sample_ratio"`
 }

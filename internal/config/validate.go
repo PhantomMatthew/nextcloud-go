@@ -51,6 +51,16 @@ func (c *Config) Validate() error {
 	if c.Observability.OTelSampleRatio < 0 || c.Observability.OTelSampleRatio > 1 {
 		errs = append(errs, &ValidationError{Field: "observability.otel_sample_ratio", Reason: "must be between 0 and 1"})
 	}
+	if c.Observability.MetricsListen != "" {
+		if _, _, err := net.SplitHostPort(c.Observability.MetricsListen); err != nil {
+			errs = append(errs, &ValidationError{Field: "observability.metrics_listen", Reason: "must be host:port (an empty host, e.g. :9090, means all interfaces)"})
+		}
+		// A dedicated listener without metrics would serve nothing: the
+		// same defined-but-dead key Phase 4k eliminated, so reject it.
+		if !c.Observability.MetricsEnabled {
+			errs = append(errs, &ValidationError{Field: "observability.metrics_listen", Reason: "requires observability.metrics_enabled (a listener without metrics would be a dead key)"})
+		}
+	}
 
 	if c.Auth.Argon2id.MemoryKB == 0 {
 		errs = append(errs, &ValidationError{Field: "auth.argon2id.memory_kb", Reason: "must be > 0"})
