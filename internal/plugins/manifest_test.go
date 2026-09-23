@@ -102,6 +102,10 @@ func TestManifestValidate(t *testing.T) {
 			m.Runtime.InstanceModel = "pooled"
 			m.Runtime.PoolSize = 0
 		}},
+		{"pooled oversize", func(m *Manifest) {
+			m.Runtime.InstanceModel = "pooled"
+			m.Runtime.PoolSize = maxPoolSize + 1
+		}},
 		{"bad storage scope", func(m *Manifest) {
 			m.Capabilities.Storage.Read = []string{"everything"}
 		}},
@@ -126,6 +130,20 @@ func TestManifestValidate(t *testing.T) {
 				t.Fatalf("err = %v", err)
 			}
 		})
+	}
+}
+
+// pool_size is bounded above (ADR-0068): 1..maxPoolSize is accepted.
+func TestManifestPoolSizeUpperBound(t *testing.T) {
+	for _, n := range []int{1, maxPoolSize} {
+		m := Manifest{
+			Plugin:      PluginSection{ID: "com.example.hello", ABI: abiV1},
+			Runtime:     RuntimeSection{InstanceModel: "pooled", PoolSize: n},
+			EntryPoints: EntryPointsSection{Module: "hello.wasm"},
+		}
+		if err := m.Validate(); err != nil {
+			t.Fatalf("pool_size %d: err = %v", n, err)
+		}
 	}
 }
 

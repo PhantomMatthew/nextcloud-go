@@ -2870,3 +2870,128 @@ func PropModuleOpts(o PropOpts) []byte {
 	s.extras = append(s.extras, extraFn{name: o.Setter, typ: tFourI32, locals: 3, expr: setter})
 	return s.build()
 }
+
+// aggOpenCall emits the handle-opening host call through import index 1:
+// ptr,len of the argument blob followed by zero args up to arity. The
+// packed i64 result is left on the stack.
+func aggOpenCall(ptr int32, blobLen, arity int) []byte {
+	expr := append(i32c(ptr), i32c(i32n(blobLen))...)
+	for i := 2; i < arity; i++ {
+		expr = append(expr, i32c(0)...)
+	}
+	return append(expr, opCall, 0x01)
+}
+
+// aggOpenLoop emits a count-iteration loop of the opener call, leaving every
+// handle open; on the last iteration it logs msg when the packed high-32
+// code equals want. Local 0 (i32) is the counter, local 1 (i64) the packed
+// result.
+func aggOpenLoop(call []byte, count int, want, msgPtr, msgLen int32) []byte {
+	expr := make([]byte, 0, 64)
+	expr = append(expr, opBlock, blockVoid, opLoop, blockVoid)
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i32c(i32n(count))...)
+	expr = append(expr, opI32GeU, opBrIf, 0x01)
+	expr = append(expr, call...)
+	expr = append(expr, opLocalSet, 0x01) // packed = opener()
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i32c(i32n(count-1))...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i64c(32)...)
+	expr = append(expr, opI64ShrU, opI32WrapI64)
+	expr = append(expr, i32c(want)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, logCall(msgPtr, msgLen)...)
+	expr = append(expr, opDrop)
+	expr = append(expr, opEnd)
+	expr = append(expr, opEnd)
+	expr = append(expr, opLocalGet, 0x00)
+	expr = append(expr, i32c(1)...)
+	expr = append(expr, opI32Add, opLocalSet, 0x00)
+	expr = append(expr, opBr, 0x00)
+	expr = append(expr, opEnd, opEnd)
+	return expr
+}
+
+// aggOpenerType maps an opener arity to its type table index: db_query
+// takes four args, storage_open and http_request take two.
+func aggOpenerType(arity int) uint32 {
+	if arity == 4 {
+		return tFourI32I64
+	}
+	return tTwoI32I64
+}
+
+// AggregateHoldProbeModule builds a module with two entry points for
+// cross-instance aggregate handle-budget tests (ADR-0068). openerName must
+// take ptr,len first — db_query (arity 4), storage_open or http_request
+// (arity 2) — and return the packed i64 (code<<32 | handle). "hold" opens
+// holdCount handles without closing, logging "held-ok" when the last open
+// succeeds, and then blocks in an http_request on gateReq so its handles
+// stay open while a concurrent "probe" call runs on another instance of the
+// same plugin. "probe" opens probeCount handles and then one more, logging
+// "budget-ok" when the overflow open's high-32 code equals want (-12 once
+// the plugin's aggregate budget is exhausted).
+func AggregateHoldProbeModule(openerName string, openerArity int, openArgs, gateReq []byte, holdCount, probeCount int, want int32) []byte {
+	imports := []imp{{"log", tLog}, {openerName, aggOpenerType(openerArity)}}
+	gateIdx := byte(0x01)
+	if openerName != "http_request" {
+		imports = append(imports, imp{"http_request", tTwoI32I64})
+		gateIdx = 0x02
+	}
+	s := guestSpec{
+		imports:   imports,
+		data:      [][]byte{openArgs, gateReq, []byte("held-ok"), []byte("budget-ok")},
+		onInstall: i32c(0),
+	}
+	offs := s.dataOffsets()
+	call := aggOpenCall(offs[0], len(openArgs), openerArity)
+
+	hold := aggOpenLoop(call, holdCount, 0, offs[2], i32n(len("held-ok")))
+	hold = append(hold, i32c(offs[1])...)
+	hold = append(hold, i32c(i32n(len(gateReq)))...)
+	hold = append(hold, opCall, gateIdx, opDrop) // http_request (test-gated)
+	hold = append(hold, i32c(0)...)
+	s.extras = append(s.extras, extraFn{name: "hold", typ: tNullToI32, locals: 1, locals64: 1, expr: hold})
+
+	probe := aggOpenLoop(call, probeCount+1, want, offs[3], i32n(len("budget-ok")))
+	probe = append(probe, i32c(0)...)
+	s.extras = append(s.extras, extraFn{name: "probe", typ: tNullToI32, locals: 1, locals64: 1, expr: probe})
+	return s.build()
+}
+
+// AggregateFillTrapModule builds a module whose "filltrap" entry point opens
+// fillCount handles via the opener (logging "fill-ok" when the last open
+// succeeds) and then traps, and whose "refill" entry point opens the same
+// count again — logging "refill-open-ok" when the last open succeeds — and
+// then tries one more, logging "refill-ok" when that overflow open's
+// high-32 code equals want. A single aggregate slot leaked by the destroyed
+// instance makes the fillCount-th refill open fail, so the two markers pin
+// the exact-return invariant together (ADR-0068).
+func AggregateFillTrapModule(openerName string, openerArity int, openArgs []byte, fillCount int, want int32) []byte {
+	s := guestSpec{
+		imports:   []imp{{"log", tLog}, {openerName, aggOpenerType(openerArity)}},
+		data:      [][]byte{openArgs, []byte("fill-ok"), []byte("refill-open-ok"), []byte("refill-ok")},
+		onInstall: i32c(0),
+	}
+	offs := s.dataOffsets()
+	call := aggOpenCall(offs[0], len(openArgs), openerArity)
+
+	trap := aggOpenLoop(call, fillCount, 0, offs[1], i32n(len("fill-ok")))
+	trap = append(trap, opUnreachable)
+	s.extras = append(s.extras, extraFn{name: "filltrap", typ: tNullToI32, locals: 1, locals64: 1, expr: trap})
+
+	refill := aggOpenLoop(call, fillCount, 0, offs[2], i32n(len("refill-open-ok")))
+	refill = append(refill, call...)
+	refill = append(refill, i64c(32)...)
+	refill = append(refill, opI64ShrU, opI32WrapI64)
+	refill = append(refill, i32c(want)...)
+	refill = append(refill, opI32Eq, opIf, blockVoid)
+	refill = append(refill, logCall(offs[3], i32n(len("refill-ok")))...)
+	refill = append(refill, opDrop)
+	refill = append(refill, opEnd)
+	refill = append(refill, i32c(0)...)
+	s.extras = append(s.extras, extraFn{name: "refill", typ: tNullToI32, locals: 1, locals64: 1, expr: refill})
+	return s.build()
+}

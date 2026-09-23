@@ -191,6 +191,23 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-23** — Phase 4v: plugin cross-instance handle aggregate caps
+  (ADR-0068), closing the ADR-0060 aggregate-cap follow-up. The §8
+  open-handle budgets (64 stream / 16 DB rows / 16 HTTP response) are
+  re-scoped from per instance to per plugin, shared across all of the
+  plugin's live instances: pooled (`pool_size`) and per_request (request
+  concurrency) models previously multiplied the footprint, and open rows
+  handles pin `database/sql` pool connections outside the ADR-0060
+  statement slots. The host holds a `(plugin id, kind) → count` aggregate
+  acquired in `handleTable.add` (table check first; aggregate refusal
+  consumes nothing, so no leak on either refusal path) and returned in
+  `remove`/`closeAll` — a trap-destroyed instance returns its slots
+  exactly, pinned by wasm-level fill/trap/refill probes and a `-race`
+  churn test. Handle ids stay instance-scoped; exhaustion still answers
+  -12, so guests are unaware. Manifest validation gains the missing
+  `pool_size` upper bound (1..32 accepted; each pooled instance is a live
+  wasm module with its own linear memory). No new config keys or metric
+  families — refusals land in the existing §12 `result` label.
 - **2026-09-23** — Phase 4u: plugin `storage_mkdir` host function +
   per-plugin storage byte metrics (ADR-0067), closing two ADR-0042/0061
   storage follow-ups. `storage_mkdir(path_ptr, path_len) -> i32` creates a

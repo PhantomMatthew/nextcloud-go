@@ -226,7 +226,8 @@ func (h *Host) dbTxBegin(ctx context.Context, mod api.Module) int64 {
 	}
 	// Begin pins a pool connection immediately, so it draws a statement slot
 	// like Query/Exec do; the slot is released when Begin returns — the
-	// resulting tx handle stays under the per-instance rows-handle budget.
+	// resulting tx handle stays under the rows-handle budget (§8, per plugin
+	// across instances since ADR-0068).
 	release, ok := h.acquireDBSlotCtx(ctx)
 	if !ok {
 		return int64(pluginsdk.ErrCodeQuotaExceeded) << 32

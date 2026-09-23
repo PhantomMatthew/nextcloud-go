@@ -66,9 +66,9 @@ type HostConfig struct {
 	// the db Query/Exec/Begin calls executing at the same moment, aggregated
 	// across all of the plugin's pooled instances (ADR-0060). Exhaustion
 	// fails the call with ErrCodeQuotaExceeded. <= 0 means the default of 4.
-	// The quota governs in-flight statements only: open rows/tx handles stay
-	// under the per-instance handle budget (spec §8), and a cross-instance
-	// aggregate handle cap is a documented follow-up.
+	// The quota governs in-flight statements only: open rows/tx handles are
+	// bounded per plugin across instances by the §8 aggregate handle budgets
+	// (ADR-0068).
 	DBMaxConcurrentPerPlugin int
 	// HTTPRatePerMinute is the sustained http_request allowance per plugin
 	// id (ADR-0059); one call — including its redirect chain — costs one
@@ -131,6 +131,12 @@ type Host struct {
 	handleTabsMu sync.RWMutex
 	handleTabs   map[api.Module]*handleTable
 
+	// handleAgg enforces the §8 handle budgets per plugin id, shared across
+	// the plugin's live instances (ADR-0068); keyed by plugin id then handle
+	// kind, bounded by open handles (entries are deleted at zero), reset on
+	// process restart.
+	handleAgg *handleAggregate
+
 	// dispatch tracks started plugins eligible for event delivery.
 	dispMu      sync.RWMutex
 	dispatch    map[*Plugin]struct{}
@@ -181,7 +187,7 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().
 		WithCloseOnContextDone(true).
 		WithMemoryLimitPages(pages))
-	h := &Host{rt: rt, logger: logger, cfg: cfg, handleTabs: make(map[api.Module]*handleTable), dispatch: make(map[*Plugin]struct{}), httpRate: make(map[string]*tokenBucket), dbConc: make(map[string]int)}
+	h := &Host{rt: rt, logger: logger, cfg: cfg, handleTabs: make(map[api.Module]*handleTable), dispatch: make(map[*Plugin]struct{}), httpRate: make(map[string]*tokenBucket), dbConc: make(map[string]int), handleAgg: newHandleAggregate()}
 	h.httpGuarded = guardedHTTPClient(ctx, cfg.HTTPClient, logger)
 	if cfg.Bus != nil {
 		h.unsubEvents = cfg.Bus.Subscribe(h.dispatchEvent)

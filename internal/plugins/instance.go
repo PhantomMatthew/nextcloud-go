@@ -15,7 +15,10 @@ import (
 // ErrHandleLimit is returned when an instance exceeds its open-handle budget.
 var ErrHandleLimit = errors.New("plugins: handle limit reached")
 
-// Per-instance handle budgets from the ABI spec.
+// Handle budgets from the ABI spec §8. Since ADR-0068 the budgets are per
+// plugin, shared across the plugin's live instances (see handleAggregate);
+// the per-instance table keeps the same-value check, which can only fire
+// first for a single-instance fill and keeps Host-less tables bounded.
 const (
 	maxStreamHandles = 64
 	maxRowsHandles   = 16
@@ -43,11 +46,15 @@ type handleEntry struct {
 
 // handleTable tracks opaque handles owned by one instance. Handles are
 // per-instance: an id handed to one instance is meaningless to another.
+// When agg is set, add/remove/closeAll also draw against the plugin's
+// cross-instance aggregate budget (ADR-0068).
 type handleTable struct {
-	mu     sync.Mutex
-	next   int32
-	counts map[handleKind]int32
-	items  map[int32]handleEntry
+	mu       sync.Mutex
+	next     int32
+	counts   map[handleKind]int32
+	items    map[int32]handleEntry
+	agg      *handleAggregate
+	pluginID string
 }
 
 func newHandleTable() *handleTable {
@@ -58,11 +65,26 @@ func newHandleTable() *handleTable {
 	}
 }
 
+// newSharedHandleTable builds a table whose adds also acquire a slot from
+// the plugin's aggregate budget and whose removes/closeAll return it.
+func newSharedHandleTable(agg *handleAggregate, pluginID string) *handleTable {
+	t := newHandleTable()
+	t.agg = agg
+	t.pluginID = pluginID
+	return t
+}
+
 func (t *handleTable) add(kind handleKind, val any) (int32, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.counts[kind] >= handleLimits[kind] {
 		return 0, fmt.Errorf("%w: kind %d", ErrHandleLimit, kind)
+	}
+	// The table check runs first so a table-full refusal never touches the
+	// aggregate; an aggregate refusal here consumes nothing, so neither
+	// failure path leaks a slot.
+	if t.agg != nil && !t.agg.acquire(t.pluginID, kind) {
+		return 0, fmt.Errorf("%w: kind %d: plugin aggregate", ErrHandleLimit, kind)
 	}
 	id := t.next
 	t.next++
@@ -99,11 +121,16 @@ func (t *handleTable) remove(id int32, kind handleKind) (any, bool) {
 	}
 	delete(t.items, id)
 	t.counts[kind]--
+	if t.agg != nil {
+		t.agg.release(t.pluginID, kind)
+	}
 	return e.val, true
 }
 
 // closeAll releases every open handle: database rows are closed, open
-// transactions are rolled back. Cleanup errors are joined and returned.
+// transactions are rolled back. Each entry also returns its aggregate slot,
+// so a destroyed (trapped) instance leaves no count behind. Cleanup errors
+// are joined and returned.
 func (t *handleTable) closeAll() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -119,6 +146,9 @@ func (t *handleTable) closeAll() error {
 			}
 		}
 		delete(t.items, id)
+		if t.agg != nil {
+			t.agg.release(t.pluginID, e.kind)
+		}
 	}
 	t.counts = make(map[handleKind]int32)
 	return errors.Join(errs...)
@@ -169,7 +199,7 @@ func (im *instanceManager) instantiate(ctx context.Context) (*instance, error) {
 	if err != nil {
 		return nil, wrapTrap(err)
 	}
-	inst := &instance{mod: mod, handles: newHandleTable()}
+	inst := &instance{mod: mod, handles: newSharedHandleTable(im.host.handleAgg, im.manifest.Plugin.ID)}
 	im.host.registerHandles(mod, inst.handles)
 	return inst, nil
 }

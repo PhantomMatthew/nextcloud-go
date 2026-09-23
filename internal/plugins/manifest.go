@@ -11,6 +11,12 @@ import (
 
 const abiV1 = "ncgo-abi/1"
 
+// maxPoolSize caps runtime.pool_size (ADR-0068): every pooled instance is a
+// live wasm module with its own linear memory, so the pool multiplies the
+// plugin's worst-case footprint; 32 is a generous ceiling above any
+// legitimate pooling need.
+const maxPoolSize = 32
+
 var (
 	pluginIDRe = regexp.MustCompile(`^[a-z0-9]+(\.[a-z0-9-]+)+$`)
 	hostPortRe = regexp.MustCompile(`^[^\s:/]+(:\d+)?$`)
@@ -165,8 +171,8 @@ func (m *Manifest) Validate() error {
 	if m.Runtime.CPUTimeoutMS > 30000 {
 		return fmt.Errorf("%w: cpu_timeout_ms %d", ErrManifestInvalid, m.Runtime.CPUTimeoutMS)
 	}
-	if m.Runtime.InstanceModel == "pooled" && m.Runtime.PoolSize <= 0 {
-		return fmt.Errorf("%w: pooled requires pool_size >= 1", ErrManifestInvalid)
+	if m.Runtime.InstanceModel == "pooled" && (m.Runtime.PoolSize < 1 || m.Runtime.PoolSize > maxPoolSize) {
+		return fmt.Errorf("%w: pooled requires pool_size 1..%d", ErrManifestInvalid, maxPoolSize)
 	}
 	if m.EntryPoints.Module == "" {
 		return fmt.Errorf("%w: empty module", ErrManifestInvalid)

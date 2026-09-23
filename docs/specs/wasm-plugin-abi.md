@@ -81,7 +81,7 @@ license         = "MIT"
 
 [runtime]
 instance_model  = "pooled"          # per_request | pooled | singleton
-pool_size       = 4                  # only for pooled
+pool_size       = 4                  # only for pooled, 1..32
 memory_limit_mb = 32                 # max linear memory
 cpu_timeout_ms  = 5000               # per host call to plugin
 fuel_per_call   = 100_000_000        # wazero metering budget
@@ -313,7 +313,8 @@ These stage a request body larger than the 1 MiB inline `body_bytes` cap in a
 temp-file spool, referenced from `http_request`'s `body_handle` (ADR-0066).
 `create` returns high32 err / low32 handle and is gated on `http.outbound`
 like `http_request` itself (the per-target allowlist still applies at request
-time); the handle shares the §8 stream budget (64 per instance). `write`
+time); the handle shares the §8 stream budget (64 per plugin, shared across
+instances). `write`
 appends one chunk and returns the byte count; `buf_len` above the host
 payload cap (1 MiB) fails with -11 (`ErrTooLarge`), and the write that would
 push the running total past the host spool cap (default 1 GiB, the same
@@ -377,7 +378,8 @@ closed handle answers -4 (`ErrNotFound`), and a handle of any other type
 answers -2 (`ErrInvalidArgument`). Only plugins with
 `runtime.request_body_stream = true` receive a `body_handle` (§7); the body
 is the plugin's own inbound request, so no capability gates these functions.
-The handle shares the §8 stream budget (64 per instance) and, if never
+The handle shares the §8 stream budget (64 per plugin, shared across
+instances) and, if never
 closed, is released by handle-table cleanup when the instance is released —
 the body itself remains owned by the host's HTTP server throughout.
 
@@ -460,6 +462,19 @@ Enforced by wazero configuration per instance:
 | Env vars / args (WASI) | **empty** | not configurable |
 | Random source | host-provided via `crypto_random` | always granted |
 | Clock | monotonic + wall via host functions | always granted |
+
+**Handle budgets are per plugin, shared across instances** (ADR-0068): the
+three open-handle rows above — 64 stream, 16 DB rows, 16 HTTP response —
+bound one plugin's handles aggregated across all of its live instances, not
+each instance separately. The pooled and per_request instance models run
+several instances concurrently, and open rows handles pin `database/sql`
+pool connections, so a per-instance reading would let a plugin's open-handle
+footprint scale with its instance count; a pooled plugin's whole fleet can
+hold at most 16 open rows handles at once. Handle *ids* stay
+instance-scoped — an id handed to one instance is meaningless to another —
+and exhaustion still answers `ErrUnavailable` (-12) from the same host
+calls, so well-behaved guests need no change (a guest only observes a
+refusal its per-instance code path already had to handle).
 
 **WASI is not exposed.** Plugins cannot use `wasi_snapshot_preview1` to bypass the
 ABI. wazero is configured with no WASI module attached.
@@ -687,6 +702,26 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-23** — Phase 4v re-scoped the three §8 open-handle budgets from
+  per instance to **per plugin, shared across instances** (ADR-0068),
+  closing the ADR-0060 aggregate-cap follow-up. The budget values are
+  unchanged (64 stream / 16 DB rows / 16 HTTP response) but now bound one
+  plugin's handles aggregated across all of its live instances, so the
+  pooled and per_request models can no longer multiply a plugin's
+  open-handle footprint — open rows handles pin `database/sql` pool
+  connections — by `pool_size` or request concurrency. The host keeps a
+  per-plugin `(plugin id, handle kind) → count` aggregate acquired in
+  `handleTable.add` (per-table check first, so neither refusal path leaks a
+  slot) and returned in `remove`/`closeAll`, with entries deleted at zero;
+  a trapped instance therefore returns its slots exactly, and handle ids
+  stay instance-scoped. Exhaustion still answers `ErrUnavailable` (-12)
+  from the same calls, so guests need no change. The manifest validation
+  also gains the missing `pool_size` upper bound: pooled plugins now
+  require `pool_size` in 1..32 (each pooled instance is a live wasm module
+  with its own linear memory). ADR-0060's statement slots and the new
+  aggregate govern different dimensions — in-flight statement execution vs
+  retained open handles — and both remain in force. No new config keys or
+  metric families; refusals land in the existing §12 `result` label.
 - **2026-09-23** — Phase 4u implemented `storage_mkdir` and per-plugin
   storage byte metrics (ADR-0067), closing two ADR-0042/0061 follow-ups. The
   new §6.3 host function `storage_mkdir(path_ptr, path_len) -> i32` creates a
