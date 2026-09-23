@@ -191,6 +191,37 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-23** — Phase 5b: server-encryption key rotation (ADR-0074),
+  resolving the key-rotation follow-ups ADR-0052 and ADR-0070 pinned. The
+  sealed-file header gains a format version: v2 is `NCGOENC2` + a 1-byte
+  key ID + the 32-byte salt (41 bytes; v1 files implicitly carry key ID
+  0), because GCM failure cannot distinguish wrong-key from corruption
+  and try-all-keys reads would be O(n) per chunk — the ID byte makes the
+  lookup O(1) and the config error explicit (new sentinel
+  `ErrUnknownKeyID`, never conflated with `ErrIntegrity`). `encrypt.FS`
+  becomes an append-only keyring (`NewWithPrevious(current, previous,
+  inner)`; positional IDs, previous keys read-only, the current key seals
+  at the highest ID) fed by the new `encryption.previous_key_paths`
+  config list — append-only forever, since reordering or removing an
+  entry re-keys/orphans the files sealed under those IDs by design.
+  Validation at both layers: 32-byte keys, ring ≤ 256, no byte-duplicate
+  keys, no blank/duplicate/master-repeated paths. Single-key rings write
+  v1 headers bit-identical to pre-rotation builds (rollback-safe; zero
+  format change for non-rotating deployments); multi-key rings write v2,
+  and mixed v1/v2 trees are the normal rotation state. The sweep gains a
+  third direction `SweepRotate` — plaintext is skipped (encrypt-all
+  composes, sealing straight onto the current key), files under retired
+  IDs are read through the ring and re-sealed under current, aborts hit
+  on `ErrIntegrity`/`ErrUnknownKeyID` at the first file, single-key rings
+  are rejected, dry-run counts via `enc.Stat`. CLI: `ncgo-cli encryption
+  rotate-keys [--user] [--dry-run]` shares the sweep wiring, builds the
+  keyring once for all sweep subcommands, and errors with the full
+  rotation procedure when no previous key is configured; `encryption
+  status` reports previous-key count, per-file loadability (fail-closed),
+  and the current key ID; the parent help documents the five-step
+  procedure. Remaining follow-ups dispositioned: filename encryption and
+  per-user keys deferred (each needs its own design phase), S3 SSE-C
+  rejected as redundant with the ADR-0052 decorator.
 - **2026-09-23** — Phase 5a: import-nextcloud tokens (ADR-0073), resolving
   the `tokens` follow-up ADR-0071 §Decision 3 pinned. New
   `import-nextcloud tokens` subcommand imports `oc_authtoken` rows with

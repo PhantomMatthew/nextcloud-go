@@ -19,14 +19,22 @@ const (
 	SweepSeal SweepDirection = iota
 	// SweepOpen rewrites sealed files back to plaintext (decommissioning).
 	SweepOpen
+	// SweepRotate rewrites files sealed under a retired key ID so they are
+	// sealed under the keyring's current key (ADR-0074). Plaintext files
+	// are skipped: rotation is not encrypt-all.
+	SweepRotate
 )
 
 // String names the direction for messages.
 func (d SweepDirection) String() string {
-	if d == SweepOpen {
+	switch d {
+	case SweepOpen:
 		return "open"
+	case SweepRotate:
+		return "rotate"
+	default:
+		return "seal"
 	}
-	return "seal"
 }
 
 // SweepOptions controls a Sweep run.
@@ -64,26 +72,36 @@ const maxSweepDepth = 64
 
 // Sweep walks the raw backend tree under opts.Prefix and rewrites every
 // file into the target encoding: SweepSeal seals legacy plaintext files in
-// place, SweepOpen writes sealed files back as plaintext. Files already in
-// the target encoding are skipped (empty files and files shorter than the
-// magic count as plaintext), so a sweep is idempotent and safe to re-run
-// after an interruption. The walk is serial and holds at most one file's
-// content in memory; rewrites go through Create, which backends install
-// atomically (localfs temp+rename, s3 put-on-close), so concurrent readers
-// always see the old or the new encoding, never a partial file.
+// place, SweepOpen writes sealed files back as plaintext, SweepRotate
+// re-seals files whose header names a retired key ID under the keyring's
+// current key. Files already in the target encoding are skipped (empty
+// files and files shorter than the magic count as plaintext; for
+// SweepRotate plaintext itself is a skip — sealing it is encrypt-all's
+// job, which lands on the current key for free), so a sweep is idempotent
+// and safe to re-run after an interruption. The walk is serial and holds
+// at most one file's content in memory; rewrites go through Create, which
+// backends install atomically (localfs temp+rename, s3 put-on-close), so
+// concurrent readers always see the old or the new encoding, never a
+// partial file.
 //
 // A per-file failure is counted (and reported via OnError) and the sweep
 // continues; a nonzero Failed count does not by itself fail the run. The
-// one exception: in SweepOpen direction an ErrIntegrity read means the
-// master key does not match the sealed data (or the file is corrupt), and
-// continuing would fail every remaining sealed file — the sweep aborts at
-// the first such file with an error wrapping ErrIntegrity.
+// exceptions: in SweepOpen direction an ErrIntegrity read means the master
+// key does not match the sealed data (or the file is corrupt); in
+// SweepRotate direction an ErrIntegrity read means the same for the ring
+// key at the file's key ID, and an ErrUnknownKeyID read means the keyring
+// is incomplete. Continuing past any of these would fail every remaining
+// sealed file — the sweep aborts at the first such file with an error
+// wrapping ErrIntegrity or ErrUnknownKeyID.
 func Sweep(ctx context.Context, raw storage.Storage, enc *FS, opts SweepOptions) (SweepStats, error) {
 	if raw == nil || enc == nil {
 		return SweepStats{}, fmt.Errorf("encrypt: sweep: nil storage")
 	}
-	if opts.Direction != SweepSeal && opts.Direction != SweepOpen {
+	if opts.Direction != SweepSeal && opts.Direction != SweepOpen && opts.Direction != SweepRotate {
 		return SweepStats{}, fmt.Errorf("encrypt: sweep: unknown direction %d", opts.Direction)
+	}
+	if opts.Direction == SweepRotate && enc.singleKey() {
+		return SweepStats{}, fmt.Errorf("encrypt: sweep: rotate requires a keyring with a previous key (a single-key ring has nothing to rotate)")
 	}
 	s := sweeper{raw: raw, enc: enc, opts: opts}
 	root := strings.TrimSuffix(strings.TrimSpace(opts.Prefix), "/")
@@ -175,22 +193,28 @@ func (s *sweeper) walk(ctx context.Context, dir string, depth int) error {
 
 // process rewrites one file into the target encoding when it is not
 // already there. Per-file failures are counted and reported, not returned;
-// the only returned error is the SweepOpen ErrIntegrity abort.
+// the only returned errors are the SweepOpen ErrIntegrity abort and the
+// SweepRotate ErrIntegrity/ErrUnknownKeyID aborts.
 func (s *sweeper) process(ctx context.Context, fi *storage.FileInfo) error {
 	s.stats.Scanned++
 	defer s.progress()
-	sealed, err := sniff(ctx, s.raw, fi.Path)
+	sealed, keyID, err := sniff(ctx, s.raw, fi.Path)
 	if err != nil {
 		s.fail(fi.Path, err)
 		return nil
 	}
-	if sealed == (s.opts.Direction == SweepSeal) {
+	rotate := s.opts.Direction == SweepRotate
+	skip := sealed == (s.opts.Direction == SweepSeal)
+	if rotate {
+		skip = !sealed || keyID == s.enc.currentKeyID()
+	}
+	if skip {
 		s.stats.Skipped++
 		return nil
 	}
 	if s.opts.DryRun {
 		size := fi.Size
-		if s.opts.Direction == SweepOpen {
+		if s.opts.Direction != SweepSeal {
 			// The stored size overstates plaintext by the header and
 			// per-chunk tags; Stat computes the real plaintext size.
 			plain, err := s.enc.Stat(ctx, fi.Path)
@@ -206,16 +230,30 @@ func (s *sweeper) process(ctx context.Context, fi *storage.FileInfo) error {
 	}
 	var data []byte
 	dst := storage.Storage(s.enc)
-	if s.opts.Direction == SweepSeal {
+	switch s.opts.Direction {
+	case SweepSeal:
 		data, err = sweepRead(ctx, s.raw, fi.Path)
-	} else {
+	case SweepOpen:
 		data, err = sweepRead(ctx, s.enc, fi.Path)
 		dst = s.raw
+	case SweepRotate:
+		// Reading through the encrypt FS auto-detects the header version
+		// and picks the ring key; writing through it re-seals under the
+		// current key.
+		data, err = sweepRead(ctx, s.enc, fi.Path)
 	}
 	if err != nil {
 		if s.opts.Direction == SweepOpen && errors.Is(err, ErrIntegrity) {
 			s.stats.Failed++
 			return fmt.Errorf("encrypt: sweep: %s: master key does not match the sealed data (or the file is corrupt): %w", fi.Path, err)
+		}
+		if rotate && errors.Is(err, ErrUnknownKeyID) {
+			s.stats.Failed++
+			return fmt.Errorf("encrypt: sweep: %s: keyring does not hold the key this file was sealed with (restore the missing previous key): %w", fi.Path, err)
+		}
+		if rotate && errors.Is(err, ErrIntegrity) {
+			s.stats.Failed++
+			return fmt.Errorf("encrypt: sweep: %s: the ring key at this file's key id does not match the sealed data (or the file is corrupt): %w", fi.Path, err)
 		}
 		s.fail(fi.Path, err)
 		return nil
@@ -242,20 +280,22 @@ func (s *sweeper) progress() {
 	}
 }
 
-// sniff reports whether the file at p carries the encryption magic. Files
-// shorter than the magic are plaintext by definition.
-func sniff(ctx context.Context, raw storage.Storage, p string) (bool, error) {
+// sniff reports whether the file at p carries the encryption magic and, if
+// so, the key ID its header names (v1 headers imply ID 0). Files shorter
+// than the magic are plaintext by definition.
+func sniff(ctx context.Context, raw storage.Storage, p string) (bool, int, error) {
 	rc, err := raw.Open(ctx, p)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	defer func() { _ = rc.Close() }()
-	head := make([]byte, len(magic))
+	head := make([]byte, len(magic)+1)
 	n, err := io.ReadFull(rc, head)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return false, err
+		return false, 0, err
 	}
-	return n == len(magic) && string(head) == magic, nil
+	keyID, _, ok := headerLayout(head[:n])
+	return ok, keyID, nil
 }
 
 func sweepRead(ctx context.Context, st storage.Storage, p string) ([]byte, error) {

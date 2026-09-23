@@ -71,10 +71,15 @@ type BackendConfig struct {
 // EncryptionConfig controls transparent server-side encryption at rest
 // (ADR-0052). MasterKeyPath points at an operator-created file holding the
 // base64-encoded 32-byte master key (see ncgo-cli encryption init); the key
-// is never generated or stored by the server itself.
+// is never generated or stored by the server itself. PreviousKeyPaths holds
+// retired master keys for rotation (ADR-0074): their positions are their
+// key IDs, the key at MasterKeyPath seals new writes at the highest ID.
+// The list is append-only forever — reordering or removing entries orphans
+// the files sealed under those IDs.
 type EncryptionConfig struct {
-	Enabled       bool   `koanf:"enabled"`
-	MasterKeyPath string `koanf:"master_key_path"`
+	Enabled          bool     `koanf:"enabled"`
+	MasterKeyPath    string   `koanf:"master_key_path"`
+	PreviousKeyPaths []string `koanf:"previous_key_paths"`
 }
 
 // PreviewsConfig controls server-side image preview generation (ADR-0053).

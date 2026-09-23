@@ -93,6 +93,7 @@ func (c *Config) Validate() error {
 	if c.Encryption.Enabled && strings.TrimSpace(c.Encryption.MasterKeyPath) == "" {
 		errs = append(errs, &ValidationError{Field: "encryption.master_key_path", Reason: "required when encryption is enabled"})
 	}
+	errs = append(errs, validatePreviousKeyPaths(c.Encryption)...)
 
 	if c.Previews.MaxDimension < 32 || c.Previews.MaxDimension > 4096 {
 		errs = append(errs, &ValidationError{Field: "previews.max_dimension", Reason: "must be between 32 and 4096"})
@@ -103,4 +104,32 @@ func (c *Config) Validate() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// validatePreviousKeyPaths enforces the keyring invariants of ADR-0074:
+// entries are non-blank and unique, the current master key is not also a
+// previous key, and previous keys plus the current one fit the v2 key-ID
+// byte (encrypt.MaxKeys = 256). Reordered or ambiguous rings would silently
+// re-key files to the wrong ID, so these are startup-fatal.
+func validatePreviousKeyPaths(enc EncryptionConfig) []error {
+	seen := make(map[string]struct{}, len(enc.PreviousKeyPaths))
+	var errs []error
+	for i, p := range enc.PreviousKeyPaths {
+		if strings.TrimSpace(p) == "" {
+			errs = append(errs, &ValidationError{Field: "encryption.previous_key_paths", Reason: fmt.Sprintf("entry %d must not be empty", i)})
+			continue
+		}
+		if _, dup := seen[p]; dup {
+			errs = append(errs, &ValidationError{Field: "encryption.previous_key_paths", Reason: fmt.Sprintf("duplicate entry %q", p)})
+			continue
+		}
+		seen[p] = struct{}{}
+		if p == enc.MasterKeyPath {
+			errs = append(errs, &ValidationError{Field: "encryption.previous_key_paths", Reason: "must not contain encryption.master_key_path"})
+		}
+	}
+	if len(enc.PreviousKeyPaths)+1 > 256 {
+		errs = append(errs, &ValidationError{Field: "encryption.previous_key_paths", Reason: "previous keys plus the master key must be at most 256"})
+	}
+	return errs
 }

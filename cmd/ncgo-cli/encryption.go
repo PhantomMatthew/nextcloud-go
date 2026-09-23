@@ -25,9 +25,20 @@ func newEncryption() *cobra.Command {
 			"    master_key_path: /var/lib/ncgo/master.key\n\n" +
 			"Files written while encryption is on are sealed (AES-256-GCM);\n" +
 			"pre-existing plaintext files keep working and are sealed when\n" +
-			"rewritten.",
+			"rewritten.\n\n" +
+			"Master-key rotation (ADR-0074):\n" +
+			"  1. ncgo-cli encryption init --key-path <new-key-file>\n" +
+			"  2. Move the OLD master_key_path into encryption.previous_key_paths\n" +
+			"     (APPEND at the end when the list is non-empty) and set\n" +
+			"     master_key_path to the new key.\n" +
+			"  3. Restart the server — old files keep reading, new writes seal\n" +
+			"     under the new (highest-ID) key.\n" +
+			"  4. ncgo-cli encryption rotate-keys\n" +
+			"  5. previous_key_paths is APPEND-ONLY FOREVER — never reorder or\n" +
+			"     remove entries: key IDs are positional, and removing or\n" +
+			"     reordering orphans files with \"unknown key id\" read errors.",
 	}
-	cmd.AddCommand(newEncryptionInit(), newEncryptionStatus(), newEncryptionEncryptAll(), newEncryptionDecryptAll())
+	cmd.AddCommand(newEncryptionInit(), newEncryptionStatus(), newEncryptionEncryptAll(), newEncryptionDecryptAll(), newEncryptionRotateKeys())
 	return cmd
 }
 
@@ -39,20 +50,32 @@ func newEncryptionDecryptAll() *cobra.Command {
 	return newEncryptionSweep(encrypt.SweepOpen)
 }
 
-// newEncryptionSweep builds `encryption encrypt-all|decrypt-all`: an
-// in-place re-encoding sweep over the whole storage tree (or one user's
-// subtree), sealing legacy plaintext files or writing sealed files back as
-// plaintext for decommissioning.
+func newEncryptionRotateKeys() *cobra.Command {
+	return newEncryptionSweep(encrypt.SweepRotate)
+}
+
+// newEncryptionSweep builds `encryption encrypt-all|decrypt-all|rotate-keys`:
+// an in-place re-encoding sweep over the whole storage tree (or one user's
+// subtree), sealing legacy plaintext files, writing sealed files back as
+// plaintext for decommissioning, or re-sealing retired-key files under the
+// keyring's current key.
 func newEncryptionSweep(direction encrypt.SweepDirection) *cobra.Command {
 	var user string
 	var dryRun bool
 	verb := "encrypt-all"
 	action := "seal"
 	past := "sealed"
+	requires := "Requires encryption.enabled and a loadable master key; decrypt-all aborts\nat the first file whose key does not match."
 	if direction == encrypt.SweepOpen {
 		verb = "decrypt-all"
 		action = "restore"
 		past = "decrypted"
+	}
+	if direction == encrypt.SweepRotate {
+		verb = "rotate-keys"
+		action = "re-seal"
+		past = "rotated"
+		requires = "Plaintext files are skipped (sealing them is encrypt-all's job; files\nit seals land on the current key for free). Requires encryption.enabled,\na loadable master key, and at least one entry in\nencryption.previous_key_paths; the sweep aborts at the first file whose\nkey ID is not in the keyring or whose ring key does not match."
 	}
 	cmd := &cobra.Command{
 		Use:   verb,
@@ -67,8 +90,7 @@ func newEncryptionSweep(direction encrypt.SweepDirection) *cobra.Command {
 			"recommended: a file rewritten by a user concurrently with the sweep could\n" +
 			"lose that write. File metadata (filecache, versions, etags) is untouched —\n" +
 			"the plaintext content does not change, only its encoding at rest.\n\n" +
-			"Requires encryption.enabled and a loadable master key; decrypt-all aborts\n" +
-			"at the first file whose key does not match.",
+			requires,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := loadConfig()
 			if err != nil {
@@ -81,7 +103,15 @@ func newEncryptionSweep(direction encrypt.SweepDirection) *cobra.Command {
 			if strings.ContainsAny(user, `/\`) || user == "." || user == ".." {
 				return fmt.Errorf("ncgo-cli: invalid --user %q", user)
 			}
-			key, err := encrypt.LoadMasterKey(cfg.Encryption.MasterKeyPath)
+			if direction == encrypt.SweepRotate && len(cfg.Encryption.PreviousKeyPaths) == 0 {
+				return fmt.Errorf("ncgo-cli: encryption rotate-keys: encryption.previous_key_paths is empty; nothing to rotate.\n" +
+					"Rotation procedure:\n" +
+					"  1. ncgo-cli encryption init --key-path <new-key-file>\n" +
+					"  2. Move the old master_key_path into encryption.previous_key_paths (append at the end) and set master_key_path to the new key\n" +
+					"  3. Restart the server\n" +
+					"  4. ncgo-cli encryption rotate-keys")
+			}
+			current, previous, err := encrypt.LoadKeyring(cfg.Encryption.MasterKeyPath, cfg.Encryption.PreviousKeyPaths)
 			if err != nil {
 				return fmt.Errorf("ncgo-cli: encryption: %w", err)
 			}
@@ -89,7 +119,7 @@ func newEncryptionSweep(direction encrypt.SweepDirection) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			enc, err := encrypt.New(key, raw)
+			enc, err := encrypt.NewWithPrevious(current, previous, raw)
 			if err != nil {
 				return fmt.Errorf("ncgo-cli: encryption: %w", err)
 			}
@@ -225,6 +255,16 @@ func newEncryptionStatus() *cobra.Command {
 				return fmt.Errorf("ncgo-cli: master key does not load: %w", err)
 			}
 			fmt.Fprintf(out, "master key: OK (32 bytes, mode %04o)\n", info.Mode().Perm())
+			previous := cfg.Encryption.PreviousKeyPaths
+			fmt.Fprintf(out, "previous keys: %d configured\n", len(previous))
+			for i, p := range previous {
+				if _, err := encrypt.LoadMasterKey(p); err != nil {
+					fmt.Fprintf(out, "previous key %d (%s): UNUSABLE (%v)\n", i, p, err)
+					return fmt.Errorf("ncgo-cli: previous key %s does not load: %w", p, err)
+				}
+				fmt.Fprintf(out, "previous key %d (%s): OK\n", i, p)
+			}
+			fmt.Fprintf(out, "current key id: %d\n", len(previous))
 			return nil
 		},
 	}

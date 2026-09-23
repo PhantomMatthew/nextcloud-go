@@ -442,11 +442,11 @@ func openStorage(cfg *config.Config) (storage.Storage, error) {
 		return nil, err
 	}
 	if cfg.Encryption.Enabled {
-		key, err := encrypt.LoadMasterKey(cfg.Encryption.MasterKeyPath)
+		current, previous, err := encrypt.LoadKeyring(cfg.Encryption.MasterKeyPath, cfg.Encryption.PreviousKeyPaths)
 		if err != nil {
 			return nil, fmt.Errorf("app: encryption: %w", err)
 		}
-		st, err = encrypt.New(key, st)
+		st, err = encrypt.NewWithPrevious(current, previous, st)
 		if err != nil {
 			return nil, fmt.Errorf("app: encryption: %w", err)
 		}

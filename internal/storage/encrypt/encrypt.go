@@ -4,10 +4,12 @@
 // data key (HMAC-SHA256 of the master key over the salt). Files written
 // through the decorator are sealed; reads auto-detect the magic header,
 // so encrypted files decrypt transparently while legacy plaintext files
-// pass through untouched. See ADR-0052 for the threat model and format.
+// pass through untouched. See ADR-0052 for the threat model and the v1
+// format, ADR-0074 for the v2 key-ID header and master-key rotation.
 package encrypt
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -31,39 +33,97 @@ const (
 	MasterKeySize = 32
 	// ChunkSize is the plaintext size sealed per chunk.
 	ChunkSize = 64 * 1024
+	// MaxKeys caps the keyring: the v2 key-ID byte addresses IDs 0..255.
+	MaxKeys = 256
 
-	tagSize    = 16 // AES-GCM authentication tag
-	nonceSize  = 12 // AES-GCM nonce
-	saltSize   = 32
-	headerSize = len(magic) + saltSize
+	tagSize      = 16 // AES-GCM authentication tag
+	nonceSize    = 12 // AES-GCM nonce
+	saltSize     = 32
+	headerSize   = len(magic) + saltSize       // v1 header
+	headerSizeV2 = len(magicV2) + 1 + saltSize // v2 header: magic + key-ID byte + salt
+	maxHeader    = headerSizeV2                // read budget for header sniffing
 )
 
 // magic marks sealed files; reads auto-detect it to distinguish encrypted
-// files from legacy plaintext.
-const magic = "NCGOENC1"
+// files from legacy plaintext. The last character is the format version:
+// v1 headers are magic + salt with implicit key ID 0, v2 headers insert a
+// key-ID byte between magic and salt (ADR-0074).
+const (
+	magic   = "NCGOENC1"
+	magicV2 = "NCGOENC2"
+)
 
 // ErrIntegrity reports a failed GCM authentication (tampered ciphertext,
 // wrong key, or a corrupted chunk).
 var ErrIntegrity = errors.New("encrypt: integrity check failed")
 
-// FS is a storage.Storage decorator sealing file contents at rest.
+// ErrUnknownKeyID reports a v2-sealed file whose key-ID byte names a key
+// the configured keyring does not hold — an operator configuration error
+// (a previous key was removed or the ring was reordered), distinct from
+// ErrIntegrity's wrong-key/corruption signal.
+var ErrUnknownKeyID = errors.New("encrypt: unknown key id")
+
+// FS is a storage.Storage decorator sealing file contents at rest. keys is
+// the keyring: positional key IDs 0..n-1 are previous (read-only) keys and
+// the last entry is the current key, which seals all new writes.
 type FS struct {
-	inner     storage.Storage
-	masterKey []byte
+	inner storage.Storage
+	keys  [][]byte
 }
 
-// New wraps inner with transparent encryption. masterKey must be exactly
-// MasterKeySize bytes and is copied.
+// New wraps inner with transparent encryption under a single master key.
+// masterKey must be exactly MasterKeySize bytes and is copied. A single-key
+// ring reads and writes the v1 format bit-identically to pre-keyring
+// deployments (ADR-0074).
 func New(masterKey []byte, inner storage.Storage) (*FS, error) {
-	if len(masterKey) != MasterKeySize {
-		return nil, fmt.Errorf("encrypt: master key must be %d bytes, got %d", MasterKeySize, len(masterKey))
-	}
+	return NewWithPrevious(masterKey, nil, inner)
+}
+
+// NewWithPrevious wraps inner with a keyring for master-key rotation
+// (ADR-0074): previous holds retired keys (their positions are their key
+// IDs, 0..n-1) and current seals new writes at key ID n. Reads pick the
+// ring key named by each file's header. Every key must be exactly
+// MasterKeySize bytes, the ring may hold at most MaxKeys keys, and no two
+// entries may be byte-identical (ambiguous IDs are a misconfiguration).
+// All keys are copied.
+func NewWithPrevious(current []byte, previous [][]byte, inner storage.Storage) (*FS, error) {
 	if inner == nil {
 		return nil, fmt.Errorf("encrypt: inner storage is nil")
 	}
-	key := make([]byte, MasterKeySize)
-	copy(key, masterKey)
-	return &FS{inner: inner, masterKey: key}, nil
+	if len(previous)+1 > MaxKeys {
+		return nil, fmt.Errorf("encrypt: keyring holds %d keys, max %d", len(previous)+1, MaxKeys)
+	}
+	keys := make([][]byte, 0, len(previous)+1)
+	for i, k := range previous {
+		if len(k) != MasterKeySize {
+			return nil, fmt.Errorf("encrypt: previous key %d must be %d bytes, got %d", i, MasterKeySize, len(k))
+		}
+		keys = append(keys, append([]byte(nil), k...))
+	}
+	if len(current) != MasterKeySize {
+		return nil, fmt.Errorf("encrypt: master key must be %d bytes, got %d", MasterKeySize, len(current))
+	}
+	keys = append(keys, append([]byte(nil), current...))
+	for i := range keys {
+		for j := i + 1; j < len(keys); j++ {
+			if bytes.Equal(keys[i], keys[j]) {
+				return nil, fmt.Errorf("encrypt: keys %d and %d are identical; key IDs must be unambiguous", i, j)
+			}
+		}
+	}
+	return &FS{inner: inner, keys: keys}, nil
+}
+
+// currentKeyID is the key-ID byte written into v2 headers and the ring
+// position of the key that seals new writes.
+func (f *FS) currentKeyID() int {
+	return len(f.keys) - 1
+}
+
+// singleKey reports whether the ring holds exactly one key; such rings keep
+// the v1 wire format (no key-ID byte) for rollback compatibility.
+func (f *FS) singleKey() bool {
+	return len(f.keys) == 1
 }
 
 // LoadMasterKey reads a base64-encoded 32-byte master key from path. The
@@ -95,9 +155,28 @@ func LoadMasterKey(path string) ([]byte, error) {
 	return key, nil
 }
 
-// dataKey derives the per-file data key from the master key and salt.
-func (f *FS) dataKey(salt []byte) []byte {
-	mac := hmac.New(sha256.New, f.masterKey)
+// LoadKeyring loads the current master key plus every configured previous
+// key for a rotation keyring (ADR-0074), failing fast with an error that
+// names the offending path. The result is ready for NewWithPrevious.
+func LoadKeyring(masterPath string, previousPaths []string) ([]byte, [][]byte, error) {
+	current, err := LoadMasterKey(masterPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	previous := make([][]byte, 0, len(previousPaths))
+	for _, p := range previousPaths {
+		key, err := LoadMasterKey(p)
+		if err != nil {
+			return nil, nil, fmt.Errorf("encrypt: previous key %s: %w", p, err)
+		}
+		previous = append(previous, key)
+	}
+	return current, previous, nil
+}
+
+// dataKey derives the per-file data key from a ring key and the salt.
+func dataKey(key, salt []byte) []byte {
+	mac := hmac.New(sha256.New, key)
 	_, _ = mac.Write(salt) // hash.Hash.Write never errors
 	return mac.Sum(nil)
 }
@@ -105,6 +184,37 @@ func (f *FS) dataKey(salt []byte) []byte {
 func nonce(buf []byte, chunk uint64) {
 	clear(buf[:4])
 	binary.BigEndian.PutUint64(buf[4:], chunk)
+}
+
+// headerLayout identifies the sealed-file format from a file's leading
+// bytes: the v1 magic means key ID 0 and the v1 header size; the v2 magic
+// means the key-ID byte at offset len(magicV2) and the v2 header size.
+// ok is false when the bytes do not carry either magic (legacy plaintext).
+// A head shorter than magic+1 reports key ID 0 for v2; callers validate
+// the full header length before trusting the ID.
+func headerLayout(head []byte) (keyID, hdr int, ok bool) {
+	if len(head) < len(magic) {
+		return 0, 0, false
+	}
+	switch string(head[:len(magic)]) {
+	case magic:
+		return 0, headerSize, true
+	case magicV2:
+		if len(head) > len(magicV2) {
+			return int(head[len(magicV2)]), headerSizeV2, true
+		}
+		return 0, headerSizeV2, true
+	}
+	return 0, 0, false
+}
+
+// ringKey resolves a header key ID to its ring key, failing with
+// ErrUnknownKeyID (naming the ID and path) when the ring does not hold it.
+func (f *FS) ringKey(id int, path string) ([]byte, error) {
+	if id < 0 || id >= len(f.keys) {
+		return nil, fmt.Errorf("encrypt: %s: key id %d not in the keyring (%d keys): %w", path, id, len(f.keys), ErrUnknownKeyID)
+	}
+	return f.keys[id], nil
 }
 
 // Stat reports plaintext sizes for encrypted files.
@@ -118,6 +228,8 @@ func (f *FS) Stat(ctx context.Context, p string) (*storage.FileInfo, error) {
 
 // plainInfo rewrites info.Size to the plaintext size when the file carries
 // the encryption magic; plaintext files (and directories) pass through.
+// The magic plus the v2 key-ID byte (9 bytes) are read to pick the right
+// header size; the size math is otherwise unchanged.
 func (f *FS) plainInfo(ctx context.Context, info *storage.FileInfo) (*storage.FileInfo, error) {
 	if info.IsDir || info.Size < int64(len(magic)) {
 		return info, nil
@@ -127,36 +239,43 @@ func (f *FS) plainInfo(ctx context.Context, info *storage.FileInfo) (*storage.Fi
 		return nil, err
 	}
 	defer func() { _ = rc.Close() }()
-	head := make([]byte, len(magic))
-	if _, err := io.ReadFull(rc, head); err != nil {
+	head := make([]byte, len(magic)+1)
+	n, err := io.ReadFull(rc, head)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("encrypt: read header of %s: %w", info.Path, err)
 	}
-	if string(head) != magic {
+	keyID, hdr, ok := headerLayout(head[:n])
+	if !ok {
 		return info, nil
 	}
-	if info.Size < int64(headerSize) {
+	if info.Size < int64(hdr) {
 		return nil, fmt.Errorf("encrypt: %s: truncated encryption header: %w", info.Path, ErrIntegrity)
 	}
-	payload := info.Size - int64(headerSize)
+	if _, err := f.ringKey(keyID, info.Path); err != nil {
+		return nil, err
+	}
+	payload := info.Size - int64(hdr)
 	chunks := (payload + ChunkSize + tagSize - 1) / (ChunkSize + tagSize)
 	info.Size = payload - chunks*tagSize
 	return info, nil
 }
 
 // Open decrypts encrypted files chunk-by-chunk and passes legacy plaintext
-// files through untouched.
+// files through untouched. v1 headers read with ring key 0; v2 headers name
+// their key by ID and fail with ErrUnknownKeyID when the ring lacks it.
 func (f *FS) Open(ctx context.Context, p string) (io.ReadSeekCloser, error) {
 	rc, err := f.inner.Open(ctx, p)
 	if err != nil {
 		return nil, err
 	}
-	head := make([]byte, headerSize)
+	head := make([]byte, maxHeader)
 	n, readErr := io.ReadFull(rc, head)
 	if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) && !errors.Is(readErr, io.EOF) {
 		_ = rc.Close()
 		return nil, fmt.Errorf("encrypt: read header of %s: %w", p, readErr)
 	}
-	if n < len(magic) || string(head[:len(magic)]) != magic {
+	keyID, hdr, ok := headerLayout(head[:n])
+	if !ok {
 		// Legacy plaintext: rewind and hand the raw handle to the caller.
 		if _, err := rc.Seek(0, io.SeekStart); err != nil {
 			_ = rc.Close()
@@ -164,17 +283,24 @@ func (f *FS) Open(ctx context.Context, p string) (io.ReadSeekCloser, error) {
 		}
 		return rc, nil
 	}
-	if n < headerSize {
+	if n < hdr {
 		_ = rc.Close()
 		return nil, fmt.Errorf("encrypt: %s: truncated encryption header: %w", p, ErrIntegrity)
 	}
-	return newReader(rc, f.dataKey(head[len(magic):headerSize]))
+	key, err := f.ringKey(keyID, p)
+	if err != nil {
+		_ = rc.Close()
+		return nil, err
+	}
+	return newReader(rc, dataKey(key, head[hdr-saltSize:hdr]), hdr)
 }
 
 // Create seals all content written through the returned WriteCloser. The
 // size hint is dropped: the stored size differs from the plaintext size by
 // the header plus one GCM tag per chunk, and backends treat it as a
-// preallocation hint only.
+// preallocation hint only. Single-key rings write the v1 header
+// bit-identically to pre-keyring deployments (rollback-safe); multi-key
+// rings write the v2 header with the current key's ID byte (ADR-0074).
 func (f *FS) Create(ctx context.Context, p string, _ int64) (io.WriteCloser, error) {
 	wc, err := f.inner.Create(ctx, p, 0)
 	if err != nil {
@@ -186,11 +312,17 @@ func (f *FS) Create(ctx context.Context, p string, _ int64) (io.WriteCloser, err
 		return nil, fmt.Errorf("encrypt: generate salt: %w", err)
 	}
 	header := append(append([]byte{}, []byte(magic)...), salt...)
+	key := f.keys[0]
+	if !f.singleKey() {
+		//nolint:gosec // G115: the constructor caps the ring at MaxKeys, so the current ID always fits a byte
+		header = append(append(append([]byte{}, []byte(magicV2)...), byte(f.currentKeyID())), salt...)
+		key = f.keys[f.currentKeyID()]
+	}
 	if _, err := wc.Write(header); err != nil {
 		_ = wc.Close()
 		return nil, fmt.Errorf("encrypt: write header: %w", err)
 	}
-	w, err := newWriter(wc, f.dataKey(salt))
+	w, err := newWriter(wc, dataKey(key, salt))
 	if err != nil {
 		_ = wc.Close()
 		return nil, err
@@ -234,6 +366,7 @@ func (f *FS) Mkdir(ctx context.Context, p string) error {
 type reader struct {
 	inner      io.ReadSeekCloser
 	aead       cipher.AEAD
+	hdr        int64
 	storedSize int64
 	plainSize  int64
 	pos        int64
@@ -241,8 +374,8 @@ type reader struct {
 	cached     []byte
 }
 
-func newReader(inner io.ReadSeekCloser, dataKey []byte) (*reader, error) {
-	aead, err := newAEAD(dataKey)
+func newReader(inner io.ReadSeekCloser, key []byte, hdr int) (*reader, error) {
+	aead, err := newAEAD(key)
 	if err != nil {
 		_ = inner.Close()
 		return nil, err
@@ -252,7 +385,7 @@ func newReader(inner io.ReadSeekCloser, dataKey []byte) (*reader, error) {
 		_ = inner.Close()
 		return nil, fmt.Errorf("encrypt: size sealed file: %w", err)
 	}
-	payload := end - int64(headerSize)
+	payload := end - int64(hdr)
 	if payload < 0 {
 		_ = inner.Close()
 		return nil, fmt.Errorf("encrypt: truncated encryption header: %w", ErrIntegrity)
@@ -261,6 +394,7 @@ func newReader(inner io.ReadSeekCloser, dataKey []byte) (*reader, error) {
 	return &reader{
 		inner:      inner,
 		aead:       aead,
+		hdr:        int64(hdr),
 		storedSize: end,
 		plainSize:  payload - chunks*tagSize,
 		cachedIdx:  -1,
@@ -284,7 +418,7 @@ func (r *reader) chunk(idx int64) ([]byte, error) {
 	if idx == r.cachedIdx {
 		return r.cached, nil
 	}
-	off := int64(headerSize) + idx*(ChunkSize+tagSize)
+	off := r.hdr + idx*(ChunkSize+tagSize)
 	sealedLen := min(int64(ChunkSize+tagSize), r.storedSize-off)
 	if sealedLen <= tagSize {
 		return nil, fmt.Errorf("encrypt: chunk %d truncated: %w", idx, io.ErrUnexpectedEOF)

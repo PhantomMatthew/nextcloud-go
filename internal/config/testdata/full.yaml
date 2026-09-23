@@ -30,6 +30,13 @@ storage:
       secret_access_key: secret
       region: us-east-1
 
+encryption:
+  enabled: true
+  master_key_path: /var/lib/ncgo/master.key
+  previous_key_paths:
+    - /var/lib/ncgo/master-2024.key
+    - /var/lib/ncgo/master-2025.key
+
 auth:
   argon2id:
     memory_kb: 65536

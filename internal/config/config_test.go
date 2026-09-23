@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -87,6 +88,14 @@ func TestLoadFullFile(t *testing.T) {
 	}
 	if cfg.Storage.Backends["s3_primary"].Type != "s3" {
 		t.Errorf("s3 backend = %+v", cfg.Storage.Backends["s3_primary"])
+	}
+	if !cfg.Encryption.Enabled || cfg.Encryption.MasterKeyPath != "/var/lib/ncgo/master.key" {
+		t.Errorf("encryption = %+v", cfg.Encryption)
+	}
+	if len(cfg.Encryption.PreviousKeyPaths) != 2 ||
+		cfg.Encryption.PreviousKeyPaths[0] != "/var/lib/ncgo/master-2024.key" ||
+		cfg.Encryption.PreviousKeyPaths[1] != "/var/lib/ncgo/master-2025.key" {
+		t.Errorf("previous key paths = %v", cfg.Encryption.PreviousKeyPaths)
 	}
 	if cfg.Auth.BootstrapAdmin.UID != "admin" {
 		t.Errorf("bootstrap uid = %q", cfg.Auth.BootstrapAdmin.UID)
@@ -211,6 +220,41 @@ func TestLoadUnknownKeysIgnored(t *testing.T) {
 	}
 }
 
+func TestLoadEncryptionPreviousKeyPaths(t *testing.T) {
+	// Default: empty list, valid.
+	cfg, err := Load(LoadOptions{EnvPrefix: unusedEnvPrefix})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Encryption.PreviousKeyPaths) != 0 {
+		t.Errorf("default previous key paths = %v", cfg.Encryption.PreviousKeyPaths)
+	}
+
+	// Overrides carry a native string list.
+	cfg, err = Load(LoadOptions{
+		EnvPrefix: unusedEnvPrefix,
+		Overrides: map[string]any{
+			"encryption.previous_key_paths": []string{"/keys/a.key", "/keys/b.key"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Encryption.PreviousKeyPaths) != 2 ||
+		cfg.Encryption.PreviousKeyPaths[0] != "/keys/a.key" ||
+		cfg.Encryption.PreviousKeyPaths[1] != "/keys/b.key" {
+		t.Errorf("previous key paths = %v", cfg.Encryption.PreviousKeyPaths)
+	}
+
+	// A valid keyring passes validation.
+	c := Default()
+	c.Encryption.MasterKeyPath = "/keys/current.key"
+	c.Encryption.PreviousKeyPaths = []string{"/keys/a.key", "/keys/b.key"}
+	if err := c.Validate(); err != nil {
+		t.Errorf("valid keyring Validate() = %v", err)
+	}
+}
+
 func TestLoadEmptySecretIsValid(t *testing.T) {
 	cfg, err := Load(LoadOptions{EnvPrefix: unusedEnvPrefix})
 	if err != nil {
@@ -247,6 +291,23 @@ func TestValidateRules(t *testing.T) {
 		{"plugin_refresh_interval_negative", func(c *Config) { c.Plugin.RefreshInterval = -time.Second }, "plugin.refresh_interval"},
 		{"storage_backend", func(c *Config) { c.Storage.DefaultBackend = "s3" }, "storage.default_backend"},
 		{"encryption_no_key", func(c *Config) { c.Encryption.Enabled = true }, "encryption.master_key_path"},
+		{"encryption_previous_empty", func(c *Config) {
+			c.Encryption.PreviousKeyPaths = []string{"/var/lib/ncgo/old.key", "  "}
+		}, "encryption.previous_key_paths"},
+		{"encryption_previous_duplicate", func(c *Config) {
+			c.Encryption.PreviousKeyPaths = []string{"/var/lib/ncgo/old.key", "/var/lib/ncgo/old.key"}
+		}, "encryption.previous_key_paths"},
+		{"encryption_previous_contains_master", func(c *Config) {
+			c.Encryption.MasterKeyPath = "/var/lib/ncgo/master.key"
+			c.Encryption.PreviousKeyPaths = []string{"/var/lib/ncgo/old.key", "/var/lib/ncgo/master.key"}
+		}, "encryption.previous_key_paths"},
+		{"encryption_previous_too_many", func(c *Config) {
+			paths := make([]string, 256)
+			for i := range paths {
+				paths[i] = fmt.Sprintf("/var/lib/ncgo/key-%03d.key", i)
+			}
+			c.Encryption.PreviousKeyPaths = paths
+		}, "encryption.previous_key_paths"},
 		{"previews_dim_low", func(c *Config) { c.Previews.MaxDimension = 31 }, "previews.max_dimension"},
 		{"previews_dim_high", func(c *Config) { c.Previews.MaxDimension = 4097 }, "previews.max_dimension"},
 		{"web_static_root_relative", func(c *Config) { c.Web.StaticRoot = "relative/web" }, "web.static_root"},

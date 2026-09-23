@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage"
+	"github.com/PhantomMatthew/nextcloud-go/internal/storage/localfs"
 )
 
 // mixedTree writes a fixture tree with plaintext files (nested dirs, an
@@ -369,5 +370,228 @@ func TestSweepValidation(t *testing.T) {
 	}
 	if _, err := Sweep(ctx, inner, fs, SweepOptions{Direction: SweepDirection(7)}); err == nil {
 		t.Fatal("unknown direction must fail")
+	}
+}
+
+// hasV2ID1 reports whether the stored file carries the v2 magic and key-ID
+// byte 1 (the current key of the two-key rings the rotate tests use).
+func hasV2ID1(t *testing.T, inner storage.Storage, p string) bool {
+	t.Helper()
+	raw := rawBytes(t, inner, p)
+	return len(raw) > len(magicV2) && string(raw[:len(magicV2)]) == magicV2 && raw[len(magicV2)] == 1
+}
+
+func TestSweepRotateBasic(t *testing.T) {
+	inner, err := localfs.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	keyA, keyB := testKey(t), testKey(t)
+	fsA, err := New(keyA, inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]byte{
+		"a_old1.bin":  []byte("sealed under the retiring key"),
+		"b_old2.bin":  bytes.Repeat([]byte{0xCD}, 1000),
+		"c_plain.txt": []byte("legacy plaintext, not rotation's job"),
+		"d_fresh.bin": []byte("already sealed under the current key"),
+	}
+	writeAll(t, fsA, "a_old1.bin", want["a_old1.bin"])
+	writeAll(t, fsA, "b_old2.bin", want["b_old2.bin"])
+	writeAll(t, inner, "c_plain.txt", want["c_plain.txt"])
+	ring, err := NewWithPrevious(keyB, [][]byte{keyA}, inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeAll(t, ring, "d_fresh.bin", want["d_fresh.bin"])
+
+	stats, err := Sweep(ctx, inner, ring, SweepOptions{Direction: SweepRotate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Scanned != 4 || stats.Changed != 2 || stats.Skipped != 2 || stats.Failed != 0 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	if stats.Bytes != int64(len(want["a_old1.bin"])+len(want["b_old2.bin"])) {
+		t.Errorf("bytes = %d, want the plaintext total of the two rotated files", stats.Bytes)
+	}
+	for p, data := range want {
+		if got := readAll(t, ring, p); !bytes.Equal(got, data) {
+			t.Errorf("%s: round trip = %d bytes, want %d", p, len(got), len(data))
+		}
+	}
+	if !hasV2ID1(t, inner, "a_old1.bin") || !hasV2ID1(t, inner, "b_old2.bin") {
+		t.Error("old-key files must be re-sealed as v2 under key ID 1")
+	}
+	if !hasV2ID1(t, inner, "d_fresh.bin") {
+		t.Error("current-key file must stay v2 ID 1")
+	}
+	if hasMagic(t, inner, "c_plain.txt") {
+		t.Error("plaintext file must be skipped, not sealed (rotation is not encrypt-all)")
+	}
+
+	// Re-running rotates nothing.
+	stats, err = Sweep(ctx, inner, ring, SweepOptions{Direction: SweepRotate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Scanned != 4 || stats.Changed != 0 || stats.Skipped != 4 || stats.Failed != 0 {
+		t.Fatalf("second run stats = %+v", stats)
+	}
+}
+
+// TestSweepRotateAppendOnlyRule pins ADR-0074's append-only keyring rule:
+// after rotation the new key alone cannot read the rotated files — their
+// v2 headers name key ID 1, which a single-key ring does not hold.
+func TestSweepRotateAppendOnlyRule(t *testing.T) {
+	inner, err := localfs.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	keyA, keyB := testKey(t), testKey(t)
+	fsA, err := New(keyA, inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeAll(t, fsA, "rot.bin", []byte("rotated content"))
+	ring, err := NewWithPrevious(keyB, [][]byte{keyA}, inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Sweep(ctx, inner, ring, SweepOptions{Direction: SweepRotate}); err != nil {
+		t.Fatal(err)
+	}
+	if !hasV2ID1(t, inner, "rot.bin") {
+		t.Fatal("file must be sealed as v2 ID 1 after rotation")
+	}
+	alone, err := New(keyB, inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := alone.Open(ctx, "rot.bin"); !errors.Is(err, ErrUnknownKeyID) {
+		t.Fatalf("single-key ring open err = %v, want ErrUnknownKeyID", err)
+	}
+}
+
+func TestSweepRotateDryRun(t *testing.T) {
+	inner, err := localfs.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	keyA, keyB := testKey(t), testKey(t)
+	fsA, err := New(keyA, inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("dry-run rotation candidate")
+	writeAll(t, fsA, "old.bin", content)
+	writeAll(t, inner, "plain.txt", []byte("stays plaintext"))
+	ring, err := NewWithPrevious(keyB, [][]byte{keyA}, inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := Sweep(ctx, inner, ring, SweepOptions{Direction: SweepRotate, DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Scanned != 2 || stats.Changed != 1 || stats.Skipped != 1 || stats.Failed != 0 {
+		t.Fatalf("dry-run stats = %+v", stats)
+	}
+	if stats.Bytes != int64(len(content)) {
+		t.Errorf("dry-run bytes = %d, want %d", stats.Bytes, len(content))
+	}
+	if !hasMagic(t, inner, "old.bin") || hasV2ID1(t, inner, "old.bin") {
+		t.Error("dry-run must not rewrite the old-key file")
+	}
+	if hasMagic(t, inner, "plain.txt") {
+		t.Error("dry-run must not touch plaintext")
+	}
+}
+
+func TestSweepRotateUnknownKeyIDAborts(t *testing.T) {
+	inner, err := localfs.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	keyA, keyB, keyC := testKey(t), testKey(t), testKey(t)
+	ring3, err := NewWithPrevious(keyC, [][]byte{keyA, keyB}, inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeAll(t, ring3, "new.bin", []byte("sealed under key id 2"))
+	fsA, err := New(keyA, inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeAll(t, fsA, "old.bin", []byte("v1 file listed after new.bin"))
+
+	// The ring lost key ID 2 (previous_key_paths shrank): the sweep must
+	// abort, not count-and-continue — every remaining old file would fail.
+	ring2, err := NewWithPrevious(keyB, [][]byte{keyA}, inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := Sweep(ctx, inner, ring2, SweepOptions{Direction: SweepRotate})
+	if !errors.Is(err, ErrUnknownKeyID) {
+		t.Fatalf("err = %v, want ErrUnknownKeyID", err)
+	}
+	if errors.Is(err, ErrIntegrity) {
+		t.Fatalf("err = %v must not be ErrIntegrity", err)
+	}
+	// localfs lists in name order: new.bin aborts before old.bin is touched.
+	if stats.Scanned != 1 || stats.Changed != 0 || stats.Failed != 1 {
+		t.Fatalf("stats = %+v, want abort at the first unknown-ID file", stats)
+	}
+	if !hasMagic(t, inner, "old.bin") || hasV2ID1(t, inner, "old.bin") {
+		t.Error("old.bin must remain untouched after the abort")
+	}
+}
+
+func TestSweepRotateIntegrityAborts(t *testing.T) {
+	inner, err := localfs.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	keyA, keyB := testKey(t), testKey(t)
+	fsA, err := New(keyA, inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeAll(t, fsA, "s1.bin", []byte("first sealed file"))
+	writeAll(t, fsA, "s2.bin", []byte("second sealed file"))
+
+	// The ring's key at ID 0 is not the key the files were sealed with:
+	// same wrong-key semantics as SweepOpen, abort at the first file.
+	ringWrong, err := NewWithPrevious(keyB, [][]byte{testKey(t)}, inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := Sweep(ctx, inner, ringWrong, SweepOptions{Direction: SweepRotate})
+	if !errors.Is(err, ErrIntegrity) {
+		t.Fatalf("err = %v, want ErrIntegrity", err)
+	}
+	if errors.Is(err, ErrUnknownKeyID) {
+		t.Fatalf("err = %v must not be ErrUnknownKeyID", err)
+	}
+	if stats.Scanned != 1 || stats.Changed != 0 || stats.Failed != 1 {
+		t.Fatalf("stats = %+v, want abort at the first sealed file", stats)
+	}
+	if !hasMagic(t, inner, "s2.bin") {
+		t.Error("s2.bin must remain untouched after the abort")
+	}
+}
+
+func TestSweepRotateSingleKeyRing(t *testing.T) {
+	fs, inner := testFS(t)
+	if _, err := Sweep(context.Background(), inner, fs, SweepOptions{Direction: SweepRotate}); err == nil ||
+		!strings.Contains(err.Error(), "nothing to rotate") {
+		t.Fatalf("single-key ring err = %v", err)
 	}
 }

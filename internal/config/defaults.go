@@ -92,6 +92,7 @@ func defaultFlat() map[string]any {
 		"storage.backends.local.root":         "/var/lib/ncgo/data",
 		"encryption.enabled":                  false,
 		"encryption.master_key_path":          "",
+		"encryption.previous_key_paths":       []string{},
 		"previews.enabled":                    true,
 		"previews.max_dimension":              2048,
 		"web.static_root":                     "",

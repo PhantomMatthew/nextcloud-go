@@ -166,9 +166,10 @@ Verified facts that shape the design:
   decommissioning; the reverse order would strand sealed data (ADR-0052
   consequence), which the command help calls out implicitly by requiring
   the enabled flag.
-- Open follow-ups from ADR-0052 remain: key rotation (the sweep is the
+- Open follow-ups from ADR-0052 remain: ~~key rotation (the sweep is the
   re-encode engine a rotation flow would drive, but no key-ID header
-  exists yet), per-user keys, filename encryption, SSE-C.
+  exists yet)~~ (resolved by ADR-0074), per-user keys, filename
+  encryption, SSE-C.
 
 ## Verification
 

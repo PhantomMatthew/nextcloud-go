@@ -154,7 +154,9 @@ DAV/files/trash/versions write is sealed without touching callers.
 
 ### Follow-ups (explicit, not in v1)
 
-- **Key rotation** (header gains a key-ID/generation byte; re-seal sweep).
+- ~~**Key rotation** (header gains a key-ID/generation byte; re-seal
+  sweep).~~ **Resolved by ADR-0074** (Phase 5b): v2 key-ID header,
+  append-only keyring, `ncgo-cli encryption rotate-keys`.
 - **Per-user keys** (PHP Nextcloud parity; requires recovery-key design).
 - ~~**`encryption encrypt-all` CLI sweep** to seal legacy plaintext files
   in place without waiting for organic rewrites (and a matching

@@ -91,18 +91,20 @@ func openRawBackend(cfg *config.Config) (storage.Storage, error) {
 
 // openStorage opens the configured default storage backend exactly as the
 // server does: when encryption is enabled the raw backend is wrapped as in
-// app.openStorage, so CLI writes (import-nextcloud files) are sealed too.
+// app.openStorage (keyring included, so CLI writes during a rotation seal
+// under the current key), so CLI writes (import-nextcloud files) are sealed
+// too.
 func openStorage(cfg *config.Config) (storage.Storage, error) {
 	st, err := openRawBackend(cfg)
 	if err != nil {
 		return nil, err
 	}
 	if cfg.Encryption.Enabled {
-		key, err := encrypt.LoadMasterKey(cfg.Encryption.MasterKeyPath)
+		current, previous, err := encrypt.LoadKeyring(cfg.Encryption.MasterKeyPath, cfg.Encryption.PreviousKeyPaths)
 		if err != nil {
 			return nil, fmt.Errorf("ncgo-cli: encryption: %w", err)
 		}
-		st, err = encrypt.New(key, st)
+		st, err = encrypt.NewWithPrevious(current, previous, st)
 		if err != nil {
 			return nil, fmt.Errorf("ncgo-cli: encryption: %w", err)
 		}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -367,5 +368,231 @@ encryption:
 			!strings.Contains(err.Error(), "invalid --user") {
 			t.Fatalf("--user %q err = %v", bad, err)
 		}
+	}
+}
+
+// rotateEnv builds a localfs-backed config with the given master key and
+// previous key list, returning the config path and storage root.
+func rotateEnv(t *testing.T, dir, master string, previous ...string) (cfgPath, storageRoot string) {
+	t.Helper()
+	storageRoot = filepath.Join(dir, "storage")
+	var sb strings.Builder
+	fmt.Fprintf(&sb, `
+storage:
+  default_backend: local
+  backends:
+    local:
+      type: localfs
+      root: %q
+encryption:
+  enabled: true
+  master_key_path: %q
+`, storageRoot, master)
+	if len(previous) > 0 {
+		sb.WriteString("  previous_key_paths:\n")
+		for _, p := range previous {
+			fmt.Fprintf(&sb, "    - %q\n", p)
+		}
+	}
+	return encConfig(t, sb.String()), storageRoot
+}
+
+// rawHasV2ID reports whether the stored file carries the v2 magic and the
+// given key-ID byte.
+func rawHasV2ID(t *testing.T, root, rel string, id byte) bool {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(raw) > len("NCGOENC2") && strings.HasPrefix(string(raw), "NCGOENC2") && raw[len("NCGOENC2")] == id
+}
+
+// readSealed reads a file through the encryption-wrapped storage the server
+// would use, so sealed content comes back decrypted.
+func readSealed(t *testing.T, cfgPath, rel string) string {
+	t.Helper()
+	cfg, err := config.Load(config.LoadOptions{Path: cfgPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := openStorage(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, err := st.Open(context.Background(), rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rc.Close() }()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func TestEncryptionRotateKeys(t *testing.T) {
+	dir := t.TempDir()
+	keyAPath := filepath.Join(dir, "master-a.key")
+	keyBPath := filepath.Join(dir, "master-b.key")
+	cfgA, root := rotateEnv(t, dir, keyAPath)
+
+	// Key A seals the pre-rotation files (v1 headers); one plaintext file
+	// stays behind and must be skipped by the rotation.
+	if _, err := runCLI(t, "", "--config", cfgA, "encryption", "init"); err != nil {
+		t.Fatal(err)
+	}
+	writeSealed(t, cfgA, "alice/old1.txt", "sealed with A one")
+	writeSealed(t, cfgA, "alice/old2.txt", "sealed with A two")
+	writeRaw(t, root, "alice/plain.txt", "legacy plain")
+	if !rawHasMagic(t, root, "alice/old1.txt") {
+		t.Fatal("pre-rotation files must carry v1 headers")
+	}
+
+	// The new key becomes master_key_path; key A joins previous_key_paths.
+	if _, err := runCLI(t, "", "--config", cfgA, "encryption", "init", "--key-path", keyBPath); err != nil {
+		t.Fatal(err)
+	}
+	cfgB, _ := rotateEnv(t, dir, keyBPath, keyAPath)
+
+	// Dry-run counts without writing.
+	out, err := runCLI(t, "", "--config", cfgB, "encryption", "rotate-keys", "--dry-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "dry-run rotate-keys: scanned=3 changed=2 skipped=1 failed=0 bytes=34") {
+		t.Fatalf("dry-run output = %q", out)
+	}
+	if !rawHasMagic(t, root, "alice/old1.txt") {
+		t.Fatal("dry-run must not write")
+	}
+
+	// The sweep re-seals the old-key files under the current key (v2 ID 1);
+	// plaintext is skipped, contents are unchanged.
+	out, err = runCLI(t, "", "--config", cfgB, "encryption", "rotate-keys")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "rotate-keys: scanned=3 rotated=2 skipped=1 failed=0 bytes=34") {
+		t.Fatalf("rotate-keys output = %q", out)
+	}
+	if !strings.Contains(out, "rotate-keys: 3/3 files") {
+		t.Fatalf("progress line missing: %q", out)
+	}
+	for _, rel := range []string{"alice/old1.txt", "alice/old2.txt"} {
+		if !rawHasV2ID(t, root, rel, 1) {
+			t.Errorf("%s must be sealed as v2 under key ID 1", rel)
+		}
+	}
+	if rawHasMagic(t, root, "alice/plain.txt") {
+		t.Error("plaintext file must stay plaintext (rotation is not encrypt-all)")
+	}
+	for rel, want := range map[string]string{
+		"alice/old1.txt":  "sealed with A one",
+		"alice/old2.txt":  "sealed with A two",
+		"alice/plain.txt": "legacy plain",
+	} {
+		if got := readSealed(t, cfgB, rel); got != want {
+			t.Errorf("%s = %q, want %q", rel, got, want)
+		}
+	}
+
+	// Idempotent: a second run rotates nothing.
+	out, err = runCLI(t, "", "--config", cfgB, "encryption", "rotate-keys")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "rotated=0 skipped=3") {
+		t.Fatalf("idempotent output = %q", out)
+	}
+
+	// encrypt-all against the keyring still seals plaintext — under the
+	// current key.
+	out, err = runCLI(t, "", "--config", cfgB, "encryption", "encrypt-all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "encrypt-all: scanned=3 sealed=1 skipped=2 failed=0") {
+		t.Fatalf("encrypt-all output = %q", out)
+	}
+	if !rawHasV2ID(t, root, "alice/plain.txt", 1) {
+		t.Error("encrypt-all during a rotation must seal under the current key (v2 ID 1)")
+	}
+}
+
+func TestEncryptionRotateKeysGuards(t *testing.T) {
+	// Encryption disabled.
+	cfgPath, _ := sweepEnv(t, false)
+	if _, err := runCLI(t, "", "--config", cfgPath, "encryption", "rotate-keys"); err == nil ||
+		!strings.Contains(err.Error(), "encryption.enabled") {
+		t.Fatalf("disabled err = %v", err)
+	}
+
+	// Enabled but no previous keys: the error prints the rotation
+	// procedure.
+	cfgPath2, _ := sweepEnv(t, true)
+	_, err := runCLI(t, "", "--config", cfgPath2, "encryption", "rotate-keys")
+	if err == nil || !strings.Contains(err.Error(), "previous_key_paths") ||
+		!strings.Contains(err.Error(), "Rotation procedure") {
+		t.Fatalf("no-previous-keys err = %v", err)
+	}
+}
+
+func TestEncryptionStatusKeyring(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "master.key")
+	prev0 := filepath.Join(dir, "prev-2024.key")
+	prev1 := filepath.Join(dir, "prev-2025.key")
+	cfgPath := encConfig(t, fmt.Sprintf(`
+encryption:
+  enabled: true
+  master_key_path: %q
+  previous_key_paths:
+    - %q
+    - %q
+`, keyPath, prev0, prev1))
+	for _, kp := range []string{keyPath, prev0, prev1} {
+		if _, err := runCLI(t, "", "--config", cfgPath, "encryption", "init", "--key-path", kp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := runCLI(t, "", "--config", cfgPath, "encryption", "status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"master key: OK",
+		"previous keys: 2 configured",
+		"previous key 0 (" + prev0 + "): OK",
+		"previous key 1 (" + prev1 + "): OK",
+		"current key id: 2",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("status missing %q: %q", want, out)
+		}
+	}
+
+	// A missing previous key fails closed like the master key.
+	if err := os.Remove(prev0); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runCLI(t, "", "--config", cfgPath, "encryption", "status")
+	if err == nil || !strings.Contains(out, "UNUSABLE") {
+		t.Fatalf("missing previous key status = %q %v", out, err)
+	}
+
+	// No previous keys: an empty ring and current key ID 0.
+	solo := encConfig(t, fmt.Sprintf(`
+encryption:
+  enabled: true
+  master_key_path: %q
+`, keyPath))
+	out, err = runCLI(t, "", "--config", solo, "encryption", "status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "previous keys: 0 configured") || !strings.Contains(out, "current key id: 0") {
+		t.Fatalf("single-key status = %q", out)
 	}
 }
