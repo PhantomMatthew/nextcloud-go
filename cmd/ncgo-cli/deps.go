@@ -62,14 +62,15 @@ func filesDAV(st storage.Storage, db database.DB) *files.DAV {
 	return dav
 }
 
-// openStorage opens the configured default storage backend; the caller does
-// not close it (backends hold no resources beyond what the process lifetime
-// covers). This mirrors app.openStorage; the helper cannot live in
+// openRawBackend opens the configured default storage backend without the
+// encryption wrapper; the caller does not close it (backends hold no
+// resources beyond what the process lifetime covers). This mirrors the
+// backend switch in app.openStorage; the helper cannot live in
 // internal/storage without an import cycle (the s3/localfs backends import
-// the storage package), so the small switch is duplicated here. When
-// encryption is enabled the backend is wrapped exactly as in the server, so
-// CLI writes (import-nextcloud files) are sealed too.
-func openStorage(cfg *config.Config) (storage.Storage, error) {
+// the storage package), so the small switch is duplicated here. Callers
+// that rewrite file encodings (the encryption sweep commands) need the raw
+// backend to sniff sealed content themselves.
+func openRawBackend(cfg *config.Config) (storage.Storage, error) {
 	name := cfg.Storage.DefaultBackend
 	if name == "" {
 		name = "local"
@@ -78,16 +79,21 @@ func openStorage(cfg *config.Config) (storage.Storage, error) {
 	if !ok {
 		return nil, fmt.Errorf("ncgo-cli: storage backend %q not configured", name)
 	}
-	var st storage.Storage
-	var err error
 	switch b.Type {
 	case "localfs":
-		st, err = localfs.New(b.Root)
+		return localfs.New(b.Root)
 	case "s3":
-		st, err = s3store.New(b)
+		return s3store.New(b)
 	default:
 		return nil, fmt.Errorf("ncgo-cli: storage backend %q type %q unsupported", name, b.Type)
 	}
+}
+
+// openStorage opens the configured default storage backend exactly as the
+// server does: when encryption is enabled the raw backend is wrapped as in
+// app.openStorage, so CLI writes (import-nextcloud files) are sealed too.
+func openStorage(cfg *config.Config) (storage.Storage, error) {
+	st, err := openRawBackend(cfg)
 	if err != nil {
 		return nil, err
 	}

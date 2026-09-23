@@ -191,6 +191,29 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-23** — Phase 4x: `encryption encrypt-all`/`decrypt-all` CLI
+  sweep (ADR-0070), resolving the ADR-0052 follow-up. Transparent
+  seal-on-write left legacy plaintext on the backend until organic
+  rewrites; the new sweep re-encodes the whole storage tree (or one user's
+  `<uid>/` subtree via `--user`) in place: sniff the magic per file, skip
+  files already in the target encoding (idempotent, re-runnable after
+  interruption), read each remaining file in full and write it back through
+  the other layer — `Create` replaces atomically (localfs rename, s3
+  put-on-close), so concurrent readers through the server's auto-detecting
+  wrapper always see correct content and no downtime is required (low
+  traffic recommended against concurrent-write loss). filecache, versions,
+  and etags are deliberately untouched: the plaintext content — hence every
+  metadata value they track — is byte-identical, only the encoding at rest
+  changes. Per-file failures are counted, reported, and skipped (exit
+  non-zero when any); a wrong master key in `decrypt-all` aborts at the
+  first sealed file with a key-mismatch error instead of failing every
+  file. The sweep logic lives in `internal/storage/encrypt/sweep.go`
+  (`Sweep(ctx, raw, enc, opts)` with Direction/Prefix/DryRun/Progress/
+  OnError); the CLI is thin wiring over a new `openRawBackend` helper split
+  out of `deps.go`'s `openStorage` (existing callers unchanged), requiring
+  `encryption.enabled` and a loadable key. `--dry-run` counts what would
+  change with zero writes. Key rotation, per-user keys, filename
+  encryption, and SSE-C remain open follow-ups.
 - **2026-09-23** — Phase 4w: SPA bootstrap initial-state injection
   (ADR-0069), closing the ADR-0054 "server-rendered bootstrap state"
   follow-up at the core-subset level. ADR-0064's single shell-injection

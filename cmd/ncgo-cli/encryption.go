@@ -27,7 +27,112 @@ func newEncryption() *cobra.Command {
 			"pre-existing plaintext files keep working and are sealed when\n" +
 			"rewritten.",
 	}
-	cmd.AddCommand(newEncryptionInit(), newEncryptionStatus())
+	cmd.AddCommand(newEncryptionInit(), newEncryptionStatus(), newEncryptionEncryptAll(), newEncryptionDecryptAll())
+	return cmd
+}
+
+func newEncryptionEncryptAll() *cobra.Command {
+	return newEncryptionSweep(encrypt.SweepSeal)
+}
+
+func newEncryptionDecryptAll() *cobra.Command {
+	return newEncryptionSweep(encrypt.SweepOpen)
+}
+
+// newEncryptionSweep builds `encryption encrypt-all|decrypt-all`: an
+// in-place re-encoding sweep over the whole storage tree (or one user's
+// subtree), sealing legacy plaintext files or writing sealed files back as
+// plaintext for decommissioning.
+func newEncryptionSweep(direction encrypt.SweepDirection) *cobra.Command {
+	var user string
+	var dryRun bool
+	verb := "encrypt-all"
+	action := "seal"
+	past := "sealed"
+	if direction == encrypt.SweepOpen {
+		verb = "decrypt-all"
+		action = "restore"
+		past = "decrypted"
+	}
+	cmd := &cobra.Command{
+		Use:   verb,
+		Short: "Re-encode stored files in place (" + direction.String() + " the whole tree)",
+		Long: "Walk the default storage backend and " + action + " every file that is not\n" +
+			"already in the target encoding, in place. With --user the sweep is limited\n" +
+			"to that user's subtree (<uid>/); otherwise the entire backend is covered.\n\n" +
+			"The sweep is idempotent (interrupted runs can simply be re-run) and safe to\n" +
+			"run against a live server: every write replaces the file atomically, and\n" +
+			"the server's encryption layer auto-detects the encoding, so concurrent\n" +
+			"reads always see correct content. Running it at low-traffic times is still\n" +
+			"recommended: a file rewritten by a user concurrently with the sweep could\n" +
+			"lose that write. File metadata (filecache, versions, etags) is untouched —\n" +
+			"the plaintext content does not change, only its encoding at rest.\n\n" +
+			"Requires encryption.enabled and a loadable master key; decrypt-all aborts\n" +
+			"at the first file whose key does not match.",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			if !cfg.Encryption.Enabled {
+				return fmt.Errorf("ncgo-cli: encryption.enabled is false; enable encryption before running %s", verb)
+			}
+			user = strings.TrimSpace(user)
+			if strings.ContainsAny(user, `/\`) || user == "." || user == ".." {
+				return fmt.Errorf("ncgo-cli: invalid --user %q", user)
+			}
+			key, err := encrypt.LoadMasterKey(cfg.Encryption.MasterKeyPath)
+			if err != nil {
+				return fmt.Errorf("ncgo-cli: encryption: %w", err)
+			}
+			raw, err := openRawBackend(cfg)
+			if err != nil {
+				return err
+			}
+			enc, err := encrypt.New(key, raw)
+			if err != nil {
+				return fmt.Errorf("ncgo-cli: encryption: %w", err)
+			}
+			prefix := ""
+			if user != "" {
+				prefix = user + "/"
+			}
+			out := cmd.OutOrStdout()
+			opts := encrypt.SweepOptions{
+				Direction: direction,
+				Prefix:    prefix,
+				DryRun:    dryRun,
+				OnError: func(path string, err error) {
+					fmt.Fprintf(out, "failed: %s: %v\n", path, err)
+				},
+			}
+			const progressEvery = 100
+			if !dryRun {
+				opts.Progress = func(done, total int64) {
+					if done%progressEvery == 0 || done == total {
+						fmt.Fprintf(out, "%s: %d/%d files\n", verb, done, total)
+					}
+				}
+			}
+			stats, err := encrypt.Sweep(cmd.Context(), raw, enc, opts)
+			if err != nil {
+				return fmt.Errorf("ncgo-cli: encryption %s: %w", verb, err)
+			}
+			if dryRun {
+				fmt.Fprintf(out, "dry-run %s: scanned=%d changed=%d skipped=%d failed=%d bytes=%d\n",
+					verb, stats.Scanned, stats.Changed, stats.Skipped, stats.Failed, stats.Bytes)
+			} else {
+				fmt.Fprintf(out, "%s: scanned=%d %s=%d skipped=%d failed=%d bytes=%d\n",
+					verb, stats.Scanned, past, stats.Changed, stats.Skipped, stats.Failed, stats.Bytes)
+			}
+			if stats.Failed > 0 {
+				return fmt.Errorf("ncgo-cli: encryption %s: %d file(s) failed", verb, stats.Failed)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&user, "user", "", "limit the sweep to one user's tree (the <uid>/ storage prefix)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "count what would change without writing anything")
 	return cmd
 }
 
