@@ -180,9 +180,79 @@ func (s *StaticUI) serveFile(w http.ResponseWriter, r *http.Request, fsPath stri
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", contentTypeFor(info.Name()))
-	w.Header().Set("Cache-Control", cacheControlFor(info.Name()))
+	h := w.Header()
+	h.Set("Content-Type", contentTypeFor(info.Name()))
+	h.Set("Cache-Control", cacheControlFor(info.Name()))
+	// The representation depends on Accept-Encoding whenever a sidecar
+	// exists, and caches cannot see the filesystem — Vary always (ADR-0081).
+	h.Add("Vary", "Accept-Encoding")
+	if enc, sidecar := s.negotiateSidecar(r, fsPath); enc != "" {
+		defer func() { _ = sidecar.Close() }()
+		h.Set("Content-Encoding", enc)
+		// The sidecar inherits the source asset's name and modtime: cache
+		// policy and conditional requests key to the content version,
+		// which is the source's, not the sidecar file's own timestamps.
+		http.ServeContent(w, r, info.Name(), info.ModTime(), sidecar)
+		return
+	}
 	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
+}
+
+// negotiateSidecar picks a precompressed sidecar for fsPath against the
+// request's Accept-Encoding (ADR-0081): brotli wins over gzip when the
+// client accepts both, and a sidecar is used only when it exists as a
+// regular file contained in the root (an escaping symlink falls through
+// to identity, never 404 — the asset itself is servable). The injected
+// SPA shell never reaches here: its bytes vary per session, so no
+// precompressed representation of it can exist.
+func (s *StaticUI) negotiateSidecar(r *http.Request, fsPath string) (string, *os.File) {
+	for _, cand := range []struct{ enc, suffix string }{{"br", ".br"}, {"gzip", ".gz"}} {
+		if !acceptsEncoding(r.Header.Get("Accept-Encoding"), cand.enc) {
+			continue
+		}
+		f, err := os.Open(fsPath + cand.suffix)
+		if err != nil {
+			continue
+		}
+		info, err := f.Stat()
+		if err != nil || info.IsDir() {
+			_ = f.Close()
+			continue
+		}
+		resolved, err := filepath.EvalSymlinks(fsPath + cand.suffix)
+		if err != nil || !s.contained(resolved) {
+			_ = f.Close()
+			continue
+		}
+		return cand.enc, f
+	}
+	return "", nil
+}
+
+// acceptsEncoding reports whether the Accept-Encoding header value lists
+// token with a nonzero q (a missing or unparseable q means q=1: an explicit
+// token from a hand-rolled client gets the encoding it named). Wildcards
+// are deliberately not honored — only an explicit br/gzip token selects a
+// sidecar, the same stance as nginx's gzip_static.
+func acceptsEncoding(header, token string) bool {
+	for _, part := range strings.Split(header, ",") {
+		name, params, _ := strings.Cut(strings.TrimSpace(part), ";")
+		if !strings.EqualFold(strings.TrimSpace(name), token) {
+			continue
+		}
+		q := 1.0
+		for _, p := range strings.Split(params, ";") {
+			k, v, ok := strings.Cut(strings.TrimSpace(p), "=")
+			if !ok || !strings.EqualFold(k, "q") {
+				continue
+			}
+			if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+				q = f
+			}
+		}
+		return q > 0
+	}
+	return false
 }
 
 // serveShell serves the SPA shell with the bootstrap requesttoken and state

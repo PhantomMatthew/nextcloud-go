@@ -191,6 +191,20 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-23** — Phase 5i: precompressed static assets (ADR-0081),
+  resolving the ADR-0054 follow-up. `StaticUI.serveFile` now negotiates
+  `.br`/`.gz` sidecars: brotli over gzip on a fixed server preference,
+  explicit tokens only (`q=0` excludes, wildcards ignored — the nginx
+  `gzip_static` stance), sidecars must exist as regular files contained
+  in the root (escaping symlinks fall back to identity). The sidecar
+  inherits the source asset's name, content type, cache policy, and
+  modtime — conditional requests key to the content version, and
+  immutable hashed bundles stay immutable in both representations.
+  `Vary: Accept-Encoding` rides every asset response; the injected SPA
+  shell is excluded by construction (its bytes vary per session, so no
+  precompressed representation can exist). Zero config, zero CPU —
+  operators who pre-compress their web root get compressed transfer for
+  free; everyone else sees byte-identical behavior plus one header.
 - **2026-09-23** — Phase 5h: embedded admin console (ADR-0080), resolving
   the ADR-0054 follow-up. Operators who never set `web.static_root` had no
   browser surface at all — no zero-config way to answer "is the instance

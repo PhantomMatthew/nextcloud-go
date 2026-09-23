@@ -135,9 +135,12 @@ Constraints shaping the design:
 
 ### Follow-ups (explicit, not in v1)
 
-- **Precompressed assets** (gzip/brotli sidecar files, `Content-Encoding`
+- ~~**Precompressed assets** (gzip/brotli sidecar files, `Content-Encoding`
   negotiation) — compiled bundles are large; serving `.gz`/`.br` sidecars
-  when present is a straight win.
+  when present is a straight win.~~ (**resolved by ADR-0081**: brotli-over-
+  gzip sidecar negotiation in `StaticUI.serveFile`, source-keyed cache and
+  conditional-request semantics, `Vary: Accept-Encoding` throughout, the
+  injected shell excluded.)
 - ~~**`requesttoken` endpoint + CSRF token validation** so the full SPA
   browser login and form POSTs work, not just login v2/Basic.~~ (**resolved
   by ADR-0064**: derived per-session requesttokens, shell injection, browser
