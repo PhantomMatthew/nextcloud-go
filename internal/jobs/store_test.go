@@ -74,6 +74,78 @@ func TestSQLStoreInsertClaimCompleteFail(t *testing.T) {
 	}
 }
 
+func TestListRecent(t *testing.T) {
+	ctx := t.Context()
+	store := NewSQLStore(testDB(t))
+	now := time.Date(2025, 5, 1, 12, 0, 0, 0, time.UTC)
+	nowMs := now.UnixMilli()
+
+	// Seed one row per state shape: queued (neither timestamp), running
+	// (started only), done (completed), failed (error text, not completed —
+	// the shape Fail leaves behind after it resets started_at). Insert only
+	// writes the claim-facing columns, so the timestamp states land via SQL.
+	seed := []Row{
+		{Name: "queued.job", RunAt: nowMs, CreatedAt: nowMs},
+		{Name: "running.job", RunAt: nowMs, CreatedAt: nowMs},
+		{Name: "done.job", RunAt: nowMs, CreatedAt: nowMs},
+		{Name: "failed.job", RunAt: nowMs, LastError: "boom", Attempts: 2, CreatedAt: nowMs},
+	}
+	for i := range seed {
+		r := seed[i]
+		if err := store.Insert(ctx, &r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.db.Exec(ctx, `UPDATE jobs SET started_at = ? WHERE name = ?`, nowMs, "running.job"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(ctx, `UPDATE jobs SET started_at = ?, completed_at = ? WHERE name = ?`, nowMs, nowMs, "done.job"); err != nil {
+		t.Fatal(err)
+	}
+
+	recent, err := store.ListRecent(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent) != len(seed) {
+		t.Fatalf("ListRecent = %d rows, want %d", len(recent), len(seed))
+	}
+	for i := 1; i < len(recent); i++ {
+		if recent[i-1].ID < recent[i].ID {
+			t.Fatalf("ListRecent not id DESC: %+v", recent)
+		}
+	}
+	if recent[0].Name != "failed.job" || recent[0].LastError != "boom" || recent[0].Attempts != 2 {
+		t.Errorf("newest row = %+v", recent[0])
+	}
+	// Every state shape round-trips: nullable timestamps and error text.
+	var running, done Row
+	for _, r := range recent {
+		switch r.Name {
+		case "running.job":
+			running = r
+		case "done.job":
+			done = r
+		}
+	}
+	if running.StartedAt != nowMs || running.CompletedAt != 0 {
+		t.Errorf("running row = %+v", running)
+	}
+	if done.CompletedAt != nowMs {
+		t.Errorf("done row = %+v", done)
+	}
+
+	// Limit is honored and a non-positive limit falls back to the default.
+	one, err := store.ListRecent(ctx, 1)
+	if err != nil || len(one) != 1 || one[0].Name != "failed.job" {
+		t.Fatalf("ListRecent(1) = %+v %v", one, err)
+	}
+	def, err := store.ListRecent(ctx, 0)
+	if err != nil || len(def) != len(seed) {
+		t.Fatalf("ListRecent(0) = %d %v", len(def), err)
+	}
+}
+
 func TestClaimDueNoDouble(t *testing.T) {
 	ctx := t.Context()
 	store := NewSQLStore(testDB(t))

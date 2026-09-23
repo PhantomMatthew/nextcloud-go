@@ -10,6 +10,7 @@ import (
 	actpkg "github.com/PhantomMatthew/nextcloud-go/internal/activity"
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
 	"github.com/PhantomMatthew/nextcloud-go/internal/capabilities"
+	"github.com/PhantomMatthew/nextcloud-go/internal/console"
 	"github.com/PhantomMatthew/nextcloud-go/internal/files"
 	"github.com/PhantomMatthew/nextcloud-go/internal/httpx"
 	"github.com/PhantomMatthew/nextcloud-go/internal/login"
@@ -95,11 +96,12 @@ func (a *App) mountRoutes() error {
 	)
 	router := httpx.NewRouter(baseChain...)
 
-	statusHandler := status.Provider{
+	statusProvider := status.Provider{
 		Installed:      true,
 		Maintenance:    a.Cfg.Maintenance.Enabled,
 		NeedsDBUpgrade: a.Cfg.Maintenance.NeedsDBUpgrade,
-	}.Handler()
+	}
+	statusHandler := statusProvider.Handler()
 	for _, m := range []string{"GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"} {
 		router.Handle(m, "/status.php", statusHandler)
 	}
@@ -215,6 +217,30 @@ func (a *App) mountRoutes() error {
 	router.Handle(http.MethodPost, "/index.php/login", http.HandlerFunc(browserLogin.HandleLogin))
 	router.Handle(http.MethodGet, "/index.php/logout", http.HandlerFunc(browserLogin.HandleLogout))
 	router.Handle(http.MethodPost, "/index.php/logout", http.HandlerFunc(browserLogin.HandleLogout))
+
+	// The embedded admin console (ADR-0080) mounts unconditionally: it is the
+	// zero-config alternative to pointing web.static_root at a Nextcloud
+	// release. console.Auth is the usual credential stack with a
+	// console-shaped failure writer (login-link page / JSON 401 instead of
+	// the empty WebDAV challenge); RequireAdmin then gates to the admin
+	// group. GET/HEAD-only: the router 405s other methods, and the longest-
+	// prefix rules keep these ahead of the static catch-all below.
+	consoleHandler := &console.Handler{
+		Users:      a.Users,
+		Jobs:       a.jobsStore,
+		DB:         a.DB,
+		Cfg:        a.Cfg,
+		InstanceID: a.instanceID,
+		Status:     statusProvider,
+	}
+	consoleMw := []httpx.Middleware{
+		httpx.Middleware(console.Auth(authCfg)),
+		httpx.Middleware(console.RequireAdmin(a.Users)),
+	}
+	for _, m := range []string{http.MethodGet, http.MethodHead} {
+		router.Handle(m, "/console", consoleHandler, consoleMw...)
+		router.HandlePrefix(m, "/console/", consoleHandler, consoleMw...)
+	}
 
 	if a.previewGen != nil {
 		// The extensionless pair is what the NC web UI generates when

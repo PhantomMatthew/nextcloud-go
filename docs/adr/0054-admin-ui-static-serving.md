@@ -142,8 +142,11 @@ Constraints shaping the design:
   browser login and form POSTs work, not just login v2/Basic.~~ (**resolved
   by ADR-0064**: derived per-session requesttokens, shell injection, browser
   login/logout endpoints, and auth-core CSRF validation.)
-- **Embedded minimal admin console** (status, users, jobs) via `embed.FS`
-  as a zero-config alternative to pointing at a full Nextcloud release.
+- ~~**Embedded minimal admin console** (status, users, jobs) via `embed.FS`
+  as a zero-config alternative to pointing at a full Nextcloud release.~~
+  (**Resolved by ADR-0080**: the hand-written, build-step-free console ships
+  at `/console` — three embedded assets plus read-only status/users/jobs
+  JSON, gated to members of the `admin` group.)
 - ~~**Server-rendered bootstrap state** (the `oc_appconfig`/`OC` initial
   state PHP injects into `index.html`) to reduce frontend error noise on
   first load; requires templating the shell, deliberately out of v1's

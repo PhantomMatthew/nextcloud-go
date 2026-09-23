@@ -76,6 +76,7 @@ type App struct {
 	publicFS      webdav.FS
 	shares        *sharing.Service
 	jobs          jobs.Runner
+	jobsStore     *jobs.SQLStore
 	calendarStore *caldav.SQLStore
 	calendarFS    *caldav.DAV
 	contactsStore *carddav.SQLStore
@@ -230,7 +231,9 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	ver := files.NewVersions(st, files.NewSQLVersionStore(db), dav, a.Users)
 	dav.Versions = ver
 	a.versionsFS = ver
-	jr := jobs.NewRunner(jobs.NewSQLStore(db), time.Now, cfg.Jobs.Workers, cfg.Jobs.PollInterval)
+	jobsStore := jobs.NewSQLStore(db)
+	a.jobsStore = jobsStore
+	jr := jobs.NewRunner(jobsStore, time.Now, cfg.Jobs.Workers, cfg.Jobs.PollInterval)
 	jr.Logger = logger
 	if err := jr.Register(sharing.NewExpireJob(dav.Shares, dav.Clock)); err != nil {
 		if cerr := a.closeResources(ctx); cerr != nil {

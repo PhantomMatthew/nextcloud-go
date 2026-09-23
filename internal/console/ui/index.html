@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ncgo admin console</title>
+<link rel="stylesheet" href="/console/console.css">
+</head>
+<body>
+<header>
+  <h1>ncgo admin console</h1>
+  <span id="instance" class="badge"></span>
+</header>
+<div id="banner" class="banner" hidden></div>
+<main>
+  <section id="status">
+    <h2>Status <button type="button" data-reload="status">Refresh</button></h2>
+    <dl id="status-fields" class="fields"></dl>
+    <table id="storage-table">
+      <caption>Storage backends</caption>
+      <thead><tr><th>Name</th><th>Type</th><th>Default</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+  <section id="users">
+    <h2>Users <button type="button" data-reload="users">Refresh</button></h2>
+    <table id="users-table">
+      <thead><tr><th>UID</th><th>Display name</th><th>Email</th><th>Enabled</th><th>Quota</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="pager">
+      <button type="button" id="users-prev" disabled>Previous</button>
+      <span id="users-range"></span>
+      <button type="button" id="users-next">Next</button>
+    </p>
+  </section>
+  <section id="jobs">
+    <h2>Jobs <button type="button" data-reload="jobs">Refresh</button></h2>
+    <table id="jobs-table">
+      <thead><tr><th>ID</th><th>Name</th><th>State</th><th>Run at</th><th>Started</th><th>Completed</th><th>Attempts</th><th>Last error</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</main>
+<script src="/console/console.js"></script>
+</body>
+</html>

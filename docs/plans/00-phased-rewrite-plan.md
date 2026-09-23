@@ -191,6 +191,26 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-23** — Phase 5h: embedded admin console (ADR-0080), resolving
+  the ADR-0054 follow-up. Operators who never set `web.static_root` had no
+  browser surface at all — no zero-config way to answer "is the instance
+  up, who has an account, what is the job runner doing". The console is
+  the ADR-0054 middle path, not the rejected full-frontend embed: three
+  hand-written files (`index.html`/`console.js`/`console.css`, vanilla
+  HTML/JS/CSS, ~250 lines, no framework, no build step) embedded via
+  `embed.FS` and served at `/console` — a namespace Nextcloud never
+  claims, so it can never shadow the served frontend (the router's
+  exact/longest-prefix rules keep it ahead of the static catch-all, pinned
+  by an app-level test). Authorization is NC's `admin`-group convention:
+  `EnsureBootstrapAdmin` now creates the group and the membership on the
+  empty-database path only (existing installs untouched; NC-imported
+  instances inherit NC's own admin group), and `console.RequireAdmin`
+  gates every route on it after the usual credential stack. v1 is
+  read-only — GET/HEAD only, so zero CSRF surface; the three JSON
+  endpoints (status reusing the shared `status.Provider`, paged users,
+  recent jobs via a new `jobs.SQLStore.ListRecent`) clamp pagination and
+  render RFC3339 UTC timestamps; per-user groups are deliberately omitted
+  (N+1). Mutations are future work behind ADR-0064 requesttokens.
 - **2026-09-23** — Phase 5g: addressbook sharing (ADR-0079), resolving the
   ADR-0071 skip: `oc_dav_shares` rows with `type='addressbook'` had no
   ncgo share table to land on, and CardDAV had no sharing at all. The

@@ -292,6 +292,85 @@ func TestEnsureBootstrapAdmin(t *testing.T) {
 	}
 }
 
+func TestEnsureBootstrapAdminGroup(t *testing.T) {
+	ctx := context.Background()
+	store := NewSQLStore(testDB(t))
+	h := hasher()
+	logger := slog.New(slog.DiscardHandler)
+
+	// Fresh database: the admin group is created and the bootstrap admin is
+	// a member (ADR-0080).
+	if err := EnsureBootstrapAdmin(ctx, store, h, BootstrapAdmin{UID: "admin", Password: "admin"}, logger); err != nil {
+		t.Fatal(err)
+	}
+	g, err := store.GetGroupByGID(ctx, AdminGroupGID)
+	if err != nil {
+		t.Fatalf("admin group: %v", err)
+	}
+	if g.DisplayName != AdminGroupGID {
+		t.Errorf("admin group display = %q", g.DisplayName)
+	}
+	gids, err := store.UserGroupGIDs(ctx, "admin")
+	if err != nil || len(gids) != 1 || gids[0] != AdminGroupGID {
+		t.Fatalf("bootstrap admin groups = %v %v", gids, err)
+	}
+
+	// A second bootstrap attempt on the now non-empty table leaves the group
+	// and membership untouched (no duplicate-membership error).
+	if err := EnsureBootstrapAdmin(ctx, store, h, BootstrapAdmin{UID: "admin", Password: "admin"}, logger); err != nil {
+		t.Fatal(err)
+	}
+	members, err := store.GroupMembers(ctx, AdminGroupGID, 0)
+	if err != nil || len(members) != 1 || members[0] != "admin" {
+		t.Fatalf("admin group members = %v %v", members, err)
+	}
+}
+
+func TestEnsureAdminMembershipPreexisting(t *testing.T) {
+	ctx := context.Background()
+	store := NewSQLStore(testDB(t))
+
+	// An NC-imported instance shape: the admin group and the membership
+	// already exist; the helper must not error or duplicate.
+	if err := store.Create(ctx, &User{UID: "imported", PasswordHash: "x", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateGroup(ctx, &Group{GID: AdminGroupGID, DisplayName: "Administrators"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddGroupMember(ctx, AdminGroupGID, "imported"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureAdminMembership(ctx, store, "imported"); err != nil {
+		t.Fatal(err)
+	}
+	g, err := store.GetGroupByGID(ctx, AdminGroupGID)
+	if err != nil || g.DisplayName != "Administrators" {
+		t.Fatalf("pre-existing group renamed: %+v %v", g, err)
+	}
+	members, err := store.GroupMembers(ctx, AdminGroupGID, 0)
+	if err != nil || len(members) != 1 {
+		t.Fatalf("members after re-ensure = %v %v", members, err)
+	}
+}
+
+func TestEnsureBootstrapAdminNonEmptyUntouched(t *testing.T) {
+	ctx := context.Background()
+	store := NewSQLStore(testDB(t))
+
+	// Existing installs (users table non-empty) never gain the group, even
+	// when the bootstrap UID is configured.
+	if err := store.Create(ctx, &User{UID: "alice", PasswordHash: "x", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureBootstrapAdmin(ctx, store, hasher(), BootstrapAdmin{UID: "admin", Password: "admin"}, slog.New(slog.DiscardHandler)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetGroupByGID(ctx, AdminGroupGID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("non-empty DB must stay untouched, admin group = %v", err)
+	}
+}
+
 func TestSearchAndSearchGroups(t *testing.T) {
 	ctx := context.Background()
 	db := testDB(t)

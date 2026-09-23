@@ -151,6 +151,34 @@ func (s *SQLStore) DeleteByName(ctx context.Context, name string) error {
 	return nil
 }
 
+// ListRecent returns up to limit rows ordered by id DESC — newest first, in
+// any state (queued/running/done/failed; the row fields carry it). The admin
+// console jobs view reads it; a limit <= 0 selects the default page size.
+func (s *SQLStore) ListRecent(ctx context.Context, limit int) ([]Row, error) {
+	if s == nil {
+		return nil, fmt.Errorf("jobs: nil store")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT id, name, payload, run_at, started_at, completed_at, last_error, attempts, created_at
+FROM jobs
+ORDER BY id DESC
+LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("jobs: list recent: %w", err)
+	}
+	out, scanErr := scanRows(rows)
+	if cerr := rows.Close(); cerr != nil && scanErr == nil {
+		scanErr = fmt.Errorf("jobs: list recent close: %w", cerr)
+	}
+	if scanErr != nil {
+		return nil, scanErr
+	}
+	return out, nil
+}
+
 func scanRows(rows database.Rows) ([]Row, error) {
 	var out []Row
 	for rows.Next() {

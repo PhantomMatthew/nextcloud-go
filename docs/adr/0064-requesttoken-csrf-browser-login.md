@@ -156,8 +156,8 @@ browser login endpoint.
 - ADR-0054 follow-up status: **`requesttoken` endpoint + CSRF validation —
   done here**; **server-rendered bootstrap state — partially** (the
   requesttoken is injected; the full `oc_appconfig`/initial-state payload
-  remains a follow-up); **precompressed assets** and **embedded minimal
-  admin console** remain follow-ups.
+  remains a follow-up); **precompressed assets** remains a follow-up;
+  ~~**embedded minimal admin console**~~ (**resolved by ADR-0080**).
 
 ## Verification
 
