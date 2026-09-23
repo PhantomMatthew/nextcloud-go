@@ -191,6 +191,29 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-23** — Phase 4t: plugin outbound request body streaming
+  (ADR-0066), closing the ADR-0043 ">1 MiB uploads" follow-up. Three new
+  host functions stage a body in a temp-file spool —
+  `http_request_body_create` (gated on `http.outbound` like `http_request`),
+  `http_request_body_write` (chunk append; -11 above the 1 MiB `buf_len` or
+  past the spool cap), `http_request_body_close` (seal; later writes and
+  double closes → -2) — capped by the existing `HostConfig.MaxSpoolBytes`
+  (default 1 GiB) and sharing the §8 64-stream handle budget. The
+  `http_request` map gains `body_handle`, mutually exclusive with
+  `body_bytes` (both → -2); the handle must be sealed (unsealed → -2, stays
+  usable), and consumption is destructive: the request goes out with a
+  known `ContentLength` plus a `GetBody` reopening the spool for 307/308
+  replay, and the spool is deleted when the call ends (never-consumed
+  spools die with the instance handle-table cleanup). Spool over live
+  `io.Pipe` streaming because the guest only runs inside host calls while
+  `client.Do` reads the body asynchronously, the per-call timeout model has
+  no owner for a cross-call upload, and mid-upload upstream failures cannot
+  travel back to the guest. Allowlist, egress IP guard, rate limit,
+  redirect re-validation, and the response byte cap apply unchanged;
+  allowlist/rate denials precede consumption so a refused guest keeps its
+  spool. ABI stays `ncgo-abi/1` per §9; pluginsdk gains
+  `HTTPBodyCreate`/`HTTPBodyWrite`/`HTTPBodyClose` and an `omitempty`
+  `BodyHandle` field on `HTTPOutboundRequest`.
 - **2026-09-23** — Phase 4s: plugin route request body streaming
   (ADR-0065), closing the ADR-0041 `body_handle` follow-up as a manifest
   opt-in. Plugins with `runtime.request_body_stream = true` receive the
@@ -207,7 +230,7 @@ These become candidates for v2 (post-1.0).
   owned by net/http). ABI stays `ncgo-abi/1` per §9 (new functions within a
   major); pluginsdk gains `RequestBodyRead`/`RequestBodyClose` and a
   `BodyHandle` field on `HTTPRequest`. Outbound streaming (>1 MiB
-  `http_request` uploads) remains a follow-up.
+  `http_request` uploads) remained a follow-up, closed by Phase 4t above.
 - **2026-09-22** — Phase 4r: requesttoken + CSRF validation + SPA browser
   login (ADR-0064), completing two ADR-0054 follow-ups. Per-session CSRF
   tokens are derived statelessly as

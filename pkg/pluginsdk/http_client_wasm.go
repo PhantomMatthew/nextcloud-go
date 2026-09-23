@@ -26,13 +26,19 @@ const httpOutCap = 1 << 20
 
 // HTTPOutboundRequest is the MessagePack request map passed to http_request.
 // TimeoutMS <= 0 selects the host default (10s); values above 30s are
-// clamped by the host.
+// clamped by the host. The body travels inline as Body or by reference as
+// BodyHandle — a sealed spool from HTTPBodyCreate/HTTPBodyClose, consumed
+// and destroyed by the call — never both: the host rejects a request map
+// carrying a non-empty Body and a non-zero BodyHandle with
+// ErrCodeInvalidArgument. BodyHandle is omitempty so requests that do not
+// stream keep the 4c5 map shape.
 type HTTPOutboundRequest struct {
-	Method    string            `msgpack:"method"`
-	URL       string            `msgpack:"url"`
-	Headers   map[string]string `msgpack:"headers"`
-	Body      []byte            `msgpack:"body_bytes"`
-	TimeoutMS int32             `msgpack:"timeout_ms"`
+	Method     string            `msgpack:"method"`
+	URL        string            `msgpack:"url"`
+	Headers    map[string]string `msgpack:"headers"`
+	Body       []byte            `msgpack:"body_bytes"`
+	BodyHandle int32             `msgpack:"body_handle,omitempty"`
+	TimeoutMS  int32             `msgpack:"timeout_ms"`
 }
 
 // HTTPResponse is an open outbound response; Close releases the handle.

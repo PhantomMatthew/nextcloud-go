@@ -270,7 +270,10 @@ ncgo.storage_rename(src_ptr, src_len, dst_ptr, dst_len) -> i32
 
 ```
 ncgo.http_request(req_ptr, req_len) -> i64
-  req = MessagePack { method, url, headers, body_bytes, timeout_ms }
+  req = MessagePack { method, url, headers, body_bytes, body_handle, timeout_ms }
+  body_bytes and body_handle are mutually exclusive; a map carrying both is
+  refused with -2. body_handle references a sealed spool from
+  http_request_body_create (below) and is consumed and destroyed by the call.
   Returns: high32 err, low32 response_handle
 
 ncgo.http_response_status(handle: i32) -> i32
@@ -293,6 +296,35 @@ at `plugin.max_http_response_mb` (default 32 MiB): the `http_response_body_read`
 that would push delivered bytes past the cap fails loudly with -11 (`ErrTooLarge`)
 instead of silently truncating, later reads keep failing, and status/header reads
 are unaffected (ADR-0059).
+
+#### Outbound request body (streaming)
+
+```
+ncgo.http_request_body_create() -> i64
+ncgo.http_request_body_write(handle, buf_ptr, buf_len) -> i32
+ncgo.http_request_body_close(handle: i32) -> i32
+```
+
+These stage a request body larger than the 1 MiB inline `body_bytes` cap in a
+temp-file spool, referenced from `http_request`'s `body_handle` (ADR-0066).
+`create` returns high32 err / low32 handle and is gated on `http.outbound`
+like `http_request` itself (the per-target allowlist still applies at request
+time); the handle shares the §8 stream budget (64 per instance). `write`
+appends one chunk and returns the byte count; `buf_len` above the host
+payload cap (1 MiB) fails with -11 (`ErrTooLarge`), and the write that would
+push the running total past the host spool cap (default 1 GiB, the same
+`HostConfig.MaxSpoolBytes` knob as the storage write spools) fails with -11.
+`close` seals the spool: writes and repeated closes after the seal answer -2
+(`ErrInvalidArgument`). `http_request` requires a sealed handle — an unsealed
+one is -2 and stays usable, a missing id -4, an id of another handle type -2
+— and consumption is destructive: the request goes out with a known
+`ContentLength` (`GetBody` reopens the spool so 307/308 redirects can replay
+it), and the spool file is deleted when the call ends, success or failure. A
+spool never consumed is deleted by the handle-table cleanup when the instance
+is released. Allowlist, egress IP guard, rate limit, and the response byte
+cap apply to the streamed path unchanged; allowlist and rate-limit denials
+are checked before consumption, so a refused request leaves the sealed spool
+intact for a retry.
 
 #### Events
 
@@ -644,6 +676,32 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-23** — Phase 4t implemented outbound request body streaming
+  (ADR-0066), closing the ADR-0043 ">1 MiB uploads" follow-up. Three new
+  §6.3 host functions stage a body in a temp-file spool:
+  `http_request_body_create() -> i64` (gated on `http.outbound` like
+  `http_request` itself), `http_request_body_write(handle, buf_ptr,
+  buf_len) -> i32` (chunk append; -11 above the 1 MiB `buf_len` or past the
+  spool cap), and `http_request_body_close(handle) -> i32` (seals; writes
+  and repeated closes after the seal → -2). The spool cap reuses
+  `HostConfig.MaxSpoolBytes` (default 1 GiB, the storage-spool knob), and
+  the handle shares the §8 64-stream budget. The `http_request` map gains
+  `body_handle`, mutually exclusive with `body_bytes` (both → -2); the
+  handle must be sealed (unsealed → -2, stays usable), consumption is
+  destructive — the request goes out with a known `ContentLength` and a
+  `GetBody` that reopens the spool for 307/308 replay, and the spool file
+  is deleted when the call ends, success or failure (never-consumed spools
+  die with the instance handle-table cleanup). Allowlist, egress IP guard,
+  rate limit, redirect re-validation, and the response byte cap apply to
+  the streamed path unchanged, and allowlist/rate denials run before
+  consumption so a throttled guest keeps its spool. Spool over live
+  streaming (`io.Pipe`) because the guest only runs inside host calls while
+  `client.Do` reads the body asynchronously, the per-call timeout model has
+  no clean owner for a cross-call upload, and a mid-upload upstream failure
+  cannot travel back to a guest that already handed the bytes off. Adding
+  functions within `ncgo-abi/1` is permitted by §9. The pluginsdk gains
+  `HTTPBodyCreate`/`HTTPBodyWrite`/`HTTPBodyClose` and a `BodyHandle` field
+  (`omitempty`) on `HTTPOutboundRequest`.
 - **2026-09-23** — Phase 4s implemented the §7 `body_handle` request map as
   a manifest opt-in (ADR-0065): plugins with
   `runtime.request_body_stream = true` no longer have their route request
@@ -663,7 +721,8 @@ Full ABI implementation is the bulk of Phase 4.
   1 MiB). Adding functions within `ncgo-abi/1` is permitted by §9. The
   pluginsdk gains `RequestBodyRead`/`RequestBodyClose` and a `BodyHandle`
   field on `HTTPRequest`. Outbound streaming (>1 MiB `http_request`
-  uploads) remains a follow-up.
+  uploads) remained a follow-up, closed by Phase 4t (see the 4t entry
+  above).
 - **2026-09-22** — Phase 4q2 closed the hot-reload × cache-cleanup
   interaction (ADR-0063): the reconciler purges a plugin's `plugin:<id>:`
   cache keys when a stop is an uninstall (registry row gone), and keeps them
@@ -735,7 +794,8 @@ Full ABI implementation is the bulk of Phase 4.
   the last open ADR-0039 follow-up.
 - **2026-09-22** — Phase 4n closed the ADR-0043 "per-plugin rate limits" and
   "response size caps" follow-ups (ADR-0059), leaving only >1 MiB streaming
-  request bodies outstanding. Each `http_request` call (redirect chain
+  request bodies outstanding (closed by Phase 4t, see the 2026-09-23 4t
+  entry). Each `http_request` call (redirect chain
   included) now draws one token from a per-plugin-id stdlib token bucket —
   `HostConfig.HTTPRatePerMinute` default 120, burst 30 — and exhaustion fails
   the call with -8 (`ErrQuotaExceeded`) plus a warn log naming the plugin;
@@ -911,7 +971,9 @@ Full ABI implementation is the bulk of Phase 4.
   list/keys, uninstall row cleanup, encryption-at-rest for secrets.
 - **2026-09-22** — Phase 4c5 implemented outbound HTTP (ADR-0043): the
   §6.3 `http_*` family is live. `http_request` takes the MessagePack
-  `{method, url, headers, body_bytes, timeout_ms}` map; method must be
+  `{method, url, headers, body_bytes, timeout_ms}` map (gaining a
+  `body_handle` alternative to inline `body_bytes` in Phase 4t, see the
+  2026-09-23 4t entry); method must be
   GET/HEAD/POST/PUT/DELETE/PATCH/OPTIONS and the URL `http`/`https` with
   a non-empty host (else -2). **Allowlist semantics (v1):** the target is
   normalized to lowercase `host` when the port is the scheme default

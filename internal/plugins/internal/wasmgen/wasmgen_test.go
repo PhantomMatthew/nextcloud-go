@@ -67,6 +67,7 @@ func TestModulesCompile(t *testing.T) {
 		{"http-absent-header", HTTPAbsentHeaderModule([]byte{0x90}, "X-Missing")},
 		{"http-leak", HTTPLeakModule([]byte{0x90})},
 		{"http-body-cap", HTTPBodyCapModule([]byte{0x90}, -11)},
+		{"http-body-stream", HTTPBodyStreamModule([]byte{0x90}, 2, 200, -3)},
 		{"config", ConfigModule("tokens.x", "v", "tokens.x", "tokens.miss", "other", -3)},
 		{"config-read-only", ConfigModule("", "", "", "foo", "", 0)},
 		{"config-get-probe", ConfigGetProbeModule("foo", 4096, -3)},

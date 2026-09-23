@@ -86,7 +86,8 @@ called"), so the ABI stays `ncgo-abi/1`.
 - Per-instance handle ids grow monotonically for pooled/singleton plugins
   across requests; ids past 127 simply move msgpack to uint8/uint16
   encodings, which guests decoding a map integer handle natively.
-- **Outbound streaming stays a follow-up.** `http_request` still takes
+- **Outbound streaming stays a follow-up** (closed by ADR-0066).
+  `http_request` still takes
   `body_bytes` inline (≤ 1 MiB); >1 MiB guest-initiated uploads need a
   symmetric upload-handle ABI (guest-produced stream) which is a separate
   design surface and remains registered as future work.

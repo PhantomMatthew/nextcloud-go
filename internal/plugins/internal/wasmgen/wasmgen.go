@@ -2387,6 +2387,154 @@ func HTTPBodyCapModule(reqBytes []byte, want int32) []byte {
 	return s.build()
 }
 
+// HTTPBodyStreamModule builds an outbound streaming-upload probe (ADR-0066).
+// The exported do_upload entry creates a request body spool, writes chunks
+// × 32 KiB of the deterministic pattern byte(i) = i % 251 (running across
+// chunk boundaries), seals it, and issues reqBytes — baked Go-side with
+// body_handle addressing the first handle of a fresh instance — via
+// http_request. Markers: "create-ok" when create succeeds, "write-ok" when
+// every write returned a full chunk, "seal-ok" when close returned 0; then
+// the HTTPOutboundModule response set — "req-ok", "status-ok" (wantStatus),
+// each response chunk logged, "resp-ok" at EOF, "done-ok" after close. When
+// http_request's high-32 code equals a non-zero deniedWant instead, the probe
+// logs "denied-ok" and skips the response handling.
+func HTTPBodyStreamModule(reqBytes []byte, chunks int, wantStatus, deniedWant int32) []byte {
+	const chunkLen = 32768
+	s := guestSpec{
+		imports: []imp{
+			{"log", tLog},                            // 0
+			{"http_request_body_create", tNullToI64}, // 1
+			{"http_request_body_write", tLog},        // 2
+			{"http_request_body_close", tAlloc},      // 3
+			{"http_request", tTwoI32I64},             // 4
+			{"http_response_status", tAlloc},         // 5
+			{"http_response_body_read", tLog},        // 6
+			{"http_response_close", tAlloc},          // 7
+		},
+		data: [][]byte{
+			reqBytes,
+			[]byte("create-ok"), []byte("write-ok"), []byte("seal-ok"), []byte("req-ok"),
+			[]byte("status-ok"), []byte("resp-ok"), []byte("done-ok"), []byte("denied-ok"),
+		},
+		onInstall: i32c(0),
+	}
+	offs := s.dataOffsets()
+	reqOff, reqLen := offs[0], i32n(len(reqBytes))
+	allocIdx := uint32(len(s.imports)) + 1 //nolint:gosec // G115: test modules have few imports
+	marker := func(i int) []byte {
+		m := s.data[1+i]
+		e := logCall(offs[1+i], i32n(len(m)))
+		return append(e, opDrop)
+	}
+
+	// locals (i32): 0 = body handle, 1 = n, 2 = chunk counter, 3 = byte
+	// counter, 4 = pattern value, 5 = write-failure flag, 6 = scratch buffer,
+	// 7 = response handle, 8 = high-32 code; local 9 (i64) = packed results.
+	expr := make([]byte, 0, 192)
+	expr = append(expr, opCall, 0x01, opLocalSet, 0x09) // packed = create()
+	expr = append(expr, opLocalGet, 0x09)
+	expr = append(expr, i64c(32)...)
+	expr = append(expr, opI64ShrU, opI32WrapI64, opLocalSet, 0x08)
+	expr = append(expr, opLocalGet, 0x08, opI32Eqz, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x09, opI32WrapI64, opLocalSet, 0x00) // handle
+	expr = append(expr, marker(0)...)                                     // create-ok
+	// buf = alloc(chunkLen)
+	expr = append(expr, i32c(chunkLen)...)
+	expr = append(expr, opCall)
+	expr = append(expr, u32(allocIdx)...)
+	expr = append(expr, opLocalSet, 0x06)
+	// Write loop over chunks (locals 2..5 are zero-initialized: i=0, v=0,
+	// fail=0).
+	expr = append(expr, opBlock, blockVoid, opLoop, blockVoid)
+	expr = append(expr, opLocalGet, 0x02)
+	expr = append(expr, i32c(i32n(chunks))...)
+	expr = append(expr, opI32GeU, opBrIf, 0x01)
+	// Fill buf with the running pattern byte(i) = i % 251.
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opLocalSet, 0x03)
+	expr = append(expr, opBlock, blockVoid, opLoop, blockVoid)
+	expr = append(expr, opLocalGet, 0x03)
+	expr = append(expr, i32c(chunkLen)...)
+	expr = append(expr, opI32GeU, opBrIf, 0x01)
+	expr = append(expr, opLocalGet, 0x06, opLocalGet, 0x03, opI32Add, opLocalGet, 0x04)
+	expr = append(expr, opI32Store8, 0x00, 0x00)
+	expr = append(expr, opLocalGet, 0x04)
+	expr = append(expr, i32c(1)...)
+	expr = append(expr, opI32Add, opLocalSet, 0x04)
+	expr = append(expr, opLocalGet, 0x04)
+	expr = append(expr, i32c(251)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opLocalSet, 0x04)
+	expr = append(expr, opEnd)
+	expr = append(expr, opLocalGet, 0x03)
+	expr = append(expr, i32c(1)...)
+	expr = append(expr, opI32Add, opLocalSet, 0x03)
+	expr = append(expr, opBr, 0x00, opEnd, opEnd)
+	// n = body_write(handle, buf, chunkLen); a short/failed write sets fail.
+	expr = append(expr, opLocalGet, 0x00, opLocalGet, 0x06)
+	expr = append(expr, i32c(chunkLen)...)
+	expr = append(expr, opCall, 0x02, opLocalSet, 0x01)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i32c(chunkLen)...)
+	expr = append(expr, opI32Eq, opI32Eqz, opIf, blockVoid)
+	expr = append(expr, i32c(1)...)
+	expr = append(expr, opLocalSet, 0x05)
+	expr = append(expr, opEnd)
+	expr = append(expr, opLocalGet, 0x02)
+	expr = append(expr, i32c(1)...)
+	expr = append(expr, opI32Add, opLocalSet, 0x02)
+	expr = append(expr, opBr, 0x00, opEnd, opEnd)
+	expr = append(expr, opLocalGet, 0x05, opI32Eqz, opIf, blockVoid)
+	expr = append(expr, marker(1)...) // write-ok
+	expr = append(expr, opEnd)
+	expr = append(expr, opLocalGet, 0x00, opCall, 0x03, opI32Eqz, opIf, blockVoid)
+	expr = append(expr, marker(2)...) // seal-ok
+	expr = append(expr, opEnd)
+	// http_request with the baked body_handle map.
+	expr = append(expr, i32c(reqOff)...)
+	expr = append(expr, i32c(reqLen)...)
+	expr = append(expr, opCall, 0x04, opLocalSet, 0x09)
+	expr = append(expr, opLocalGet, 0x09)
+	expr = append(expr, i64c(32)...)
+	expr = append(expr, opI64ShrU, opI32WrapI64, opLocalSet, 0x08)
+	expr = append(expr, opLocalGet, 0x08, opI32Eqz, opIf, blockVoid)
+	expr = append(expr, opLocalGet, 0x09, opI32WrapI64, opLocalSet, 0x07) // resp handle
+	expr = append(expr, marker(3)...)                                     // req-ok
+	expr = append(expr, opLocalGet, 0x07, opCall, 0x05)
+	expr = append(expr, i32c(wantStatus)...)
+	expr = append(expr, opI32Eq, opIf, blockVoid)
+	expr = append(expr, marker(4)...) // status-ok
+	expr = append(expr, opEnd)
+	// Drain the response body, logging each chunk for the test to assert.
+	expr = append(expr, opBlock, blockVoid, opLoop, blockVoid)
+	expr = append(expr, opLocalGet, 0x07, opLocalGet, 0x06)
+	expr = append(expr, i32c(chunkLen)...)
+	expr = append(expr, opCall, 0x06, opLocalSet, 0x01)
+	expr = append(expr, opLocalGet, 0x01)
+	expr = append(expr, i32c(0)...)
+	expr = append(expr, opI32GtS, opI32Eqz, opBrIf, 0x01)
+	expr = append(expr, i32c(1)...)
+	expr = append(expr, opLocalGet, 0x06, opLocalGet, 0x01, opCall, 0x00, opDrop)
+	expr = append(expr, opBr, 0x00, opEnd, opEnd)
+	expr = append(expr, marker(5)...) // resp-ok
+	expr = append(expr, opLocalGet, 0x07, opCall, 0x07, opI32Eqz, opIf, blockVoid)
+	expr = append(expr, marker(6)...) // done-ok
+	expr = append(expr, opEnd)
+	expr = append(expr, opEnd)
+	if deniedWant != 0 {
+		expr = append(expr, opLocalGet, 0x08)
+		expr = append(expr, i32c(deniedWant)...)
+		expr = append(expr, opI32Eq, opIf, blockVoid)
+		expr = append(expr, marker(7)...) // denied-ok
+		expr = append(expr, opEnd)
+	}
+	expr = append(expr, opEnd)
+	expr = append(expr, i32c(0)...)
+	s.extras = append(s.extras, extraFn{name: "do_upload", typ: tNullToI32, locals: 9, locals64: 1, expr: expr})
+	return s.build()
+}
+
 // configImports are the host imports the config probe modules use: log plus
 // config_set / config_get.
 const (

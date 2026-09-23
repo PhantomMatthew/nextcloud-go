@@ -47,8 +47,13 @@ type HostConfig struct {
 	// <SystemPrefix>/<plugin_id>/<path> (Nextcloud's appdata_<instanceid>
 	// convention).
 	SystemPrefix string
-	// MaxSpoolBytes caps user-scope write spools; <= 0 means 1 GiB.
+	// MaxSpoolBytes caps user-scope write spools and outbound HTTP request
+	// body spools (http_request_body_create, ADR-0066); <= 0 means 1 GiB.
 	MaxSpoolBytes int64
+	// SpoolDir parents the temp files behind http_request_body_create; empty
+	// means the OS default temp dir. Tests inject a scratch dir to assert
+	// spools leave nothing behind.
+	SpoolDir string
 	// PluginSystemQuotaBytes caps the total byte size of one plugin's
 	// system-scope storage tree (<SystemPrefix>/<id>/...), enforced on
 	// storage_create against the declared size and on storage_stream_close

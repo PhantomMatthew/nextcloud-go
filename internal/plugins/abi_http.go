@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -73,12 +74,15 @@ var httpAllowedMethods = map[string]bool{
 }
 
 // httpOutboundRequest is the MessagePack shape passed to http_request.
+// BodyBytes carries the body inline; BodyHandle references a sealed spool
+// from http_request_body_create — the two are mutually exclusive.
 type httpOutboundRequest struct {
-	Method    string            `msgpack:"method"`
-	URL       string            `msgpack:"url"`
-	Headers   map[string]string `msgpack:"headers"`
-	BodyBytes []byte            `msgpack:"body_bytes"`
-	TimeoutMS int32             `msgpack:"timeout_ms"`
+	Method     string            `msgpack:"method"`
+	URL        string            `msgpack:"url"`
+	Headers    map[string]string `msgpack:"headers"`
+	BodyBytes  []byte            `msgpack:"body_bytes"`
+	BodyHandle int32             `msgpack:"body_handle"`
+	TimeoutMS  int32             `msgpack:"timeout_ms"`
 }
 
 // httpResponseHandle owns one in-flight response: the body streams to the
@@ -172,6 +176,11 @@ func (h *Host) httpRequest(ctx context.Context, mod api.Module, reqPtr, reqLen i
 	if err := msgpack.Unmarshal(raw, &req); err != nil {
 		return packI64(pluginsdk.ErrCodeInvalidArgument, 0)
 	}
+	// The body travels inline (body_bytes) or by reference (body_handle),
+	// never both.
+	if req.BodyHandle != 0 && len(req.BodyBytes) > 0 {
+		return packI64(pluginsdk.ErrCodeInvalidArgument, 0)
+	}
 	if !httpAllowedMethods[req.Method] {
 		return packI64(pluginsdk.ErrCodeInvalidArgument, 0)
 	}
@@ -197,17 +206,37 @@ func (h *Host) httpRequest(ctx context.Context, mod api.Module, reqPtr, reqLen i
 		}
 		return packI64(pluginsdk.ErrCodeQuotaExceeded, 0)
 	}
-	var body *bytes.Reader
-	if len(req.BodyBytes) > 0 {
-		body = bytes.NewReader(req.BodyBytes)
-	} else {
-		body = bytes.NewReader(nil)
+	var body io.Reader = bytes.NewReader(req.BodyBytes)
+	var bodyFile *os.File
+	var bodyLen int64
+	if req.BodyHandle != 0 {
+		// Consume the sealed spool (destructive, ADR-0066): the cleanup runs
+		// when this call returns, after client.Do has read the file. Denials
+		// above (allowlist, rate limit) leave the spool untouched so the
+		// guest can retry.
+		f, written, cleanup, code := h.consumeHTTPRequestBody(mod, req.BodyHandle)
+		if code != pluginsdk.ErrCodeOK {
+			return packI64(code, 0)
+		}
+		defer cleanup()
+		bodyFile = f
+		bodyLen = written
+		if written > 0 {
+			body = f
+		}
 	}
 	reqCtx, cancel := context.WithTimeout(ctx, httpTimeout(req.TimeoutMS))
 	hreq, err := http.NewRequestWithContext(reqCtx, req.Method, req.URL, body)
 	if err != nil {
 		cancel()
 		return packI64(pluginsdk.ErrCodeInvalidArgument, 0)
+	}
+	if bodyFile != nil && bodyLen > 0 {
+		// A spooled body knows its length; GetBody replays it across 307/308
+		// redirects by reopening the spool, like the inline path's
+		// *bytes.Reader GetBody.
+		hreq.ContentLength = bodyLen
+		hreq.GetBody = func() (io.ReadCloser, error) { return os.Open(bodyFile.Name()) }
 	}
 	for k, v := range req.Headers {
 		if strings.EqualFold(k, "Host") {

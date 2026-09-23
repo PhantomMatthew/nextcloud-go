@@ -65,6 +65,9 @@ func (h *Host) registerHostModule(ctx context.Context) error {
 	export("http_response_header", h.httpResponseHeader)
 	export("http_response_body_read", h.httpResponseBodyRead)
 	export("http_response_close", h.httpResponseClose)
+	export("http_request_body_create", h.httpRequestBodyCreate)
+	export("http_request_body_write", h.httpRequestBodyWrite)
+	export("http_request_body_close", h.httpRequestBodyClose)
 
 	export("request_body_read", h.requestBodyRead)
 	export("request_body_close", h.requestBodyClose)
