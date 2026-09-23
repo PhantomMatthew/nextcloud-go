@@ -112,9 +112,12 @@ so the ABI stays `ncgo-abi/1`.
   a strictness improvement, and no behavior the spec promised.
 - The `localfs.Mkdir` sentinel fix also reaches the DAV's WebDAV surface:
   MKCOL with a missing parent previously returned 500 (raw `*PathError`) and
-  now returns 404 (`webdav.ErrNotFound`). RFC 4918's 409 for that case
+  now returns 404 (`webdav.ErrNotFound`). ~~RFC 4918's 409 for that case
   remains a separate gap — the filecache's `ErrParentMissing` mapping is only
-  reached when the backend create already succeeded.
+  reached when the backend create already succeeded.~~ **Resolved by
+  ADR-0078** (Phase 5f, 2026-09-23): `mkdirOwned` translates
+  `storage.ErrNotFound` to `webdav.ErrParentMissing` at the mkdir call
+  site, so MKCOL with a missing parent answers 409 on every backend.
 - A guest compiled against the 4u SDK running on a pre-4u host fails to
   instantiate (the import is absent) — the standard §9 posture for new
   functions, same as 4s/4t.

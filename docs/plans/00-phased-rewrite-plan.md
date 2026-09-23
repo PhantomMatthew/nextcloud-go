@@ -191,6 +191,20 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-23** — Phase 5f: DAV MKCOL parent-missing 409 (ADR-0078),
+  resolving the ADR-0067 follow-up. RFC 4918 §9.3.1 wants 409 Conflict
+  when the parent collection does not exist — the signal the desktop
+  client's mkdir discovery walks up on. The webdav layer was always
+  ready (`writeFSError` maps `ErrParentMissing` to 409, mock-FS tested);
+  the gap was one layer down in `files.DAV.mkdirOwned`, where
+  `mapStorage` sent `storage.ErrNotFound` to 404. In the mkdir context a
+  missing storage entry can only be the parent (an existing target
+  yields `storage.ErrExists`, already tolerated), so the call-site
+  translation to `webdav.ErrParentMissing` is exact; `mapStorage` keeps
+  its 404 for every operation that legitimately needs it. The
+  incoming-share path inherits via `mkdirOwned`; S3 (no-op Mkdir, 409
+  via filecache `Meta.Insert`) and localfs now agree. PUT/MOVE/COPY
+  parent-missing stay as-is until a captured client flow shows otherwise.
 - **2026-09-23** — Phase 5e: extensionless `/core/preview` mounts
   (ADR-0077), resolving the ADR-0069 follow-up. The 4w SPA bootstrap
   advertises `modRewriteWorking: true`, so the NC web frontend strips the

@@ -46,6 +46,12 @@ func TestDAVRoundTrip(t *testing.T) {
 	if _, err := dav.Mkdir(ctx, "alice", "/docs"); err != nil {
 		t.Fatal(err)
 	}
+	// RFC 4918 §9.3.1: MKCOL with a missing parent collection is 409
+	// (ErrParentMissing), not 404 — the desktop client's mkdir discovery
+	// walks up on exactly this signal (ADR-0078).
+	if _, err := dav.Mkdir(ctx, "alice", "/missing/sub"); !errors.Is(err, webdav.ErrParentMissing) {
+		t.Fatalf("mkdir with missing parent = %v, want ErrParentMissing", err)
+	}
 	ent, created, err := dav.Write(ctx, "alice", "/docs/a.txt", bytes.NewReader([]byte("hello")), nil)
 	if err != nil || !created || ent.Size != 5 {
 		t.Fatalf("write = %+v created=%v err=%v", ent, created, err)

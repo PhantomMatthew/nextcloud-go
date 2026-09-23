@@ -630,6 +630,11 @@ func (d *DAV) mkdirOwned(ctx context.Context, user, p string) (*webdav.Entry, er
 		return nil, err
 	}
 	if err := d.Storage.Mkdir(ctx, key); err != nil && !errors.Is(err, storage.ErrExists) {
+		// In the mkdir context a missing storage entry can only be the
+		// parent, and RFC 4918 §9.3.1 wants 409 for it, not 404 (ADR-0078).
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, webdav.ErrParentMissing
+		}
 		return nil, mapStorage(err)
 	}
 	f := &File{
