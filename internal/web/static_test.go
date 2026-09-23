@@ -304,11 +304,17 @@ func TestStaticRouterInterplay(t *testing.T) {
 	}
 }
 
-// stubBootstrap injects a fixed token, decoupling the injection mechanics
-// tests from sessions (login_test.go covers the session-bound wiring).
-type stubBootstrap struct{ token string }
+// stubBootstrap injects a fixed token and state, decoupling the injection
+// mechanics tests from sessions (login_test.go covers the session-bound
+// wiring).
+type stubBootstrap struct {
+	token string
+	state BootstrapState
+}
 
-func (s stubBootstrap) RequestToken(http.ResponseWriter, *http.Request) string { return s.token }
+func (s stubBootstrap) Bootstrap(http.ResponseWriter, *http.Request) (string, BootstrapState) {
+	return s.token, s.state
+}
 
 func TestStaticShellInjectsRequestToken(t *testing.T) {
 	t.Parallel()
@@ -355,7 +361,7 @@ func TestStaticShellInjectionReplacesExistingAttribute(t *testing.T) {
 	t.Parallel()
 	ui := newStaticFixture(t)
 	writeFile(t, filepath.Join(ui.Root, "index.html"),
-		`<!doctype html><html><head data-user="alice" data-requesttoken="stale"><title>x</title></head><body/></html>`)
+		`<!doctype html><html><head data-theme="dark" data-requesttoken="stale"><title>x</title></head><body/></html>`)
 	ui.Shell = stubBootstrap{token: "fresh"}
 	w := do(t, ui, http.MethodGet, "/", nil)
 	body := w.Body.String()
@@ -365,7 +371,7 @@ func TestStaticShellInjectionReplacesExistingAttribute(t *testing.T) {
 	if got := strings.Count(body, `data-requesttoken="fresh"`); got != 1 {
 		t.Errorf("data-requesttoken occurrences = %d, want 1: %q", got, body)
 	}
-	if !strings.Contains(body, `data-user="alice"`) {
+	if !strings.Contains(body, `data-theme="dark"`) {
 		t.Errorf("other head attributes must survive: %q", body)
 	}
 }
@@ -412,5 +418,81 @@ func TestStaticShellHeadOmitsBody(t *testing.T) {
 	}
 	if cl := w.Header().Get("Content-Length"); cl == "" || cl == "0" {
 		t.Errorf("HEAD shell Content-Length = %q", cl)
+	}
+}
+
+func TestStaticShellInjectsBootstrapState(t *testing.T) {
+	t.Parallel()
+	ui := newStaticFixture(t)
+	ui.Shell = stubBootstrap{
+		token: "tok-abc",
+		state: BootstrapState{
+			Version:           "26.0.0.6",
+			VersionString:     "26.0.0 beta 4",
+			ModRewriteWorking: true,
+			SessionKeepalive:  true,
+			SessionLifetime:   86400,
+			User:              &BootstrapUser{UID: "alice", DisplayName: "Alice A"},
+		},
+	}
+	w := do(t, ui, http.MethodGet, "/", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET / = %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `<head data-requesttoken="tok-abc" data-user="alice" data-user-displayname="Alice A">`) {
+		t.Errorf("head attributes missing or out of order: %q", body)
+	}
+	globals := parseGlobals(t, stateScript(t, body))
+	for _, name := range []string{"_oc_webroot", "_oc_config", "oc_appconfig"} {
+		if _, ok := globals[name]; !ok {
+			t.Errorf("state script missing window.%s: %q", name, body)
+		}
+	}
+}
+
+func TestStaticShellAnonymousStripsUserAttributes(t *testing.T) {
+	t.Parallel()
+	ui := newStaticFixture(t)
+	writeFile(t, filepath.Join(ui.Root, "index.html"),
+		`<!doctype html><html><head data-user="mallory" data-user-displayname="Mallory" data-requesttoken="stale"><title>x</title></head><body/></html>`)
+	ui.Shell = stubBootstrap{token: "tok-anon"}
+	w := do(t, ui, http.MethodGet, "/", nil)
+	body := w.Body.String()
+	if strings.Contains(body, "data-user") {
+		t.Errorf("anonymous shell must not carry user attributes: %q", body)
+	}
+	if strings.Contains(body, "mallory") || strings.Contains(body, "Mallory") {
+		t.Errorf("anonymous shell leaks the baked user: %q", body)
+	}
+	if !strings.Contains(body, `<head data-requesttoken="tok-anon">`) {
+		t.Errorf("requesttoken must still be refreshed: %q", body)
+	}
+}
+
+func TestStaticShellEscapesUserAttributes(t *testing.T) {
+	t.Parallel()
+	ui := newStaticFixture(t)
+	ui.Shell = stubBootstrap{
+		state: BootstrapState{User: &BootstrapUser{
+			UID:         `ali"ce`,
+			DisplayName: `</script><script>alert(1)</script>`,
+		}},
+	}
+	w := do(t, ui, http.MethodGet, "/", nil)
+	body := w.Body.String()
+	if strings.Contains(body, `</script><script>alert(1)</script>`) {
+		t.Fatalf("display name broke out of its context: %q", body)
+	}
+	if !strings.Contains(body, `data-user-displayname="&lt;/script&gt;&lt;script&gt;alert(1)&lt;/script&gt;"`) {
+		t.Errorf("display name must be HTML-escaped in the attribute: %q", body)
+	}
+	if !strings.Contains(body, `data-user="ali&#34;ce"`) {
+		t.Errorf("uid must be HTML-escaped in the attribute: %q", body)
+	}
+	// The only script-closing tag is the injected state block's own (no
+	// requesttoken block: the stub token is empty).
+	if got := strings.Count(body, "</script>"); got != 1 {
+		t.Errorf("</script> count = %d, want 1: %q", got, body)
 	}
 }

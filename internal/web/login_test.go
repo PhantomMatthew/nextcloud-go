@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -99,7 +100,7 @@ func newLoginRig(t *testing.T) *loginRig {
 	}
 
 	ui := newStaticFixture(t)
-	ui.Shell = &BrowserBootstrap{Sessions: sessions, Tokens: tokens}
+	ui.Shell = &BrowserBootstrap{Sessions: sessions, Tokens: tokens, Users: stubUserStore{u: &users.User{ID: userID, UID: "alice", DisplayName: "Alice", Enabled: true}}}
 
 	src := stubUserSource{u: &auth.UserInfo{ID: userID, UID: "alice", DisplayName: "Alice", Enabled: true}}
 	probe := auth.Middleware(auth.MiddlewareConfig{
@@ -190,7 +191,7 @@ func TestBrowserLoginFullChain(t *testing.T) {
 	rig := newLoginRig(t)
 
 	// Anonymous shell: login nonce cookie issued, login token injected in
-	// both bootstrap spots.
+	// both bootstrap spots, public bootstrap state, and no user attributes.
 	body, rr := getShell(t, rig)
 	nonce := &http.Cookie{Name: LoginNonceCookie, Value: cookieValue(t, rr, LoginNonceCookie)}
 	loginToken := extractHeadToken(t, body)
@@ -200,6 +201,10 @@ func TestBrowserLoginFullChain(t *testing.T) {
 	if !rig.tokens.VerifyLoginToken(nonce.Value, loginToken) {
 		t.Fatal("injected token must be the login token for the issued nonce")
 	}
+	if strings.Contains(body, "data-user") {
+		t.Fatalf("anonymous shell must not carry user attributes: %q", body)
+	}
+	anonGlobals := parseGlobals(t, stateScript(t, body))
 
 	// Wrong login token -> 403, no session.
 	form := url.Values{"user": {"alice"}, "password": {"wonderland"}, "requesttoken": {"bogus"}}
@@ -233,11 +238,31 @@ func TestBrowserLoginFullChain(t *testing.T) {
 		t.Fatal("login must rotate (expire) the anonymous nonce cookie")
 	}
 
-	// Authenticated shell now carries the session-derived token.
+	// Authenticated shell now carries the session-derived token, the
+	// session user's head attributes, and the same public bootstrap state.
 	body, rr = getShell(t, rig, sess)
 	sessToken := extractHeadToken(t, body)
 	if want := rig.tokens.Derive(sess.Value); sessToken != want {
 		t.Fatalf("authed shell token = %q, want session token %q", sessToken, want)
+	}
+	if !strings.Contains(body, `data-user="alice"`) || !strings.Contains(body, `data-user-displayname="Alice"`) {
+		t.Fatalf("authed shell missing user attributes: %q", body)
+	}
+	sessGlobals := parseGlobals(t, stateScript(t, body))
+	for name, raw := range anonGlobals {
+		if got, ok := sessGlobals[name]; !ok || string(got) != string(raw) {
+			t.Fatalf("bootstrap global %s changed across states: anon %s, session %s", name, raw, got)
+		}
+	}
+	var ocConfig struct {
+		Version    string `json:"version"`
+		ModRewrite bool   `json:"modRewriteWorking"`
+	}
+	if err := json.Unmarshal(sessGlobals["_oc_config"], &ocConfig); err != nil {
+		t.Fatal(err)
+	}
+	if ocConfig.Version == "" || !ocConfig.ModRewrite {
+		t.Fatalf("_oc_config must carry the server version and modRewriteWorking=true: %+v", ocConfig)
 	}
 	for _, c := range rr.Result().Cookies() {
 		if c.Name == LoginNonceCookie {

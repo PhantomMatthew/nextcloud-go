@@ -144,12 +144,14 @@ Constraints shaping the design:
   login/logout endpoints, and auth-core CSRF validation.)
 - **Embedded minimal admin console** (status, users, jobs) via `embed.FS`
   as a zero-config alternative to pointing at a full Nextcloud release.
-- **Server-rendered bootstrap state** (the `oc_appconfig`/`OC` initial
+- ~~**Server-rendered bootstrap state** (the `oc_appconfig`/`OC` initial
   state PHP injects into `index.html`) to reduce frontend error noise on
   first load; requires templating the shell, deliberately out of v1's
-  static-only scope. (**Partially resolved by ADR-0064**: the requesttoken
-  bootstrap is injected; the full `oc_appconfig` initial-state payload
-  remains open.)
+  static-only scope.~~ (**Resolved by ADR-0064 + ADR-0069**: ADR-0064
+  injected the requesttoken; ADR-0069 injects the `_oc_webroot` /
+  `_oc_config` / `oc_appconfig.core` globals and session `data-user` head
+  attributes through the same pipeline. Application-level initial-state
+  hidden inputs remain a conditional follow-up, see ADR-0069 §5.)
 
 ## Verification
 

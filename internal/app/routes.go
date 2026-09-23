@@ -344,9 +344,9 @@ func (a *App) mountRoutes() error {
 	// paths nothing else claimed reach the SPA/static handler. Static GETs
 	// are safe methods, so the CSRF chain passes them unchanged. The SPA
 	// shell is injected with the per-session (or anonymous login) bootstrap
-	// requesttoken (ADR-0064).
+	// requesttoken and bootstrap state (ADR-0064, ADR-0069).
 	if a.staticUI != nil {
-		a.staticUI.Shell = &web.BrowserBootstrap{Sessions: a.sessions, Tokens: requestTokens}
+		a.staticUI.Shell = &web.BrowserBootstrap{Sessions: a.sessions, Tokens: requestTokens, Users: a.Users}
 		// The exact POST /index.php/login route would otherwise 405 GETs of
 		// the login page; the shell (Vue login app) is that page.
 		router.Handle(http.MethodGet, "/index.php/login", a.staticUI)

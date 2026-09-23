@@ -14,11 +14,6 @@ type Provider struct {
 	ExtendedSupport bool
 }
 
-func (p Provider) versionString() string {
-	v := version.Version
-	return fmt.Sprintf("%d.%d.%d.%d", v[0], v[1], v[2], v[3])
-}
-
 // Handler serves /status.php with byte-exact JSON field order matching
 // upstream Nextcloud (lib/private/legacy/OC_Util.php) for client compatibility.
 func (p Provider) Handler() http.Handler {
@@ -28,7 +23,7 @@ func (p Provider) Handler() http.Handler {
 			boolJSON(p.Installed),
 			boolJSON(p.Maintenance),
 			boolJSON(p.NeedsDBUpgrade),
-			p.versionString(),
+			version.String(),
 			version.VersionString,
 			version.Edition,
 			version.ProductName,

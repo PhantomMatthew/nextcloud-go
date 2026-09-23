@@ -1,7 +1,6 @@
 package web
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -41,17 +40,15 @@ var staticContentTypes = map[string]string{
 var hashedAssetPattern = regexp.MustCompile(`[-.][0-9a-f]{8,}`)
 
 var (
-	headOpenPattern   = regexp.MustCompile(`(?i)<head\b`)
-	headTokenDouble   = regexp.MustCompile(`(?i)data-requesttoken="[^"]*"`)
-	headTokenSingle   = regexp.MustCompile(`(?i)data-requesttoken='[^']*'`)
 	shellContentType  = "text/html; charset=utf-8"
 	shellCacheControl = "no-cache"
 )
 
-// ShellBootstrap resolves the requesttoken the SPA shell is injected with;
+// ShellBootstrap resolves the per-request values the SPA shell is injected
+// with — the requesttoken (ADR-0064) and the bootstrap state (ADR-0069);
 // implementations may set cookies while doing so (anonymous login nonce).
 type ShellBootstrap interface {
-	RequestToken(w http.ResponseWriter, r *http.Request) string
+	Bootstrap(w http.ResponseWriter, r *http.Request) (string, BootstrapState)
 }
 
 // StaticUI serves a directory of pre-compiled frontend assets (a Nextcloud
@@ -188,19 +185,19 @@ func (s *StaticUI) serveFile(w http.ResponseWriter, r *http.Request, fsPath stri
 	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 }
 
-// serveShell serves the SPA shell with the bootstrap requesttoken injected.
-// The injected page varies per session, so conditional-request negotiation is
-// disabled outright: no Last-Modified, If-Modified-Since is ignored, and every
-// response is a full 200 with no-cache semantics (ADR-0064).
+// serveShell serves the SPA shell with the bootstrap requesttoken and state
+// injected. The injected page varies per session, so conditional-request
+// negotiation is disabled outright: no Last-Modified, If-Modified-Since is
+// ignored, and every response is a full 200 with no-cache semantics
+// (ADR-0064, ADR-0069).
 func (s *StaticUI) serveShell(w http.ResponseWriter, r *http.Request, fsPath string) {
 	body, err := os.ReadFile(fsPath)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	if token := s.Shell.RequestToken(w, r); token != "" {
-		body = injectRequestToken(body, token)
-	}
+	token, state := s.Shell.Bootstrap(w, r)
+	body = injectShell(body, token, state)
 	h := w.Header()
 	h.Set("Content-Type", shellContentType)
 	h.Set("Cache-Control", shellCacheControl)
@@ -209,46 +206,6 @@ func (s *StaticUI) serveShell(w http.ResponseWriter, r *http.Request, fsPath str
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(body)
 	}
-}
-
-// injectRequestToken returns the SPA shell carrying the bootstrap
-// requesttoken in the two places Nextcloud frontends read it from: the
-// <head data-requesttoken="..."> attribute (upstream layout.user.php /
-// layout.guest.php; read by core's requesttoken.js and @nextcloud/auth) and
-// the legacy window.oc_requesttoken global older bundles consume. The token
-// alphabet is base64url, safe in an HTML attribute and a JS string literal
-// without escaping.
-func injectRequestToken(body []byte, token string) []byte {
-	attr := ` data-requesttoken="` + token + `"`
-	script := `<script>window.oc_requesttoken="` + token + `";</script>`
-	loc := headOpenPattern.FindIndex(body)
-	if loc != nil {
-		if gtRel := bytes.IndexByte(body[loc[0]:], '>'); gtRel >= 0 {
-			gt := loc[0] + gtRel
-			tag := body[loc[0]:gt]
-			var out []byte
-			if m := headTokenDouble.FindIndex(tag); m != nil {
-				out = append(out, body[:loc[0]+m[0]]...)
-				out = append(out, `data-requesttoken="`+token+`"`...)
-				out = append(out, body[loc[0]+m[1]:gt+1]...)
-			} else if m := headTokenSingle.FindIndex(tag); m != nil {
-				out = append(out, body[:loc[0]+m[0]]...)
-				out = append(out, `data-requesttoken="`+token+`"`...)
-				out = append(out, body[loc[0]+m[1]:gt+1]...)
-			} else {
-				out = append(out, body[:gt]...)
-				out = append(out, attr...)
-				out = append(out, '>')
-			}
-			out = append(out, script...)
-			return append(out, body[gt+1:]...)
-		}
-	}
-	// No usable <head> tag (e.g. a fragment shell): prepend the script so the
-	// global at least exists.
-	out := make([]byte, 0, len(script)+len(body))
-	out = append(out, script...)
-	return append(out, body...)
 }
 
 func contentTypeFor(name string) string {

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
 	"github.com/PhantomMatthew/nextcloud-go/internal/session"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
+	"github.com/PhantomMatthew/nextcloud-go/internal/version"
 )
 
 // LoginNonceCookie carries the anonymous nonce the login-page requesttoken is
@@ -69,7 +71,7 @@ func (h *BrowserLogin) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	ttl := h.SessionTTL
 	if ttl <= 0 {
-		ttl = 24 * time.Hour
+		ttl = defaultSessionTTL
 	}
 	ua := r.Header.Get("User-Agent")
 	ip := r.RemoteAddr
@@ -175,23 +177,53 @@ func isSecureRequest(r *http.Request) bool {
 	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
-// BrowserBootstrap resolves the requesttoken the SPA shell is injected with
-// (StaticUI.Shell): the session token when the request carries a valid
-// session, else a token bound to the anonymous login nonce, issuing that
-// nonce cookie when missing.
+// defaultSessionTTL is the browser session lifetime the login handlers and
+// the session store fall back to; the bootstrap state echoes it to the
+// frontend as oc_config.session_lifetime.
+const defaultSessionTTL = 24 * time.Hour
+
+// BrowserBootstrap resolves the per-request values the SPA shell is injected
+// with (StaticUI.Shell): the session requesttoken plus session-personalized
+// bootstrap state when the request carries a valid session, else a token
+// bound to the anonymous login nonce (issuing that nonce cookie when
+// missing) plus the anonymous public state (ADR-0064, ADR-0069).
 type BrowserBootstrap struct {
 	Sessions session.Store
 	Tokens   *auth.RequestToken
+	// Users resolves the session user's uid/displayName for the head
+	// data-user attributes; nil degrades to the anonymous key set.
+	Users users.Store
+	// Webroot is the path prefix the UI is served under ("" = site root,
+	// the only layout ncgo mounts).
+	Webroot string
+	// SessionTTL feeds oc_config.session_lifetime; <=0 defaults to
+	// defaultSessionTTL, mirroring the login handlers.
+	SessionTTL time.Duration
 }
 
-func (b *BrowserBootstrap) RequestToken(w http.ResponseWriter, r *http.Request) string {
-	if b == nil || b.Tokens == nil {
-		return ""
+func (b *BrowserBootstrap) Bootstrap(w http.ResponseWriter, r *http.Request) (string, BootstrapState) {
+	state := BootstrapState{
+		Version:           version.String(),
+		VersionString:     version.VersionString,
+		ModRewriteWorking: true,
+		SessionKeepalive:  true,
+		SessionLifetime:   int64(defaultSessionTTL / time.Second),
+	}
+	if b == nil {
+		return "", state
+	}
+	state.Webroot = b.Webroot
+	if b.SessionTTL > 0 {
+		state.SessionLifetime = int64(b.SessionTTL / time.Second)
+	}
+	if b.Tokens == nil {
+		return "", state
 	}
 	if b.Sessions != nil {
 		if c, err := r.Cookie(session.CookieName); err == nil && c.Value != "" {
-			if _, err := b.Sessions.Get(r.Context(), c.Value); err == nil {
-				return b.Tokens.Derive(c.Value)
+			if sess, err := b.Sessions.Get(r.Context(), c.Value); err == nil {
+				state.User = b.bootstrapUser(r.Context(), sess.UserID)
+				return b.Tokens.Derive(c.Value), state
 			}
 		}
 	}
@@ -202,7 +234,7 @@ func (b *BrowserBootstrap) RequestToken(w http.ResponseWriter, r *http.Request) 
 	if nonce == "" {
 		n, err := auth.NewLoginNonce()
 		if err != nil {
-			return ""
+			return "", state
 		}
 		nonce = n
 		http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Secure follows the request scheme; see HandleLogin.
@@ -214,5 +246,19 @@ func (b *BrowserBootstrap) RequestToken(w http.ResponseWriter, r *http.Request) 
 			Secure:   isSecureRequest(r),
 		})
 	}
-	return b.Tokens.DeriveLoginToken(nonce)
+	return b.Tokens.DeriveLoginToken(nonce), state
+}
+
+// bootstrapUser resolves the session user for head-attribute injection,
+// mirroring the auth middleware's session validity criteria: the user row
+// must exist and be enabled, else the shell stays anonymous-shaped.
+func (b *BrowserBootstrap) bootstrapUser(ctx context.Context, id int64) *BootstrapUser {
+	if b.Users == nil {
+		return nil
+	}
+	u, err := b.Users.GetByID(ctx, id)
+	if err != nil || !u.Enabled {
+		return nil
+	}
+	return &BootstrapUser{UID: u.UID, DisplayName: u.DisplayName}
 }

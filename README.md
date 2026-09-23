@@ -37,6 +37,16 @@ sessions, and session-authenticated unsafe requests are CSRF-checked by the
 auth middleware while basic/app-password/bearer clients stay exempt. See
 [`docs/adr/0064-requesttoken-csrf-browser-login.md`](docs/adr/0064-requesttoken-csrf-browser-login.md).
 
+The shell is also injected with the bootstrap state the frontend reads at
+startup: the `window._oc_webroot` / `window._oc_config` / `window.oc_appconfig`
+globals (webroot, pretty-URL flag, session lifetime, server version, and the
+share-default policy) plus — for valid sessions — the `<head data-user>` /
+`data-user-displayname` attributes the user menu is built from. Anonymous
+pages receive the public keys only. Key selection is deliberately minimal and
+research-pinned to upstream Nextcloud sources; application-level initial
+state is a documented follow-up. See
+[`docs/adr/0069-spa-bootstrap-state.md`](docs/adr/0069-spa-bootstrap-state.md).
+
 ### Managing plugins
 
 `ncgo-cli plugin install` / `enable` / `disable` / `uninstall` update the

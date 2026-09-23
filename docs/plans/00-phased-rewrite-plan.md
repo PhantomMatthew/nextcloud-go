@@ -191,6 +191,35 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-23** — Phase 4w: SPA bootstrap initial-state injection
+  (ADR-0069), closing the ADR-0054 "server-rendered bootstrap state"
+  follow-up at the core-subset level. ADR-0064's single shell-injection
+  pipeline is extended (not duplicated): `ShellBootstrap` now resolves a
+  `(requesttoken, BootstrapState)` pair per request, and `serveShell`
+  injects one extra `<script>` block with the upstream-named globals the
+  compiled frontend reads at boot — `window._oc_webroot` ("" — ncgo serves
+  at root; kills `webroot.js`'s wrong pathname deduction on SPA routes),
+  `window._oc_config` (exactly `modRewriteWorking: true` — ncgo mounts
+  OCS/DAV extensionless — plus `session_keepalive`, `session_lifetime`
+  from the same 24 h default the login handlers apply, and
+  `version`/`versionstring` from `internal/version`, the status.php
+  source), and `window.oc_appconfig.core` with upstream's exact 16-key
+  share-default set held at ncgo-faithful values (no expiry enforcement,
+  optional link passwords, re/group/remote sharing allowed). Session
+  personalization is head attributes only — `data-user` /
+  `data-user-displayname` behind the auth middleware's exact validity
+  criteria, user menu shows the current user — and anonymous shells strip
+  any operator-baked copies of those attributes; the script payload is
+  byte-identical across states (test-pinned), so nothing user-specific
+  enters a JS string context, and `encoding/json`'s `<`/`>`/`&` escaping
+  makes `</script>` breakout impossible by construction. Key-set research
+  is pinned to upstream sources (layout.user.php, JSConfigHelper
+  stable26/28/master, core/src consumers, nextcloud-initial-state) with
+  per-key rationale and the rejected-key list in the ADR; initial-state
+  hidden inputs are evaluated and deferred with an explicit trigger
+  condition. Accepted casualty, recorded as follow-up: `modRewriteWorking:
+  true` breaks the files app's `/core/preview` URL shape until an
+  extensionless preview mount lands. `internal/version` gains `String()`.
 - **2026-09-23** — Phase 4v: plugin cross-instance handle aggregate caps
   (ADR-0068), closing the ADR-0060 aggregate-cap follow-up. The §8
   open-handle budgets (64 stream / 16 DB rows / 16 HTTP response) are
