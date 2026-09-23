@@ -191,6 +191,23 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-23** — Phase 5g: addressbook sharing (ADR-0079), resolving the
+  ADR-0071 skip: `oc_dav_shares` rows with `type='addressbook'` had no
+  ncgo share table to land on, and CardDAV had no sharing at all. The
+  increment mirrors the Phase 3e3 calendar-sharing model line for line —
+  one proven model for both DAV families, exactly as NC runs one
+  `dav_shares` backend per resource type. Migration 0019 adds
+  `addressbook_shares` (mirrors `calendar_shares`) in all three dialects;
+  the contacts store, DAV (cs:share POST, `{uri}_shared_by_{owner}`
+  naming, shared-book resolution in Stat/List/Read/Write/Remove and both
+  REPORTs), and PROPFIND (`share-access` / `owner-principal` for shared
+  addressbooks) follow the calendar shape, including the rules: own books
+  only, immediate effect (NC `dav_shares` carries no invite state),
+  read-write gating for sharee writes into the owner's book, and no
+  sharee collection delete (403). The importer's addressbook-shares skip
+  branch becomes a real mapping with the calendar classification rules,
+  the resolved-set gate extended to addressbooks so a share never
+  attaches to a foreign book that merely owns the same uri.
 - **2026-09-23** — Phase 5f: DAV MKCOL parent-missing 409 (ADR-0078),
   resolving the ADR-0067 follow-up. RFC 4918 §9.3.1 wants 409 Conflict
   when the parent collection does not exist — the signal the desktop

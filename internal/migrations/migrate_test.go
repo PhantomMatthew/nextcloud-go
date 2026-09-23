@@ -29,15 +29,15 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("up: %v", err)
 	}
-	if n != 18 {
-		t.Errorf("applied = %d, want 18", n)
+	if n != 19 {
+		t.Errorf("applied = %d, want 19", n)
 	}
 
 	want := []string{
 		"users", "groups", "group_members", "sessions",
 		"app_passwords", "login_flows", "jobs", "module_config", "files", "uploads", "trash_items", "file_versions", "file_properties", "file_locks", "shares",
 		"calendars", "calendar_objects", "addressbooks", "addressbook_objects",
-		"notifications", "activities", "ocm_incoming", "calendar_shares", "plugins", "plugin_routes", "appconfig", "plugin_webdav_props",
+		"notifications", "activities", "ocm_incoming", "calendar_shares", "plugins", "plugin_routes", "appconfig", "plugin_webdav_props", "addressbook_shares",
 	}
 	for _, table := range want {
 		var name string
@@ -51,7 +51,7 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version: %v", err)
 	}
-	if v != 18 || dirty {
+	if v != 19 || dirty {
 		t.Errorf("version=%d dirty=%v", v, dirty)
 	}
 
@@ -70,32 +70,37 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version after down: %v", err)
 	}
-	if v != 17 || dirty {
+	if v != 18 || dirty {
 		t.Errorf("after down version=%d dirty=%v", v, dirty)
+	}
+	var bookSharesName string
+	err = db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "addressbook_shares").Scan(&bookSharesName)
+	if err == nil {
+		t.Error("table addressbook_shares still present after down to v18")
 	}
 	var propsName string
 	err = db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "plugin_webdav_props").Scan(&propsName)
-	if err == nil {
-		t.Error("table plugin_webdav_props still present after down to v17")
+	if err != nil {
+		t.Errorf("table plugin_webdav_props missing after down to v18: %v", err)
 	}
 	var appconfigName string
 	err = db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "appconfig").Scan(&appconfigName)
 	if err != nil {
-		t.Errorf("table appconfig missing after down to v17: %v", err)
+		t.Errorf("table appconfig missing after down to v18: %v", err)
 	}
 	var pluginRoutesName string
 	err = db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "plugin_routes").Scan(&pluginRoutesName)
 	if err != nil {
-		t.Errorf("table plugin_routes missing after down to v17: %v", err)
+		t.Errorf("table plugin_routes missing after down to v18: %v", err)
 	}
 	var pluginName string
 	err = db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "plugins").Scan(&pluginName)
 	if err != nil {
-		t.Errorf("table plugins missing after down to v17: %v", err)
+		t.Errorf("table plugins missing after down to v18: %v", err)
 	}
 	var sharesName string
 	if err := db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "calendar_shares").Scan(&sharesName); err != nil {
-		t.Errorf("table calendar_shares missing after down to v14: %v", err)
+		t.Errorf("table calendar_shares missing after down to v18: %v", err)
 	}
 
 	n, err = Up(ctx, std, database.DialectSQLite, logger)
@@ -109,7 +114,7 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version after re-up: %v", err)
 	}
-	if v != 18 || dirty {
+	if v != 19 || dirty {
 		t.Errorf("after re-up version=%d dirty=%v", v, dirty)
 	}
 }

@@ -162,7 +162,7 @@ classified:
 
 | Source row | Outcome |
 |---|---|
-| `type = 'addressbook'` | **not imported** (ncgo has no addressbook sharing — `internal/contacts` has no share table, `Shareable: false`): counted in a separate `addressbook shares` entity + one summary warning |
+| `type = 'addressbook'` | ~~**not imported** (ncgo has no addressbook sharing — `internal/contacts` has no share table, `Shareable: false`): counted in a separate `addressbook shares` entity + one summary warning~~ **Resolved by ADR-0079** (Phase 5g, 2026-09-23): imported through the same mapping as calendar shares onto the new `addressbook_shares` table |
 | `type` other/`NULL` | skip + warn (unknown type) |
 | principal `principals/groups/*`, `principals/circles/*` | skip + warn (ncgo `calendar_shares.target_user_id` is a single user; expanding groups would change membership semantics after import) |
 | sharee uid not in target | skip + warn |

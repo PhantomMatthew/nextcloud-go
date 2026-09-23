@@ -16,8 +16,10 @@ var (
 )
 
 const (
-	DefaultBookURI     = "contacts"
-	DefaultDisplayName = "Contacts"
+	DefaultBookURI       = "contacts"
+	DefaultDisplayName   = "Contacts"
+	ShareAccessRead      = "read"
+	ShareAccessReadWrite = "read-write"
 )
 
 // Addressbook is a CardDAV addressbook collection.
@@ -60,4 +62,26 @@ type Store interface {
 	DeleteObject(ctx context.Context, userID int64, bookURI, uri string) error
 	ListObjects(ctx context.Context, userID int64, bookURI string) ([]Object, error)
 	GetByUID(ctx context.Context, bookID int64, uid string) (*Object, error)
+	UpsertAddressbookShare(ctx context.Context, bookID, targetUserID int64, access string) error
+	DeleteAddressbookShare(ctx context.Context, bookID, targetUserID int64) error
+	ListSharedAddressbooks(ctx context.Context, userID int64) ([]SharedAddressbook, error)
+	GetSharedAddressbook(ctx context.Context, userID int64, uri string) (*SharedAddressbook, error)
+}
+
+// Share grants a target user access to an addressbook.
+type Share struct {
+	ID            int64
+	AddressbookID int64
+	TargetUserID  int64
+	Access        string // ShareAccessRead | ShareAccessReadWrite
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+// SharedAddressbook is an addressbook visible to a sharee, with the owner UID
+// and the granted access level.
+type SharedAddressbook struct {
+	Addressbook
+	OwnerUID string
+	Access   string
 }

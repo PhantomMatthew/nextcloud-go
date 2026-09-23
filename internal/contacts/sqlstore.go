@@ -301,3 +301,92 @@ func scanObject(row scanner) (*Object, error) {
 	o.UpdatedAt = time.UnixMilli(updated).UTC()
 	return &o, nil
 }
+
+func (s *SQLStore) UpsertAddressbookShare(ctx context.Context, bookID, targetUserID int64, access string) error {
+	if access != ShareAccessRead && access != ShareAccessReadWrite {
+		return fmt.Errorf("%w: share access %q", ErrInvalid, access)
+	}
+	now := s.now().UnixMilli()
+	res, err := s.db.Exec(ctx, `
+UPDATE addressbook_shares SET access=?, updated_at=? WHERE addressbook_id=? AND target_user_id=?`,
+		access, now, bookID, targetUserID)
+	if err != nil {
+		return fmt.Errorf("contacts: share update: %w", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		return nil
+	}
+	if _, err := s.db.Exec(ctx, `
+INSERT INTO addressbook_shares (addressbook_id, target_user_id, access, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?)`, bookID, targetUserID, access, now, now); err != nil {
+		return fmt.Errorf("contacts: share insert: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLStore) DeleteAddressbookShare(ctx context.Context, bookID, targetUserID int64) error {
+	res, err := s.db.Exec(ctx, `
+DELETE FROM addressbook_shares WHERE addressbook_id = ? AND target_user_id = ?`, bookID, targetUserID)
+	if err != nil {
+		return fmt.Errorf("contacts: share delete: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *SQLStore) ListSharedAddressbooks(ctx context.Context, userID int64) ([]SharedAddressbook, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT b.id, b.user_id, b.uri, b.displayname, b.description, b.enabled, b.ctag, b.created_at, b.updated_at,
+       u.uid, s.access
+FROM addressbook_shares s
+JOIN addressbooks b ON b.id = s.addressbook_id
+JOIN users u ON u.id = b.user_id
+WHERE s.target_user_id = ? ORDER BY b.uri`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("contacts: list shared: %w", err)
+	}
+	defer rows.Close()
+	var out []SharedAddressbook
+	for rows.Next() {
+		sb, err := scanSharedBook(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *sb)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLStore) GetSharedAddressbook(ctx context.Context, userID int64, uri string) (*SharedAddressbook, error) {
+	row := s.db.QueryRow(ctx, `
+SELECT b.id, b.user_id, b.uri, b.displayname, b.description, b.enabled, b.ctag, b.created_at, b.updated_at,
+       u.uid, s.access
+FROM addressbook_shares s
+JOIN addressbooks b ON b.id = s.addressbook_id
+JOIN users u ON u.id = b.user_id
+WHERE s.target_user_id = ? AND b.uri = ?`, userID, uri)
+	sb, err := scanSharedBook(row)
+	if err != nil {
+		return nil, err
+	}
+	return sb, nil
+}
+
+func scanSharedBook(row scanner) (*SharedAddressbook, error) {
+	var sb SharedAddressbook
+	var enabled int
+	var created, updated int64
+	err := row.Scan(&sb.ID, &sb.UserID, &sb.URI, &sb.DisplayName, &sb.Description, &enabled, &sb.CTag, &created, &updated, &sb.OwnerUID, &sb.Access)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, database.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("contacts: scan shared: %w", err)
+	}
+	sb.Enabled = enabled != 0
+	sb.CreatedAt = time.UnixMilli(created).UTC()
+	sb.UpdatedAt = time.UnixMilli(updated).UTC()
+	return &sb, nil
+}

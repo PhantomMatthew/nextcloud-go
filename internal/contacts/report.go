@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
 )
 
@@ -31,52 +32,74 @@ func (d *DAV) Report(ctx context.Context, user, p string, req webdav.ReportReque
 	}
 	switch kind {
 	case "addressbook-query":
-		return d.query(ctx, u.ID, bookURI)
+		return d.query(ctx, u, bookURI)
 	case "addressbook-multiget":
-		return d.multiget(ctx, user, u.ID, req.Body)
+		return d.multiget(ctx, u, req.Body)
 	default:
 		return nil, webdav.ErrBadRequest
 	}
 }
 
-func (d *DAV) query(ctx context.Context, userID int64, bookURI string) ([]*webdav.Entry, error) {
-	var books []Addressbook
+// query runs an addressbook-query over the user's own and shared
+// addressbooks. Store calls use each book's owner id and original URI; entry
+// paths use the URI the requester sees.
+func (d *DAV) query(ctx context.Context, u *users.User, bookURI string) ([]*webdav.Entry, error) {
+	type target struct {
+		ownerID  int64
+		storeURI string
+		entryURI string
+	}
+	var targets []target
 	if bookURI == "" {
-		listed, err := d.Store.ListBooks(ctx, userID)
+		listed, err := d.Store.ListBooks(ctx, u.ID)
 		if err != nil {
 			return nil, err
 		}
-		books = listed
+		for i := range listed {
+			targets = append(targets, target{u.ID, listed[i].URI, listed[i].URI})
+		}
+		shared, err := d.Store.ListSharedAddressbooks(ctx, u.ID)
+		if err != nil {
+			return nil, err
+		}
+		for i := range shared {
+			targets = append(targets, target{shared[i].UserID, shared[i].URI, sharedURI(&shared[i])})
+		}
 	} else {
-		b, err := d.Store.GetBookByURI(ctx, userID, bookURI)
+		rb, err := d.resolveBook(ctx, u, bookURI)
 		if err != nil {
 			return nil, mapErr(err)
 		}
-		books = []Addressbook{*b}
+		targets = []target{{rb.book.UserID, rb.book.URI, bookURI}}
 	}
 	var out []*webdav.Entry
-	for i := range books {
-		objs, err := d.Store.ListObjects(ctx, userID, books[i].URI)
+	for _, t := range targets {
+		objs, err := d.Store.ListObjects(ctx, t.ownerID, t.storeURI)
 		if err != nil {
 			return nil, mapErr(err)
 		}
 		for j := range objs {
-			out = append(out, objectEntry(books[i].URI, &objs[j]))
+			out = append(out, objectEntry(t.entryURI, &objs[j]))
 		}
 	}
 	return out, nil
 }
 
-func (d *DAV) multiget(ctx context.Context, uid string, userID int64, body []byte) ([]*webdav.Entry, error) {
+func (d *DAV) multiget(ctx context.Context, u *users.User, body []byte) ([]*webdav.Entry, error) {
 	hrefs := parseHrefs(body)
 	out := make([]*webdav.Entry, 0, len(hrefs))
 	for _, href := range hrefs {
-		bookURI, objURI, ok := hrefToObject(href, uid)
+		bookURI, objURI, ok := hrefToObject(href, u.UID)
 		if !ok {
 			out = append(out, &webdav.Entry{Path: href, Status: http.StatusNotFound})
 			continue
 		}
-		obj, err := d.Store.GetObject(ctx, userID, bookURI, objURI)
+		rb, err := d.resolveBook(ctx, u, bookURI)
+		if err != nil {
+			out = append(out, &webdav.Entry{Path: "/" + bookURI + "/" + objURI, Status: http.StatusNotFound})
+			continue
+		}
+		obj, err := d.Store.GetObject(ctx, rb.book.UserID, rb.book.URI, objURI)
 		if err != nil {
 			out = append(out, &webdav.Entry{Path: "/" + bookURI + "/" + objURI, Status: http.StatusNotFound})
 			continue

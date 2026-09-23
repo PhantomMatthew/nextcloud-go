@@ -53,6 +53,45 @@ func (d *DAV) resolveUser(ctx context.Context, uid string) (*users.User, error) 
 	return u, nil
 }
 
+const accessOwner = "owner"
+
+// resolvedBook is an addressbook visible to the authenticated user,
+// either their own or one shared with them.
+type resolvedBook struct {
+	book     Addressbook // book.UserID is the owner's id; store calls use it
+	access   string      // accessOwner | ShareAccessRead | ShareAccessReadWrite
+	ownerUID string
+	shared   bool
+}
+
+// sharedURI is the addressbook URI a sharee sees for a shared addressbook,
+// following the Nextcloud "{uri}_shared_by_{owner}" naming.
+func sharedURI(sb *SharedAddressbook) string {
+	return sb.URI + "_shared_by_" + sb.OwnerUID
+}
+
+// resolveBook finds bookURI among the user's own addressbooks first,
+// then among addressbooks shared with them (matched by sharedURI).
+func (d *DAV) resolveBook(ctx context.Context, u *users.User, bookURI string) (*resolvedBook, error) {
+	book, err := d.Store.GetBookByURI(ctx, u.ID, bookURI)
+	if err == nil {
+		return &resolvedBook{book: *book, access: accessOwner, ownerUID: u.UID}, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	shared, err := d.Store.ListSharedAddressbooks(ctx, u.ID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range shared {
+		if sharedURI(&shared[i]) == bookURI {
+			return &resolvedBook{book: shared[i].Addressbook, access: shared[i].Access, ownerUID: shared[i].OwnerUID, shared: true}, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
 func (d *DAV) Stat(ctx context.Context, user, p string) (*webdav.Entry, error) {
 	u, err := d.resolveUser(ctx, user)
 	if err != nil {
@@ -65,14 +104,14 @@ func (d *DAV) Stat(ctx context.Context, user, p string) (*webdav.Entry, error) {
 	if bookURI == "" {
 		return d.homeEntry(ctx, u), nil
 	}
-	book, err := d.Store.GetBookByURI(ctx, u.ID, bookURI)
+	rb, err := d.resolveBook(ctx, u, bookURI)
 	if err != nil {
 		return nil, mapErr(err)
 	}
 	if objURI == "" {
-		return bookEntry(book), nil
+		return resolvedBookEntry(rb), nil
 	}
-	obj, err := d.Store.GetObject(ctx, u.ID, bookURI, objURI)
+	obj, err := d.Store.GetObject(ctx, rb.book.UserID, rb.book.URI, objURI)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -96,13 +135,24 @@ func (d *DAV) List(ctx context.Context, user, p string) ([]*webdav.Entry, error)
 		if err != nil {
 			return nil, err
 		}
-		out := make([]*webdav.Entry, 0, len(books))
+		shared, err := d.Store.ListSharedAddressbooks(ctx, u.ID)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]*webdav.Entry, 0, len(books)+len(shared))
 		for i := range books {
 			out = append(out, bookEntry(&books[i]))
 		}
+		for i := range shared {
+			out = append(out, sharedBookEntry(&shared[i]))
+		}
 		return out, nil
 	}
-	objs, err := d.Store.ListObjects(ctx, u.ID, bookURI)
+	rb, err := d.resolveBook(ctx, u, bookURI)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	objs, err := d.Store.ListObjects(ctx, rb.book.UserID, rb.book.URI)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -125,7 +175,11 @@ func (d *DAV) Read(ctx context.Context, user, p string) (io.ReadCloser, *webdav.
 	if objURI == "" {
 		return nil, nil, webdav.ErrMethodNotAllowed
 	}
-	obj, err := d.Store.GetObject(ctx, u.ID, bookURI, objURI)
+	rb, err := d.resolveBook(ctx, u, bookURI)
+	if err != nil {
+		return nil, nil, mapErr(err)
+	}
+	obj, err := d.Store.GetObject(ctx, rb.book.UserID, rb.book.URI, objURI)
 	if err != nil {
 		return nil, nil, mapErr(err)
 	}
@@ -144,12 +198,19 @@ func (d *DAV) Write(ctx context.Context, user, p string, r io.Reader, _ *time.Ti
 	if objURI == "" {
 		return nil, false, webdav.ErrMethodNotAllowed
 	}
+	rb, err := d.resolveBook(ctx, u, bookURI)
+	if err != nil {
+		return nil, false, mapErr(err)
+	}
+	if rb.shared && rb.access != ShareAccessReadWrite {
+		return nil, false, mapErr(ErrForbidden)
+	}
 	data, err := io.ReadAll(io.LimitReader(r, 4<<20))
 	if err != nil {
 		return nil, false, err
 	}
 	obj := &Object{URI: objURI, Data: data}
-	created, err := d.Store.PutObject(ctx, u.ID, bookURI, obj)
+	created, err := d.Store.PutObject(ctx, rb.book.UserID, rb.book.URI, obj)
 	if err != nil {
 		return nil, false, mapErr(err)
 	}
@@ -192,10 +253,20 @@ func (d *DAV) Remove(ctx context.Context, user, p string) error {
 	if bookURI == "" {
 		return webdav.ErrForbidden
 	}
+	rb, err := d.resolveBook(ctx, u, bookURI)
+	if err != nil {
+		return mapErr(err)
+	}
 	if objURI == "" {
+		if rb.shared {
+			return mapErr(ErrForbidden)
+		}
 		return mapErr(d.Store.DeleteBook(ctx, u.ID, bookURI))
 	}
-	return mapErr(d.Store.DeleteObject(ctx, u.ID, bookURI, objURI))
+	if rb.shared && rb.access != ShareAccessReadWrite {
+		return mapErr(ErrForbidden)
+	}
+	return mapErr(d.Store.DeleteObject(ctx, rb.book.UserID, rb.book.URI, objURI))
 }
 
 func (d *DAV) Move(context.Context, string, string, string, string, bool) (*webdav.Entry, bool, error) {
@@ -286,6 +357,26 @@ func bookEntry(b *Addressbook) *webdav.Entry {
 		DisplayName:   b.DisplayName,
 		CTag:          strconv.FormatInt(b.CTag, 10),
 	}
+}
+
+// resolvedBookEntry renders a resolved (own or shared) addressbook.
+func resolvedBookEntry(rb *resolvedBook) *webdav.Entry {
+	e := bookEntry(&rb.book)
+	if rb.shared {
+		e.Path = "/" + rb.book.URI + "_shared_by_" + rb.ownerUID
+		e.Shared = true
+		e.ShareAccess = rb.access
+		e.OwnerPrincipal = "/remote.php/dav/principals/users/" + rb.ownerUID + "/"
+		e.Permissions = webdav.PermRead
+		if rb.access == ShareAccessReadWrite {
+			e.Permissions = webdav.PermAll
+		}
+	}
+	return e
+}
+
+func sharedBookEntry(sb *SharedAddressbook) *webdav.Entry {
+	return resolvedBookEntry(&resolvedBook{book: sb.Addressbook, access: sb.Access, ownerUID: sb.OwnerUID, shared: true})
 }
 
 func objectEntry(bookURI string, o *Object) *webdav.Entry {

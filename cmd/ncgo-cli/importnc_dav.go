@@ -22,7 +22,7 @@ const ncUserPrincipalPrefix = "principals/users/"
 func newImportNCDAV(f *importNCFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "dav",
-		Short: "Import calendars, objects, calendar shares, address books, and contacts",
+		Short: "Import calendars, objects, address books, contacts, and DAV shares",
 		Long: "Import calendars and address books (with their objects) from the\n" +
 			"source <prefix>calendars, <prefix>calendarobjects, <prefix>addressbooks,\n" +
 			"and <prefix>cards tables.\n\n" +
@@ -40,15 +40,15 @@ func newImportNCDAV(f *importNCFlags) *cobra.Command {
 			"preserved; Nextcloud's per-calendar components list and transparent flag\n" +
 			"have no ncgo counterpart and are dropped (one summary warning each).\n" +
 			"Empty or unparseable calendardata/carddata is skipped with a warning.\n\n" +
-			"Calendar sharing (<prefix>dav_shares on all supported Nextcloud versions,\n" +
-			"legacy <prefix>calendarshares also recognized) IS imported for the\n" +
-			"unambiguous subset: user principals whose sharee and target calendar\n" +
-			"exist in the target, access read (3) or read-write (2) — Nextcloud keeps\n" +
-			"no invite state for these rows, and ncgo shares take effect immediately\n" +
-			"too, so the mapping is faithful. Group/circle principals, unknown\n" +
-			"sharees, calendars that were not imported, and unmappable access values\n" +
-			"are skipped with per-row warnings. Address book shares are counted and\n" +
-			"reported but NOT imported (ncgo has no address book sharing).\n\n" +
+			"Calendar and address book sharing (<prefix>dav_shares on all supported\n" +
+			"Nextcloud versions, legacy <prefix>calendarshares also recognized for\n" +
+			"calendars) IS imported for the unambiguous subset: user principals\n" +
+			"whose sharee and target collection exist in the target, access read\n" +
+			"(3) or read-write (2) — Nextcloud keeps no invite state for these\n" +
+			"rows, and ncgo shares take effect immediately too, so the mapping is\n" +
+			"faithful. Group/circle principals, unknown sharees, collections that\n" +
+			"were not imported, and unmappable access values are skipped with\n" +
+			"per-row warnings.\n\n" +
 			"The import is idempotent: an existing calendar/addressbook with the same\n" +
 			"owner+uri is skipped (an existing one with different properties is a\n" +
 			"collision and is skipped wholesale, objects included, with a warning),\n" +
@@ -86,14 +86,15 @@ func newImportNCDAV(f *importNCFlags) *cobra.Command {
 // importNCDAV imports calendars + objects and address books + cards from the
 // PHP Nextcloud database. Best-effort: per-row failures warn and continue.
 func importNCDAV(ctx context.Context, src database.DB, us *users.SQLStore, cs *calendar.SQLStore, bs *contacts.SQLStore, prefix string, dryRun bool, r *importReport) error {
-	resolved, err := importNCCalendars(ctx, src, us, cs, prefix, dryRun, r)
+	resolvedCals, err := importNCCalendars(ctx, src, us, cs, prefix, dryRun, r)
 	if err != nil {
 		return err
 	}
-	if err := importNCAddressbooks(ctx, src, us, bs, prefix, dryRun, r); err != nil {
+	resolvedBooks, err := importNCAddressbooks(ctx, src, us, bs, prefix, dryRun, r)
+	if err != nil {
 		return err
 	}
-	return importNCCalendarShares(ctx, src, us, cs, prefix, dryRun, r, resolved)
+	return importNCDAVShares(ctx, src, us, cs, bs, prefix, dryRun, r, resolvedCals, resolvedBooks)
 }
 
 // ncPrincipalUID extracts the uid from a principals/users/<uid> principaluri.
@@ -335,32 +336,48 @@ type ncAddressbookRow struct {
 	description string
 }
 
-func importNCAddressbooks(ctx context.Context, src database.DB, us *users.SQLStore, bs *contacts.SQLStore, prefix string, dryRun bool, r *importReport) error {
+// ncResolvedAddressbook records how one source addressbook landed in the
+// target: it was created (or dry-run-planned, targetID 0) or an equivalent
+// addressbook already owned the uri. Shares resolve against this set, so a
+// share never attaches to a foreign addressbook that merely shares the uri
+// (collision skip).
+type ncResolvedAddressbook struct {
+	ownerUID string
+	uri      string
+	targetID int64
+}
+
+func importNCAddressbooks(ctx context.Context, src database.DB, us *users.SQLStore, bs *contacts.SQLStore, prefix string, dryRun bool, r *importReport) (map[int64]ncResolvedAddressbook, error) {
 	ac := r.entity("addressbooks")
+	resolved := map[int64]ncResolvedAddressbook{}
 	rows, err := src.Query(ctx, `
 SELECT id, principaluri, uri, displayname, description
 FROM `+prefix+`addressbooks ORDER BY id`)
 	if err != nil {
-		return fmt.Errorf("import dav: read source addressbooks: %w", err)
+		return nil, fmt.Errorf("import dav: read source addressbooks: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var row ncAddressbookRow
 		var display, description *string
 		if err := rows.Scan(&row.id, &row.principal, &row.uri, &display, &description); err != nil {
-			return fmt.Errorf("import dav: scan addressbook: %w", err)
+			return nil, fmt.Errorf("import dav: scan addressbook: %w", err)
 		}
 		row.displayName = derefStr(display)
 		row.description = derefStr(description)
-		importNCAddressbook(ctx, src, &row, us, bs, prefix, dryRun, r, ac)
+		importNCAddressbook(ctx, src, &row, us, bs, prefix, dryRun, r, ac, resolved)
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("import dav: read source addressbooks: %w", err)
+		return nil, fmt.Errorf("import dav: read source addressbooks: %w", err)
 	}
-	return nil
+	return resolved, nil
 }
 
-func importNCAddressbook(ctx context.Context, src database.DB, row *ncAddressbookRow, us *users.SQLStore, bs *contacts.SQLStore, prefix string, dryRun bool, r *importReport, ac *importCounts) {
+// importNCAddressbook imports one addressbook and — unless the book is
+// skipped wholesale — its cards. Books that land in the target (created,
+// dry-run-planned, or matched to an equivalent existing one) are recorded in
+// resolved for the share pass.
+func importNCAddressbook(ctx context.Context, src database.DB, row *ncAddressbookRow, us *users.SQLStore, bs *contacts.SQLStore, prefix string, dryRun bool, r *importReport, ac *importCounts, resolved map[int64]ncResolvedAddressbook) {
 	uid, ok := ncPrincipalUID(row.principal)
 	if !ok {
 		r.warn("addressbook %d: principal %q is not a user principal, skipped with its cards", row.id, row.principal)
@@ -401,9 +418,13 @@ func importNCAddressbook(ctx context.Context, src database.DB, row *ncAddressboo
 			skipNCObjects(ctx, src, prefix+`cards`, "addressbookid", row.id, r.entity("cards"), r)
 			return
 		}
+		// Idempotent re-run (or resume after a partial failure): import
+		// whichever cards are still missing.
+		resolved[row.id] = ncResolvedAddressbook{ownerUID: uid, uri: row.uri, targetID: existing.ID}
 	case errors.Is(err, contacts.ErrNotFound):
 		if dryRun {
 			ac.created++
+			resolved[row.id] = ncResolvedAddressbook{ownerUID: uid, uri: row.uri}
 			countNCObjects(ctx, src, prefix+`cards`, "addressbookid", "carddata", row.id, r.entity("cards"), r)
 			return
 		}
@@ -417,6 +438,7 @@ func importNCAddressbook(ctx context.Context, src database.DB, row *ncAddressboo
 			return
 		}
 		ac.created++
+		resolved[row.id] = ncResolvedAddressbook{ownerUID: uid, uri: row.uri, targetID: want.ID}
 	default:
 		r.warn("addressbook %d: lookup uri %q: %v", row.id, row.uri, err)
 		ac.failed++
@@ -529,17 +551,17 @@ func countNCSourceRows(ctx context.Context, src database.DB, table, column strin
 	return n
 }
 
-// ncCalShareRow is one calendar-share row from either source share table:
-// <prefix>dav_shares (Nextcloud 9+) or the legacy <prefix>calendarshares
-// layout (same mapping, calendarid column read as resource, type implied
-// "calendar").
-type ncCalShareRow struct {
+// ncDAVShareRow is one share row from either source share table:
+// <prefix>dav_shares (Nextcloud 9+, calendar and addressbook shares) or the
+// legacy <prefix>calendarshares layout (same mapping, calendarid column read
+// as resource, type implied "calendar").
+type ncDAVShareRow struct {
 	table     string
 	id        int64
 	principal string
 	typ       string
 	access    int64
-	resource  int64 // oc_calendars.id
+	resource  int64 // oc_calendars.id or oc_addressbooks.id
 }
 
 // ncAccessRead / ncAccessReadWrite are Nextcloud's dav_shares access values
@@ -555,8 +577,8 @@ const (
 // across many Nextcloud versions can carry both) and returns the combined
 // row set. Absent tables are skipped silently; with no rows at all the
 // caller reports nothing.
-func readNCShareRows(ctx context.Context, src database.DB, prefix string) []ncCalShareRow {
-	var out []ncCalShareRow
+func readNCShareRows(ctx context.Context, src database.DB, prefix string) []ncDAVShareRow {
+	var out []ncDAVShareRow
 	if rows, err := src.Query(ctx, `
 SELECT id, principaluri, type, access, resourceid FROM `+prefix+`dav_shares ORDER BY id`); err == nil {
 		out = append(out, scanNCShareRows(rows, prefix+"dav_shares", false)...)
@@ -568,11 +590,11 @@ SELECT id, principaluri, access, calendarid FROM `+prefix+`calendarshares ORDER 
 	return out
 }
 
-func scanNCShareRows(rows database.Rows, table string, legacy bool) []ncCalShareRow {
+func scanNCShareRows(rows database.Rows, table string, legacy bool) []ncDAVShareRow {
 	defer rows.Close()
-	var out []ncCalShareRow
+	var out []ncDAVShareRow
 	for rows.Next() {
-		var row ncCalShareRow
+		var row ncDAVShareRow
 		var typ *string
 		var access *int64
 		row.table = table
@@ -597,17 +619,18 @@ func scanNCShareRows(rows database.Rows, table string, legacy bool) []ncCalShare
 	return out
 }
 
-// importNCCalendarShares maps source calendar shares onto ncgo
-// calendar_shares. Only the unambiguous subset is imported: user principals
-// (groups/circles skipped), sharee present in the target, and a target
-// calendar that this run (or a previous one) actually imported — resolved
-// holds exactly those, so a share never attaches to a foreign calendar that
-// merely owns the same uri. Nextcloud's dav_shares carries no invite state —
-// every row is an effective share (Backend.php hardcodes status accepted),
-// and ncgo shares take effect immediately as well, so the mapping is
-// faithful. Idempotent: an existing share with the same access is skipped, a
-// differing access is updated (UpsertCalendarShare semantics).
-func importNCCalendarShares(ctx context.Context, src database.DB, us *users.SQLStore, cs *calendar.SQLStore, prefix string, dryRun bool, r *importReport, resolved map[int64]ncResolvedCalendar) error {
+// importNCDAVShares maps source calendar and addressbook shares onto ncgo
+// calendar_shares and addressbook_shares. Only the unambiguous subset is
+// imported: user principals (groups/circles skipped), sharee present in the
+// target, and a target collection that this run (or a previous one) actually
+// imported — the resolved sets hold exactly those, so a share never attaches
+// to a foreign collection that merely owns the same uri. Nextcloud's
+// dav_shares carries no invite state — every row is an effective share
+// (Backend.php hardcodes status accepted), and ncgo shares take effect
+// immediately as well, so the mapping is faithful. Idempotent: an existing
+// share with the same access is skipped, a differing access is updated
+// (Upsert semantics).
+func importNCDAVShares(ctx context.Context, src database.DB, us *users.SQLStore, cs *calendar.SQLStore, bs *contacts.SQLStore, prefix string, dryRun bool, r *importReport, resolvedCals map[int64]ncResolvedCalendar, resolvedBooks map[int64]ncResolvedAddressbook) error {
 	rows := readNCShareRows(ctx, src, prefix)
 	if len(rows) == 0 {
 		return nil
@@ -617,32 +640,35 @@ func importNCCalendarShares(ctx context.Context, src database.DB, us *users.SQLS
 	if err != nil {
 		return err
 	}
+	books, err := readNCAddressbookRefs(ctx, src, prefix)
+	if err != nil {
+		return err
+	}
 	// Per-sharee existing shares, lazily loaded and kept in sync with what
 	// this run writes (dry-run included) so duplicate source rows and re-runs
-	// count exactly.
-	existing := map[int64]map[int64]string{}
-	var addressbookShares int
+	// count exactly. Keyed by sharee id, then collection id.
+	existingCals := map[int64]map[int64]string{}
+	existingBooks := map[int64]map[int64]string{}
+	var bc *importCounts
 	for _, row := range rows {
-		if row.typ != "calendar" {
-			if row.typ == "addressbook" {
-				addressbookShares++
-				r.entity("addressbook shares").skipped++
-			} else {
-				r.warn("calendar share %s:%d: unknown type %q, skipped", row.table, row.id, row.typ)
-				sc.skipped++
+		switch row.typ {
+		case "calendar":
+			importNCCalendarShare(ctx, row, cals, resolvedCals, us, cs, existingCals, dryRun, r, sc)
+		case "addressbook":
+			if bc == nil {
+				bc = r.entity("addressbook shares")
 			}
-			continue
+			importNCAddressbookShare(ctx, row, books, resolvedBooks, us, bs, existingBooks, dryRun, r, bc)
+		default:
+			r.warn("calendar share %s:%d: unknown type %q, skipped", row.table, row.id, row.typ)
+			sc.skipped++
 		}
-		importNCCalendarShare(ctx, row, cals, resolved, us, cs, existing, dryRun, r, sc)
-	}
-	if addressbookShares > 0 {
-		r.warn("%d addressbook share(s) not imported (ncgo has no addressbook sharing; re-share address books after migration)", addressbookShares)
 	}
 	return nil
 }
 
 // importNCCalendarShare maps one source share row; every skip category warns.
-func importNCCalendarShare(ctx context.Context, row ncCalShareRow, cals map[int64]ncCalendarRef, resolved map[int64]ncResolvedCalendar, us *users.SQLStore, cs *calendar.SQLStore, existing map[int64]map[int64]string, dryRun bool, r *importReport, sc *importCounts) {
+func importNCCalendarShare(ctx context.Context, row ncDAVShareRow, cals map[int64]ncCalendarRef, resolved map[int64]ncResolvedCalendar, us *users.SQLStore, cs *calendar.SQLStore, existing map[int64]map[int64]string, dryRun bool, r *importReport, sc *importCounts) {
 	shareeUID, ok := ncPrincipalUID(row.principal)
 	if !ok {
 		r.warn("calendar share %s:%d: principal %q is not a user principal, skipped", row.table, row.id, row.principal)
@@ -769,6 +795,140 @@ func readNCCalendarRefs(ctx context.Context, src database.DB, prefix string) (ma
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("import dav: read source calendars for shares: %w", err)
+	}
+	return out, nil
+}
+
+// importNCAddressbookShare maps one source share row onto ncgo
+// addressbook_shares, with the same classification rules as the calendar
+// mapping; every skip category warns.
+func importNCAddressbookShare(ctx context.Context, row ncDAVShareRow, books map[int64]ncAddressbookRef, resolved map[int64]ncResolvedAddressbook, us *users.SQLStore, bs *contacts.SQLStore, existing map[int64]map[int64]string, dryRun bool, r *importReport, bc *importCounts) {
+	shareeUID, ok := ncPrincipalUID(row.principal)
+	if !ok {
+		r.warn("addressbook share %s:%d: principal %q is not a user principal, skipped", row.table, row.id, row.principal)
+		bc.skipped++
+		return
+	}
+	sharee, err := us.GetByUID(ctx, shareeUID)
+	switch {
+	case err == nil:
+	case errors.Is(err, users.ErrNotFound):
+		r.warn("addressbook share %s:%d: sharee %s not in target, skipped", row.table, row.id, shareeUID)
+		bc.skipped++
+		return
+	default:
+		r.warn("addressbook share %s:%d: lookup sharee %s: %v", row.table, row.id, shareeUID, err)
+		bc.failed++
+		return
+	}
+	if _, ok := books[row.resource]; !ok {
+		r.warn("addressbook share %s:%d: source addressbook %d not found, skipped", row.table, row.id, row.resource)
+		bc.skipped++
+		return
+	}
+	target, ok := resolved[row.resource]
+	if !ok {
+		r.warn("addressbook share %s:%d: addressbook %s not imported, share skipped", row.table, row.id, ncAddressbookLabel(books, row.resource))
+		bc.skipped++
+		return
+	}
+	if target.ownerUID == shareeUID {
+		r.warn("addressbook share %s:%d: %s is the addressbook owner, self-share skipped", row.table, row.id, shareeUID)
+		bc.skipped++
+		return
+	}
+	var access string
+	switch row.access {
+	case ncAccessRead:
+		access = contacts.ShareAccessRead
+	case ncAccessReadWrite:
+		access = contacts.ShareAccessReadWrite
+	default:
+		r.warn("addressbook share %s:%d: access %d not mappable (2=read-write, 3=read), skipped", row.table, row.id, row.access)
+		bc.skipped++
+		return
+	}
+	if target.targetID == 0 {
+		// Dry-run with the addressbook only planned: no shares can exist yet.
+		bc.created++
+		return
+	}
+	byBook, loaded := existing[sharee.ID]
+	if !loaded {
+		byBook = map[int64]string{}
+		shared, err := bs.ListSharedAddressbooks(ctx, sharee.ID)
+		if err != nil {
+			r.warn("addressbook share %s:%d: list shares of %s: %v", row.table, row.id, shareeUID, err)
+			bc.failed++
+			return
+		}
+		for _, s := range shared {
+			byBook[s.ID] = s.Access
+		}
+		existing[sharee.ID] = byBook
+	}
+	cur, found := byBook[target.targetID]
+	switch {
+	case found && cur == access:
+		bc.skipped++
+		return
+	case found && !dryRun:
+		if err := bs.UpsertAddressbookShare(ctx, target.targetID, sharee.ID, access); err != nil {
+			r.warn("addressbook share %s:%d: update failed: %v", row.table, row.id, err)
+			bc.failed++
+			return
+		}
+		bc.updated++
+	case found:
+		bc.updated++
+	case !dryRun:
+		if err := bs.UpsertAddressbookShare(ctx, target.targetID, sharee.ID, access); err != nil {
+			r.warn("addressbook share %s:%d: create failed: %v", row.table, row.id, err)
+			bc.failed++
+			return
+		}
+		bc.created++
+	default:
+		bc.created++
+	}
+	byBook[target.targetID] = access
+}
+
+// ncAddressbookLabel renders source addressbook id as owner/uri for warnings.
+func ncAddressbookLabel(books map[int64]ncAddressbookRef, id int64) string {
+	ref := books[id]
+	uid := ref.principal
+	if u, ok := ncPrincipalUID(ref.principal); ok {
+		uid = u
+	}
+	return uid + "/" + ref.uri
+}
+
+// ncAddressbookRef is the owner+uri of one source addressbook, used to
+// resolve share resourceids against the addressbooks this run (or a previous
+// one) imported.
+type ncAddressbookRef struct {
+	principal string
+	uri       string
+}
+
+func readNCAddressbookRefs(ctx context.Context, src database.DB, prefix string) (map[int64]ncAddressbookRef, error) {
+	rows, err := src.Query(ctx, `SELECT id, principaluri, uri FROM `+prefix+`addressbooks ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("import dav: read source addressbooks for shares: %w", err)
+	}
+	defer rows.Close()
+	out := map[int64]ncAddressbookRef{}
+	for rows.Next() {
+		var id int64
+		var ref ncAddressbookRef
+		if err := rows.Scan(&id, &ref.principal, &ref.uri); err != nil {
+			return nil, fmt.Errorf("import dav: scan addressbook for shares: %w", err)
+		}
+		out[id] = ref
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("import dav: read source addressbooks for shares: %w", err)
 	}
 	return out, nil
 }

@@ -166,12 +166,7 @@ func writeProps(buf *bytes.Buffer, ctx PropfindContext, e *Entry) {
 			fmt.Fprintf(buf, `<d:sync-token>https://nextcloud-go/sync/%s</d:sync-token>`, xmlEscape(e.CTag))
 		}
 		buf.WriteString(`<cal:supported-calendar-component-set><cal:comp name="VEVENT"/><cal:comp name="VTODO"/></cal:supported-calendar-component-set>`)
-		if e.ShareAccess != "" {
-			fmt.Fprintf(buf, `<d:share-access><d:%s/></d:share-access>`, xmlEscape(e.ShareAccess))
-		}
-		if e.OwnerPrincipal != "" {
-			fmt.Fprintf(buf, `<nc:owner-principal><d:href>%s</d:href></nc:owner-principal>`, xmlEscape(e.OwnerPrincipal))
-		}
+		writeShareProps(buf, e)
 		if e.CalendarColor != "" {
 			fmt.Fprintf(buf, `<apple:calendar-color>%s</apple:calendar-color>`, xmlEscape(e.CalendarColor))
 		}
@@ -189,7 +184,21 @@ func writeProps(buf *bytes.Buffer, ctx PropfindContext, e *Entry) {
 		fmt.Fprintf(buf, `<cs:getctag>&quot;%s&quot;</cs:getctag>`, xmlEscape(e.CTag))
 		fmt.Fprintf(buf, `<d:sync-token>https://nextcloud-go/sync/%s</d:sync-token>`, xmlEscape(e.CTag))
 	}
+	if e.IsAddressbook {
+		writeShareProps(buf, e)
+	}
 	writeExtraProps(buf, e.ExtraProps)
+}
+
+// writeShareProps emits the share-access and owner-principal properties of a
+// shared DAV collection (calendar or addressbook).
+func writeShareProps(buf *bytes.Buffer, e *Entry) {
+	if e.ShareAccess != "" {
+		fmt.Fprintf(buf, `<d:share-access><d:%s/></d:share-access>`, xmlEscape(e.ShareAccess))
+	}
+	if e.OwnerPrincipal != "" {
+		fmt.Fprintf(buf, `<nc:owner-principal><d:href>%s</d:href></nc:owner-principal>`, xmlEscape(e.OwnerPrincipal))
+	}
 }
 
 // writeExtraProps emits live custom props with an inline xmlns declaration
