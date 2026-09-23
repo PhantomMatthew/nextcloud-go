@@ -44,15 +44,13 @@ func newImportNextcloud() *cobra.Command {
 			"  files   user files from a Nextcloud data directory\n" +
 			"  shares  internal and public-link shares\n" +
 			"  dav     calendars, calendar objects, calendar shares, address books,\n" +
-			"          and contacts\n\n" +
+			"          and contacts\n" +
+			"  tokens  app passwords (permanent authtokens)\n\n" +
 			"Sessions are NOT imported: ncgo browser sessions are its own token\n" +
-			"family, so users must log in again. App passwords are not imported by\n" +
-			"this tool either, but ncgo deliberately hashes tokens exactly like\n" +
-			"Nextcloud (SHA-512 of token+instance secret): an operator who copies\n" +
-			"the source instance's config.php 'secret' into ncgo's instance.secret\n" +
-			"can carry oc_authtoken rows over by hand — see\n" +
-			"docs/adr/0071-import-calendar-shares-users-fields.md for the recipe\n" +
-			"and the caveats. Otherwise users reissue app passwords after migrating.",
+			"family, so users must log in again. App passwords (oc_authtoken rows\n" +
+			"with type = 1) are imported by the 'tokens' subcommand — they verify\n" +
+			"only when ncgo's instance.secret equals the source instance's\n" +
+			"config.php 'secret' (see the tokens command help).",
 		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
 			switch database.Dialect(f.sourceDriver) {
 			case database.DialectMySQL, database.DialectPostgres, database.DialectSQLite:
@@ -72,7 +70,7 @@ func newImportNextcloud() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&f.sourceDSN, "source-dsn", "", "source database DSN (required)")
 	cmd.PersistentFlags().StringVar(&f.tablePrefix, "table-prefix", "oc_", "source table prefix")
 	cmd.PersistentFlags().BoolVar(&f.dryRun, "dry-run", false, "scan and count without writing to the target")
-	cmd.AddCommand(newImportNCUsers(f), newImportNCFiles(f), newImportNCShares(f), newImportNCDAV(f))
+	cmd.AddCommand(newImportNCUsers(f), newImportNCFiles(f), newImportNCShares(f), newImportNCDAV(f), newImportNCTokens(f))
 	return cmd
 }
 
@@ -192,7 +190,8 @@ func newImportNCUsers(f *importNCFlags) *cobra.Command {
 			"them); unparseable values import without a quota plus a warning.\n\n" +
 			"Existing users, groups, and memberships in the target are skipped unchanged,\n" +
 			"so the import is idempotent and resumable. Writes are committed per entity.\n" +
-			"Sessions and app passwords are NOT imported (see the parent command help).",
+			"Sessions are NOT imported; app passwords are imported by the 'tokens'\n" +
+			"subcommand (see its help).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := loadConfig()

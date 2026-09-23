@@ -191,6 +191,30 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-23** — Phase 5a: import-nextcloud tokens (ADR-0073), resolving
+  the `tokens` follow-up ADR-0071 §Decision 3 pinned. New
+  `import-nextcloud tokens` subcommand imports `oc_authtoken` rows with
+  `type = 1` (permanent app passwords) into `app_passwords`: the
+  sha512(token+secret) hash is copied **verbatim** (ncgo's hashing is
+  byte-identical to Nextcloud's by design, so imported tokens verify
+  against the original app password if and only if `instance.secret`
+  equals the source config.php `secret` — copied before first use and
+  kept forever; rotating it invalidates every imported token at once),
+  `id` synthesizes to `nc-<id>`, `last_activity` seconds become
+  `created_at` ms (NULL → 0), `login_name` falls back to the mapped uid,
+  and the password/keypair columns are dropped (ncgo never decrypts
+  stored passwords). Browser sessions (type 0) stay not importable;
+  wipe tokens (type 2) are filtered with them in SQL. The source uid
+  maps exactly like the users importer (uid → uid_lower fallback);
+  tokens for unmappable or missing-target users skip with per-row
+  warnings — a mandatory `GetByUID` pre-check covers `auth.Insert`'s
+  silent 0-rows-on-unknown-uid behavior. Idempotent on the token hash
+  (`GetByHash`; also skips rows carried over by hand via the ADR-0071
+  SQL recipe), resumable, dry-run counts without writing, and a missing
+  `authtoken` table is a hard error. Tests include the cross-instance
+  money test: a fixture row hashed with the source secret authenticates
+  through `AppPasswordVerifier` configured with the same secret — and
+  fails with a different one.
 - **2026-09-23** — Phase 4z: OpenTelemetry spans (ADR-0072), resolving
   the ADR-0055 OTel follow-up and restoring the `observability.otel_endpoint`
   key Phase 4k had removed as dead. The project-wide zero-dependency posture
