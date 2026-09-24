@@ -147,7 +147,7 @@ Constraints shaping the design:
 
 - **Document/office previews** via an external service (Collabora/OnlyOffice
   rendering pipeline) — deferred scope.
-- **Fill/crop `mode`** support (aspect-fill with center crop).
+- ~~**Fill/crop `mode`** support (aspect-fill with center crop).~~ (**fill resolved by ADR-0086**; offset `crop` remains unsupported and falls back to fit)
 - ~~**Preview pre-generation cron** on upload events for hot sizes.~~ (**resolved by ADR-0084**)
 - ~~**Cache GC** of orphaned etag-keyed entries.~~ (**resolved by ADR-0085**)
 - **WebP** input/output once `x/image/webp` decode coverage is sufficient.

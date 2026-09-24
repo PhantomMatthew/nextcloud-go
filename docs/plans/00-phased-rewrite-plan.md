@@ -191,6 +191,17 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-24** — Phase 5m: preview fill mode (ADR-0086), closing
+  ADR-0053's fill/crop follow-up for `mode=fill`. `mode=fill` now renders
+  an aspect-fill, centre-cropped preview (cover-scale with
+  `min(max(x/w, y/h), 1.0)`, crop to `min(dw,x) x min(dh,y)`, never
+  upscaling); any other `mode` value — including offset `crop` — falls
+  back to the v1 aspect-preserving fit with no new 400s. The cache key
+  appends a `"\nfill"` marker for fill renders while fit keys stay
+  byte-identical to the pre-fill format, so existing cache entries remain
+  valid and fit/fill variants coexist (singleflight separation comes free
+  with the key). Pregeneration (ADR-0084) deliberately warms fit boxes
+  only.
 - **2026-09-24** — Phase 5l: preview cache garbage collection (ADR-0085),
   closing ADR-0053's cache-GC follow-up (also carried by ADR-0084). Cache
   keys are one-way content-derived hashes, so orphaned etag-keyed entries

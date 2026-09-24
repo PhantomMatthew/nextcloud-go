@@ -44,6 +44,10 @@ const (
 	mimeJPEG           = "image/jpeg"
 	mimePNG            = "image/png"
 	cacheControlValue  = "private, max-age=86400"
+	// modeFill is the only honoured value of the mode query parameter
+	// (ADR-0086): aspect-fill with a centre crop. Anything else falls back
+	// to the aspect-preserving fit.
+	modeFill = "fill"
 )
 
 // errNotPreviewable marks originals that cannot yield a preview (non-image,
@@ -92,7 +96,8 @@ func (g *Generator) logger() *slog.Logger {
 
 // ServeHTTP handles GET /index.php/core/preview[.png]. Query parameters:
 // file (required DAV path), x/y (box edges, default 32, clamped to MaxDim).
-// mode is ignored in v1: scaling is always an aspect-preserving fit.
+// mode=fill selects aspect-fill with a centre crop (ADR-0086); any other
+// value, or none, keeps the aspect-preserving fit.
 func (g *Generator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p, ok := auth.UserFromContext(r.Context())
 	if !ok {
@@ -121,7 +126,7 @@ func (g *Generator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid y parameter", http.StatusBadRequest)
 		return
 	}
-	g.serve(w, r, p.UID, np, x, y)
+	g.serve(w, r, p.UID, np, x, y, q.Get("mode") == modeFill)
 }
 
 // parseDimension accepts a positive box edge and clamps it to maxDim.
@@ -139,7 +144,7 @@ func parseDimension(raw string, maxDim int) (int, error) {
 	return n, nil
 }
 
-func (g *Generator) serve(w http.ResponseWriter, r *http.Request, uid, np string, x, y int) {
+func (g *Generator) serve(w http.ResponseWriter, r *http.Request, uid, np string, x, y int, fill bool) {
 	ctx := r.Context()
 	rc, entry, err := g.Source.Read(ctx, uid, np)
 	if err != nil {
@@ -156,7 +161,7 @@ func (g *Generator) serve(w http.ResponseWriter, r *http.Request, uid, np string
 	}
 	defer rc.Close()
 
-	key := cacheKey(uid, np, entry.ETag, x, y)
+	key := cacheKey(uid, np, entry.ETag, x, y, fill)
 	if f, info, ct := g.openCached(ctx, key); f != nil {
 		defer f.Close()
 		writeHeaders(w, ct, key, info.Size)
@@ -174,7 +179,7 @@ func (g *Generator) serve(w http.ResponseWriter, r *http.Request, uid, np string
 				return &generated{data: data, contentType: ct}, nil
 			}
 		}
-		return g.generate(ctx, rc, key, x, y)
+		return g.generate(ctx, rc, key, x, y, fill)
 	})
 	if err != nil {
 		if errors.Is(err, errNotPreviewable) {
@@ -201,12 +206,12 @@ type generated struct {
 	contentType string
 }
 
-func (g *Generator) generate(ctx context.Context, rc io.Reader, key string, x, y int) (*generated, error) {
+func (g *Generator) generate(ctx context.Context, rc io.Reader, key string, x, y int, fill bool) (*generated, error) {
 	data, err := io.ReadAll(io.LimitReader(rc, maxSourceBytes+1))
 	if err != nil || len(data) > maxSourceBytes {
 		return nil, errNotPreviewable
 	}
-	out, err := render(data, x, y)
+	out, err := render(data, x, y, fill)
 	if err != nil {
 		return nil, err
 	}
@@ -218,9 +223,11 @@ func (g *Generator) generate(ctx context.Context, rc io.Reader, key string, x, y
 }
 
 // render sniffs, bounds-checks, decodes, scales, and encodes data into one
-// generated preview for the x-by-y box. Non-images, corrupt content, and
-// over-limit source dimensions all collapse to errNotPreviewable.
-func render(data []byte, x, y int) (*generated, error) {
+// generated preview for the x-by-y box: an aspect-preserving fit, or an
+// aspect-fill with centre crop when fill is set (ADR-0086). Non-images,
+// corrupt content, and over-limit source dimensions all collapse to
+// errNotPreviewable.
+func render(data []byte, x, y int, fill bool) (*generated, error) {
 	switch http.DetectContentType(data[:min(sniffBytes, len(data))]) {
 	case mimeJPEG, mimePNG, "image/gif":
 	default:
@@ -237,7 +244,12 @@ func render(data []byte, x, y int) (*generated, error) {
 	if err != nil {
 		return nil, errNotPreviewable
 	}
-	dst := scale(src, x, y)
+	var dst image.Image
+	if fill {
+		dst = scaleFill(src, x, y)
+	} else {
+		dst = scale(src, x, y)
+	}
 
 	out := &generated{}
 	var buf bytes.Buffer
@@ -313,7 +325,7 @@ func (g *Generator) Pregenerate(ctx context.Context, uid, path string, boxes []i
 	}
 
 	for _, b := range boxes {
-		key := cacheKey(uid, np, entry.ETag, b, b)
+		key := cacheKey(uid, np, entry.ETag, b, b, false)
 		if f, _, _ := g.openCached(ctx, key); f != nil {
 			_ = f.Close()
 			continue
@@ -325,7 +337,8 @@ func (g *Generator) Pregenerate(ctx context.Context, uid, path string, boxes []i
 				_ = f.Close()
 				return nil, nil
 			}
-			out, rerr := render(data, b, b)
+			// Pregeneration warms fit-mode boxes only (ADR-0086).
+			out, rerr := render(data, b, b, false)
 			if rerr != nil {
 				return nil, rerr
 			}
@@ -361,6 +374,32 @@ func scale(src image.Image, x, y int) image.Image {
 	}
 	dst := image.NewRGBA(image.Rect(0, 0, dw, dh))
 	draw.ApproxBiLinear.Scale(dst, dst.Bounds(), src, b, draw.Over, nil)
+	return dst
+}
+
+// scaleFill returns src covering the x-by-y box, centre-cropped to it
+// (ADR-0086). Like scale it never upscales: a source smaller than the box
+// keeps its size, so the output is min(box, scaled) per edge.
+func scaleFill(src image.Image, x, y int) image.Image {
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	factor := min(max(float64(x)/float64(w), float64(y)/float64(h)), 1.0)
+	dw := max(1, int(math.Round(float64(w)*factor)))
+	dh := max(1, int(math.Round(float64(h)*factor)))
+	scaled := src
+	if dw != w || dh != h {
+		s := image.NewRGBA(image.Rect(0, 0, dw, dh))
+		draw.ApproxBiLinear.Scale(s, s.Bounds(), src, b, draw.Over, nil)
+		scaled = s
+	}
+	cw, ch := min(dw, x), min(dh, y)
+	if cw == dw && ch == dh {
+		return scaled
+	}
+	// Copy rather than SubImage so non-zero source bounds stay correct.
+	sb := scaled.Bounds()
+	dst := image.NewRGBA(image.Rect(0, 0, cw, ch))
+	draw.Draw(dst, dst.Bounds(), scaled, image.Pt(sb.Min.X+(dw-cw)/2, sb.Min.Y+(dh-ch)/2), draw.Src)
 	return dst
 }
 
@@ -400,9 +439,15 @@ func (g *Generator) cachedPath(key, ext string) string {
 }
 
 // cacheKey fingerprints user, path, source etag, and box so any content
-// change (new etag) invalidates implicitly.
-func cacheKey(uid, path, etag string, x, y int) string {
-	sum := sha256.Sum256([]byte(uid + "\n" + path + "\n" + etag + "\n" + strconv.Itoa(x) + "x" + strconv.Itoa(y)))
+// change (new etag) invalidates implicitly. Fill mode appends a marker
+// (ADR-0086); the fit string is byte-identical to the pre-fill format, so
+// existing fit cache entries stay valid.
+func cacheKey(uid, path, etag string, x, y int, fill bool) string {
+	s := uid + "\n" + path + "\n" + etag + "\n" + strconv.Itoa(x) + "x" + strconv.Itoa(y)
+	if fill {
+		s += "\nfill"
+	}
+	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
 }
 

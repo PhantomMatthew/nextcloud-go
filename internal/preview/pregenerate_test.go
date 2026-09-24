@@ -74,7 +74,7 @@ func cacheEntries(t *testing.T, st storage.Storage) []*storage.FileInfo {
 
 func cachedPreview(t *testing.T, st storage.Storage, path, etag string, box int, ext string) []byte {
 	t.Helper()
-	key := cacheKey("alice", path, etag, box, box)
+	key := cacheKey("alice", path, etag, box, box, false)
 	f, err := st.Open(context.Background(), "appdata_ocTestInstance/previews/"+key+ext)
 	if err != nil {
 		t.Fatalf("cache entry for %dx%d%s: %v", box, box, ext, err)
@@ -125,11 +125,11 @@ func TestPregeneratePNGAndJPEG(t *testing.T) {
 		t.Errorf("jpg 256-box dims = %dx%d, want 256x192", w, h)
 	}
 	// The opposite extension must not exist for either file.
-	pngWrong := cacheKey("alice", "/photo.png", pngEnt.ETag, 32, 32)
+	pngWrong := cacheKey("alice", "/photo.png", pngEnt.ETag, 32, 32, false)
 	if _, err := st.Stat(context.Background(), "appdata_ocTestInstance/previews/"+pngWrong+extJPEG); err == nil {
 		t.Error("png source got a .jpg cache entry")
 	}
-	jpgWrong := cacheKey("alice", "/photo.jpg", jpgEnt.ETag, 32, 32)
+	jpgWrong := cacheKey("alice", "/photo.jpg", jpgEnt.ETag, 32, 32, false)
 	if _, err := st.Stat(context.Background(), "appdata_ocTestInstance/previews/"+jpgWrong+extPNG); err == nil {
 		t.Error("jpeg source got a .png cache entry")
 	}
@@ -221,7 +221,7 @@ func TestPregenerateClampDedupe(t *testing.T) {
 	if w, h := decodeDims(t, cachedPreview(t, st, "/photo.png", ent.ETag, 2048, extPNG)); w != 800 || h != 600 {
 		t.Errorf("clamped 2048-box dims = %dx%d, want 800x600 (never upscale)", w, h)
 	}
-	key4096 := cacheKey("alice", "/photo.png", ent.ETag, 4096, 4096)
+	key4096 := cacheKey("alice", "/photo.png", ent.ETag, 4096, 4096, false)
 	if _, err := st.Stat(context.Background(), "appdata_ocTestInstance/previews/"+key4096+extPNG); err == nil {
 		t.Error("an unclamped 4096 entry exists")
 	}
