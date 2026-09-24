@@ -191,6 +191,15 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-24** — Phase 5n: WebP preview input (ADR-0087), closing the
+  input half of ADR-0053's WebP follow-up. A blank import of
+  `golang.org/x/image/webp` (already in the approved x/image module — no
+  new dependency) registers VP8/VP8L decoding; `image/webp` joins the
+  content-sniff whitelist in both the serve path and the pregeneration
+  head-sniff. Output re-encodes as PNG (no WebP encoder in scope), so
+  VP8L alpha survives; animated WebP fails Decode and takes the uniform
+  404 like any unpreviewable content. Fixtures generated with PIL are
+  checked in under internal/preview/testdata/.
 - **2026-09-24** — Phase 5m: preview fill mode (ADR-0086), closing
   ADR-0053's fill/crop follow-up for `mode=fill`. `mode=fill` now renders
   an aspect-fill, centre-cropped preview (cover-scale with

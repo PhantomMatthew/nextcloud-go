@@ -19,6 +19,7 @@ import (
 	"strconv"
 
 	"golang.org/x/image/draw"
+	_ "golang.org/x/image/webp" // register WebP decoding (VP8/VP8L, ADR-0087)
 	"golang.org/x/sync/singleflight"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
@@ -43,6 +44,8 @@ const (
 	extPNG             = ".png"
 	mimeJPEG           = "image/jpeg"
 	mimePNG            = "image/png"
+	mimeGIF            = "image/gif"
+	mimeWebp           = "image/webp"
 	cacheControlValue  = "private, max-age=86400"
 	// modeFill is the only honoured value of the mode query parameter
 	// (ADR-0086): aspect-fill with a centre crop. Anything else falls back
@@ -229,7 +232,7 @@ func (g *Generator) generate(ctx context.Context, rc io.Reader, key string, x, y
 // errNotPreviewable.
 func render(data []byte, x, y int, fill bool) (*generated, error) {
 	switch http.DetectContentType(data[:min(sniffBytes, len(data))]) {
-	case mimeJPEG, mimePNG, "image/gif":
+	case mimeJPEG, mimePNG, mimeGIF, mimeWebp:
 	default:
 		return nil, errNotPreviewable
 	}
@@ -309,7 +312,7 @@ func (g *Generator) Pregenerate(ctx context.Context, uid, path string, boxes []i
 		return nil
 	}
 	switch http.DetectContentType(head) {
-	case mimeJPEG, mimePNG, "image/gif":
+	case mimeJPEG, mimePNG, mimeGIF, mimeWebp:
 	default:
 		return nil
 	}
