@@ -212,12 +212,15 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	dav.Locks = files.NewSQLLockStore(db)
 	dav.Shares = sharing.NewSQLShareStore(db)
 	a.davFS = dav
+	a.notifStore = notifications.NewSQLStore(db)
 	a.shares = &sharing.Service{
 		Store:  dav.Shares,
 		Files:  dav,
 		Users:  a.Users,
 		Hasher: a.hasher,
 		OCM:    ocm.NewClient(),
+		Notifs: a.notifStore,
+		Logger: logger,
 	}
 	a.ocmStore = ocm.NewSQLStore(db)
 	a.lookup = &sharing.LookupClient{BaseURL: cfg.Sharing.LookupServer}
@@ -253,7 +256,6 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	cardStore := carddav.NewSQLStore(db)
 	a.contactsStore = cardStore
 	a.contactsFS = &carddav.DAV{Store: cardStore, Users: a.Users}
-	a.notifStore = notifications.NewSQLStore(db)
 	a.activityStore = activity.NewSQLStore(db)
 	a.principalFS = &caldav.PrincipalDAV{Users: a.Users}
 	a.davRootFS = &caldav.RootDAV{Users: a.Users}

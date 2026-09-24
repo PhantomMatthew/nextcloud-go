@@ -3,8 +3,10 @@ package sharing
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"path"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
 	"github.com/PhantomMatthew/nextcloud-go/internal/files"
+	"github.com/PhantomMatthew/nextcloud-go/internal/notifications"
 	"github.com/PhantomMatthew/nextcloud-go/internal/ocm"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
@@ -30,6 +33,13 @@ var (
 	errFederate       = errors.New("sharing: cannot federate share")
 )
 
+// ShareNotifier is the notification sink for file-share bells (ADR-0082).
+// *notifications.SQLStore satisfies it.
+type ShareNotifier interface {
+	Insert(ctx context.Context, n *notifications.Notification) error
+	DeleteByObject(ctx context.Context, objectType, objectID string) error
+}
+
 // Service creates and serves public-link shares.
 type Service struct {
 	Store    files.ShareStore
@@ -39,6 +49,8 @@ type Service struct {
 	Clock    func() time.Time
 	NewToken func() string
 	OCM      *ocm.Client
+	Notifs   ShareNotifier
+	Logger   *slog.Logger
 }
 
 func (s *Service) now() time.Time {
@@ -74,7 +86,14 @@ func (s *Service) expireIfNeeded(ctx context.Context, sh *files.Share) (bool, er
 	if err := s.Store.Delete(ctx, sh.ID); err != nil {
 		return false, err
 	}
+	s.dismissShareNotifications(ctx, sh.ID)
 	return true, nil
+}
+
+func (s *Service) warn(msg string, args ...any) {
+	if s.Logger != nil {
+		s.Logger.Warn(msg, args...)
+	}
 }
 
 func (s *Service) ownerOf(ctx context.Context, uid string) (*users.User, error) {
@@ -195,6 +214,9 @@ func (s *Service) Create(ctx context.Context, uid, pathName string, shareType, p
 			return nil, err
 		}
 	}
+	if shareType == files.ShareTypeUser || shareType == files.ShareTypeGroup {
+		s.notifyShareCreated(ctx, u, sh)
+	}
 	return sh, nil
 }
 
@@ -227,6 +249,109 @@ func (s *Service) notifyRemote(ctx context.Context, owner *users.User, sh *files
 		return errFederate
 	}
 	return nil
+}
+
+// shareNotifObjectID is Nextcloud's full notification object id for a share
+// (providerId:id, provider `ocinternal`).
+func shareNotifObjectID(id int64) string { return "ocinternal:" + strconv.FormatInt(id, 10) }
+
+// richParam is one NC rich-object parameter (type/id/name).
+type richParam struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// notifyShareCreated sends the incoming-share bell for user and group shares
+// (ADR-0082). A notification failure never fails the share: it is Warn-logged
+// and share creation continues.
+func (s *Service) notifyShareCreated(ctx context.Context, owner *users.User, sh *files.Share) {
+	if s.Notifs == nil {
+		return
+	}
+	objectID := shareNotifObjectID(sh.ID)
+	sharerName := owner.DisplayName
+	if sharerName == "" {
+		sharerName = owner.UID
+	}
+	params := map[string]richParam{
+		"share": {Type: "highlight", ID: objectID, Name: sh.Path},
+		"user":  {Type: "user", ID: owner.UID, Name: sharerName},
+	}
+	var subject, template string
+	var recipients []*users.User
+	switch sh.ShareType {
+	case files.ShareTypeUser:
+		sharee, err := s.Users.GetByUID(ctx, sh.ShareWith)
+		if err != nil {
+			s.warn("sharing: share notification: sharee lookup failed", slog.String("sharee", sh.ShareWith), slog.Any("err", err))
+			return
+		}
+		subject = fmt.Sprintf("You received %s as a share by %s", sh.Path, sharerName)
+		template = "You received {share} as a share by {user}"
+		recipients = append(recipients, sharee)
+	case files.ShareTypeGroup:
+		gid := sh.ShareWith
+		groupName := gid
+		if g, err := s.Users.GetGroupByGID(ctx, gid); err == nil && g.DisplayName != "" {
+			groupName = g.DisplayName
+		}
+		params["group"] = richParam{Type: "user-group", ID: gid, Name: groupName}
+		subject = fmt.Sprintf("You received %s to group %s as a share by %s", sh.Path, gid, sharerName)
+		template = "You received {share} to group {group} as a share by {user}"
+		members, err := s.Users.GroupMembers(ctx, gid, 0)
+		if err != nil {
+			s.warn("sharing: share notification: group members lookup failed", slog.String("gid", gid), slog.Any("err", err))
+			return
+		}
+		for _, m := range members {
+			if m == owner.UID {
+				continue
+			}
+			sharee, err := s.Users.GetByUID(ctx, m)
+			if err != nil {
+				s.warn("sharing: share notification: member lookup failed", slog.String("uid", m), slog.Any("err", err))
+				continue
+			}
+			recipients = append(recipients, sharee)
+		}
+	default:
+		return
+	}
+	rich, err := json.Marshal(params)
+	if err != nil {
+		s.warn("sharing: share notification: marshal rich parameters failed", slog.Any("err", err))
+		return
+	}
+	for _, r := range recipients {
+		n := &notifications.Notification{
+			UserID:                r.ID,
+			App:                   "files_sharing",
+			UserUID:               r.UID,
+			ObjectType:            "share",
+			ObjectID:              objectID,
+			Subject:               subject,
+			SubjectRich:           template,
+			SubjectRichParameters: string(rich),
+			ShouldNotify:          true,
+			CreatedAt:             s.now(),
+		}
+		if err := s.Notifs.Insert(ctx, n); err != nil {
+			s.warn("sharing: share notification insert failed", slog.String("uid", r.UID), slog.Int64("share", sh.ID), slog.Any("err", err))
+		}
+	}
+}
+
+// dismissShareNotifications drops the bells of every recipient when a share
+// is deleted (owner unshare or expiry). Best-effort: failures are Warn-logged
+// and never change the delete's outcome.
+func (s *Service) dismissShareNotifications(ctx context.Context, id int64) {
+	if s.Notifs == nil {
+		return
+	}
+	if err := s.Notifs.DeleteByObject(ctx, "share", shareNotifObjectID(id)); err != nil {
+		s.warn("sharing: share notification dismiss failed", slog.Int64("share", id), slog.Any("err", err))
+	}
 }
 
 func sameHTTPHost(a, b string) bool {
@@ -336,7 +461,11 @@ func (s *Service) Delete(ctx context.Context, uid string, id int64) error {
 	if sh.ShareType == files.ShareTypeRemote {
 		ignoreUnshareErr(s.notifyUnshare(ctx, sh))
 	}
-	return s.Store.Delete(ctx, sh.ID)
+	if err := s.Store.Delete(ctx, sh.ID); err != nil {
+		return err
+	}
+	s.dismissShareNotifications(ctx, sh.ID)
+	return nil
 }
 
 func ignoreUnshareErr(err error) {

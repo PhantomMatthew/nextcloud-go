@@ -191,6 +191,25 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-24** — Phase 5j: file-share notifications (ADR-0082), closing
+  the ADR-0032 invite-notifications follow-up with the verified verdict.
+  Creating a USER or GROUP file share now drops an NC-shaped bell into the
+  sharee's OCS notifications: app `files_sharing`, object
+  `share`/`ocinternal:<id>` (NC's providerId:id), the `incoming_user_share`
+  / `incoming_group_share` subjects and rich templates with
+  `highlight`/`user`/`user-group` parameters, `should_notify` set, no
+  actions (ncgo auto-accepts; NC's accept/reject exist only for pending
+  shares). Group shares fan out to every member except the actor. Unshare
+  and expiry eagerly delete the bells of all recipients via the new
+  `notifications.SQLStore.DeleteByObject` — where NC filters dead-share
+  rows lazily at render, ncgo deletes so polling clients stop seeing ETag
+  churn. A notification failure never fails a share: the sink sits behind
+  the `sharing.ShareNotifier` interface and errors are Warn-logged. DAV
+  (calendar/addressbook) shares send nothing, exactly like Nextcloud's
+  `apps/dav`; an invite state machine there would contradict the verified
+  no-invite-state `oc_dav_shares` semantics (ADR-0071). Deferred:
+  group-join backfill, remote-share subjects, activity-stream entries,
+  admin-console surfacing.
 - **2026-09-23** — Phase 5i: precompressed static assets (ADR-0081),
   resolving the ADR-0054 follow-up. `StaticUI.serveFile` now negotiates
   `.br`/`.gz` sidecars: brotli over gzip on a fixed server preference,

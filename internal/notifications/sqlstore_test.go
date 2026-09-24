@@ -86,6 +86,49 @@ func TestSQLStore_CRUDAndIsolation(t *testing.T) {
 	}
 }
 
+func TestSQLStore_DeleteByObject(t *testing.T) {
+	ctx := t.Context()
+	db := testDB(t)
+	us := users.NewSQLStore(db)
+	alice := &users.User{UID: "alice", DisplayName: "Alice", PasswordHash: "x", Enabled: true}
+	if err := us.Create(ctx, alice); err != nil {
+		t.Fatal(err)
+	}
+	bob := &users.User{UID: "bob", DisplayName: "Bob", PasswordHash: "x", Enabled: true}
+	if err := us.Create(ctx, bob); err != nil {
+		t.Fatal(err)
+	}
+	store := NewSQLStore(db)
+	seed := func(userID int64, uid, objectType, objectID string) *Notification {
+		n := &Notification{UserID: userID, App: "files_sharing", UserUID: uid, ObjectType: objectType, ObjectID: objectID, Subject: "s", ShouldNotify: true}
+		if err := store.Insert(ctx, n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	aShare := seed(alice.ID, "alice", "share", "ocinternal:7")
+	bShare := seed(bob.ID, "bob", "share", "ocinternal:7")
+	aOtherID := seed(alice.ID, "alice", "share", "ocinternal:8")
+	bOtherType := seed(bob.ID, "bob", "calendar", "ocinternal:7")
+
+	if err := store.DeleteByObject(ctx, "share", "ocinternal:7"); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []*Notification{aShare, bShare} {
+		if _, err := store.Get(ctx, n.UserID, n.ID); err == nil {
+			t.Fatalf("notification %+v must be deleted", n)
+		}
+	}
+	for _, n := range []*Notification{aOtherID, bOtherType} {
+		if _, err := store.Get(ctx, n.UserID, n.ID); err != nil {
+			t.Fatalf("notification %+v must survive: %v", n, err)
+		}
+	}
+	if err := store.DeleteByObject(ctx, "share", "ocinternal:404"); err != nil {
+		t.Fatalf("missing object must not error: %v", err)
+	}
+}
+
 func TestHandler_ListGetDeleteAndETag(t *testing.T) {
 	ctx := t.Context()
 	db := testDB(t)

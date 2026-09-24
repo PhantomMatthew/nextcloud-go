@@ -48,9 +48,13 @@ calendars appear inside the sharee's own calendar home.
 
 ## Alternatives Considered
 
-### Invite notifications with accept/decline
-- Pros: matches Nextcloud web UX; sharee controls visibility.
-- Cons: notification inbox + state machine; deferred as follow-up.
+### ~~Invite notifications with accept/decline~~
+- ~~Pros: matches Nextcloud web UX; sharee controls visibility.~~
+- ~~Cons: notification inbox + state machine; deferred as follow-up.~~
+  (**Resolved by ADR-0082**: file shares now send NC-faithful bells; DAV
+  shares send none because Nextcloud's dav sharing sends none — and an
+  invite/accept state machine would contradict the verified no-invite-state
+  `oc_dav_shares` semantics of ADR-0071.)
 
 ### Group shares
 - Pros: parity with file sharing (Phase 2k).
@@ -68,8 +72,8 @@ calendars appear inside the sharee's own calendar home.
   clients see sharee changes (intended, but worth noting).
 
 ### Neutral / follow-ups
-- Invite accept flow, group shares, sharee-initiated unsubscribe,
-  scheduling (iTIP).
+- ~~Invite accept flow~~ (**resolved by ADR-0082**), group shares,
+  sharee-initiated unsubscribe, scheduling (iTIP).
 
 ## References
 

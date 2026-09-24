@@ -76,6 +76,16 @@ func (s *SQLStore) DeleteAll(ctx context.Context, userID int64) error {
 	return nil
 }
 
+// DeleteByObject removes every user's rows for one app-agnostic object key
+// (e.g. a deleted share). A missing object is not an error.
+func (s *SQLStore) DeleteByObject(ctx context.Context, objectType, objectID string) error {
+	_, err := s.db.Exec(ctx, `DELETE FROM notifications WHERE object_type = ? AND object_id = ?`, objectType, objectID)
+	if err != nil {
+		return fmt.Errorf("notifications: delete by object: %w", err)
+	}
+	return nil
+}
+
 func (s *SQLStore) Insert(ctx context.Context, n *Notification) error {
 	if n == nil || n.UserID == 0 || n.App == "" || n.UserUID == "" {
 		return fmt.Errorf("%w: notification", ErrInvalid)
