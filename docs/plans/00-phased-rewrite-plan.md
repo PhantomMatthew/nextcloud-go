@@ -191,6 +191,16 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-24** — Phase 5j2: background share-expiry dismisses
+  notifications (ADR-0083), closing the one deletion path ADR-0082 did
+  not cover. The `shares.expire` job bulk-deletes by predicate without
+  going through `Service.Delete`, so a share reaped there before any
+  read left its bell rows behind. `ShareStore.DeleteExpired` now returns
+  the deleted ids (select-then-delete in one transaction — the returned
+  ids name exactly the removed rows), and the job dismisses each
+  `("share", "ocinternal:<id>")` best-effort through the 5j
+  `ShareNotifier` interface, wired from the always-constructed
+  `notifStore`. All three share-deletion paths now dismiss.
 - **2026-09-24** — Phase 5j: file-share notifications (ADR-0082), closing
   the ADR-0032 invite-notifications follow-up with the verified verdict.
   Creating a USER or GROUP file share now drops an NC-shaped bell into the

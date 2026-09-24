@@ -149,8 +149,12 @@ func TestSQLShareStoreDeleteExpired(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := store.DeleteExpired(ctx, now); err != nil {
+	ids, err := store.DeleteExpired(ctx, now)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != dead.ID {
+		t.Fatalf("deleted ids = %v, want [%d]", ids, dead.ID)
 	}
 	if _, err := store.GetByToken(ctx, "dead00000000001"); !errors.Is(err, files.ErrNotFound) {
 		t.Fatalf("expired still present: %v", err)
@@ -160,5 +164,10 @@ func TestSQLShareStoreDeleteExpired(t *testing.T) {
 	}
 	if _, err := store.GetByToken(ctx, "never0000000001"); err != nil {
 		t.Fatal(err)
+	}
+	// Nothing left to expire: empty, not nil-error noise.
+	ids, err = store.DeleteExpired(ctx, now)
+	if err != nil || len(ids) != 0 {
+		t.Fatalf("second sweep = %v, %v; want empty", ids, err)
 	}
 }

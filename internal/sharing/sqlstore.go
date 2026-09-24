@@ -170,12 +170,48 @@ FROM shares WHERE owner_user_id = ? AND (file_path = ? OR file_path LIKE ?) ORDE
 	return scanShares(rows)
 }
 
-func (s *SQLShareStore) DeleteExpired(ctx context.Context, nowMs int64) error {
-	_, err := s.db.Exec(ctx, `DELETE FROM shares WHERE expire_ms > 0 AND expire_ms <= ?`, nowMs)
+// DeleteExpired removes expired shares and returns their ids. The select and
+// delete run in one transaction so the returned ids name exactly the rows
+// that were deleted (ADR-0083).
+func (s *SQLShareStore) DeleteExpired(ctx context.Context, nowMs int64) (ids []int64, err error) {
+	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("sharing: expire: %w", err)
+		return nil, fmt.Errorf("sharing: expire: begin: %w", err)
 	}
-	return nil
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		if rerr := tx.Rollback(); rerr != nil {
+			err = errors.Join(err, rerr)
+		}
+	}()
+	rows, err := tx.Query(ctx, `SELECT id FROM shares WHERE expire_ms > 0 AND expire_ms <= ?`, nowMs)
+	if err != nil {
+		return nil, fmt.Errorf("sharing: expire: list expired: %w", err)
+	}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("sharing: expire: scan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("sharing: expire: list expired: %w", err)
+	}
+	rows.Close()
+	if _, err := tx.Exec(ctx, `DELETE FROM shares WHERE expire_ms > 0 AND expire_ms <= ?`, nowMs); err != nil {
+		return nil, fmt.Errorf("sharing: expire: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("sharing: expire: commit: %w", err)
+	}
+	committed = true
+	return ids, nil
 }
 
 func (s *SQLShareStore) DeleteByPath(ctx context.Context, ownerUserID int64, filePath string) error {

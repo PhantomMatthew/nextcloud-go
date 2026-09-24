@@ -90,5 +90,8 @@ type ShareStore interface {
 	Delete(ctx context.Context, id int64) error
 	DeleteByPath(ctx context.Context, ownerUserID int64, filePath string) error
 	RenamePath(ctx context.Context, ownerUserID int64, srcPath, dstPath string) error
-	DeleteExpired(ctx context.Context, nowMs int64) error
+	// DeleteExpired removes shares whose expiry is in the past and returns
+	// the deleted ids (the background expire job dismisses their share
+	// notifications, ADR-0083).
+	DeleteExpired(ctx context.Context, nowMs int64) ([]int64, error)
 }

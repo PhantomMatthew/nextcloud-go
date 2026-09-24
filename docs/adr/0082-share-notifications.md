@@ -41,8 +41,9 @@ Payload shape is researched verbatim from Nextcloud's
   actions field, so `actions` stays empty. `should_notify` is true; message,
   messageRich, link, and icon stay empty (ncgo has no icon route for this
   app).
-- **Eager dismissal**: unshare (`Service.Delete`) and expiry
-  (`expireIfNeeded`) delete the rows of **all** users for
+- **Eager dismissal**: unshare (`Service.Delete`), read-time expiry
+  (`expireIfNeeded`), and the background `shares.expire` sweep (ADR-0083)
+  delete the rows of **all** users for
   `("share", "ocinternal:<id>")` via the new
   `notifications.SQLStore.DeleteByObject`. Nextcloud instead filters
   dead-share notifications lazily at render time; ncgo deletes eagerly,

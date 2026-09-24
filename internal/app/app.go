@@ -238,7 +238,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	a.jobsStore = jobsStore
 	jr := jobs.NewRunner(jobsStore, time.Now, cfg.Jobs.Workers, cfg.Jobs.PollInterval)
 	jr.Logger = logger
-	if err := jr.Register(sharing.NewExpireJob(dav.Shares, dav.Clock)); err != nil {
+	if err := jr.Register(sharing.NewExpireJob(dav.Shares, dav.Clock, a.notifStore, logger)); err != nil {
 		if cerr := a.closeResources(ctx); cerr != nil {
 			return nil, errors.Join(err, cerr)
 		}
