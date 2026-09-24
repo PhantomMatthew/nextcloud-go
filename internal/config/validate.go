@@ -6,6 +6,7 @@ import (
 	"net"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ValidationError describes a single invalid configuration field.
@@ -123,6 +124,9 @@ func (c *Config) Validate() error {
 		if s < 1 || s > 4096 {
 			errs = append(errs, &ValidationError{Field: "previews.pregenerate_sizes", Reason: fmt.Sprintf("entry %d (%d) must be between 1 and 4096", i, s)})
 		}
+	}
+	if c.Previews.CacheMaxAge != 0 && c.Previews.CacheMaxAge < time.Hour {
+		errs = append(errs, &ValidationError{Field: "previews.cache_max_age", Reason: "must be at least 1h (0 selects the default)"})
 	}
 
 	if strings.TrimSpace(c.Web.StaticRoot) != "" && !filepath.IsAbs(c.Web.StaticRoot) {

@@ -105,9 +105,9 @@ time.
 
 ### Follow-ups (explicit, not in this phase)
 
-- **Cache GC** of orphaned etag-keyed entries remains open (carried from
+- ~~**Cache GC** of orphaned etag-keyed entries remains open (carried from
   ADR-0053): pregeneration grows the cache by hot-size entries for files
-  that may never be viewed, which strengthens the case.
+  that may never be viewed, which strengthens the case.~~ (**resolved by ADR-0085**)
 
 ## Verification
 

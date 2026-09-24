@@ -86,12 +86,15 @@ type EncryptionConfig struct {
 // MaxDimension caps the requested preview box edge (x/y are clamped to it).
 // PregenerateEnabled (ADR-0084, opt-in) renders PregenerateSizes — square
 // box edges for the hot client sizes — ahead of any request, from
-// files.uploaded events; it requires Enabled.
+// files.uploaded events; it requires Enabled. CacheMaxAge (ADR-0085) is
+// the TTL the preview.gc sweep applies to cache entries; 0 selects the
+// host default (720h).
 type PreviewsConfig struct {
-	Enabled            bool  `koanf:"enabled"`
-	MaxDimension       int   `koanf:"max_dimension"`
-	PregenerateEnabled bool  `koanf:"pregenerate_enabled"`
-	PregenerateSizes   []int `koanf:"pregenerate_sizes"`
+	Enabled            bool          `koanf:"enabled"`
+	MaxDimension       int           `koanf:"max_dimension"`
+	PregenerateEnabled bool          `koanf:"pregenerate_enabled"`
+	PregenerateSizes   []int         `koanf:"pregenerate_sizes"`
+	CacheMaxAge        time.Duration `koanf:"cache_max_age"`
 }
 
 // WebConfig controls serving the pre-compiled Nextcloud web frontend

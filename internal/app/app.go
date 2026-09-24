@@ -250,6 +250,17 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		}
 		return nil, err
 	}
+	if cfg.Previews.Enabled {
+		a.previewGen = preview.NewGenerator(dav, st, "appdata_"+a.instanceID+"/previews", cfg.Previews.MaxDimension, logger)
+		// preview.gc is periodic, and Start seeds periodic jobs only for
+		// names already registered — so this must precede jr.Start.
+		if err := jr.Register(preview.NewGCJob(st, a.previewGen.CachePrefix, cfg.Previews.CacheMaxAge, time.Now, logger)); err != nil {
+			if cerr := a.closeResources(ctx); cerr != nil {
+				return nil, errors.Join(err, cerr)
+			}
+			return nil, err
+		}
+	}
 	calStore := caldav.NewSQLStore(db)
 	a.calendarStore = calStore
 	a.calendarFS = &caldav.DAV{Store: calStore, Users: a.Users}
@@ -270,9 +281,6 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	a.secret = cfg.Instance.Secret
 	if a.secret == "" {
 		a.secret = randomHex(logger, 32, "NCGO_SECRET / instance.secret")
-	}
-	if cfg.Previews.Enabled {
-		a.previewGen = preview.NewGenerator(dav, st, "appdata_"+a.instanceID+"/previews", cfg.Previews.MaxDimension, logger)
 	}
 	// Event-driven (not periodic): one jobs row per upload, with the
 	// files.uploaded msgpack payload forwarded verbatim (ADR-0084).

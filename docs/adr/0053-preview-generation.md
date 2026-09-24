@@ -149,7 +149,7 @@ Constraints shaping the design:
   rendering pipeline) — deferred scope.
 - **Fill/crop `mode`** support (aspect-fill with center crop).
 - ~~**Preview pre-generation cron** on upload events for hot sizes.~~ (**resolved by ADR-0084**)
-- **Cache GC** of orphaned etag-keyed entries.
+- ~~**Cache GC** of orphaned etag-keyed entries.~~ (**resolved by ADR-0085**)
 - **WebP** input/output once `x/image/webp` decode coverage is sufficient.
 
 ## Verification

@@ -191,6 +191,19 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-24** — Phase 5l: preview cache garbage collection (ADR-0085),
+  closing ADR-0053's cache-GC follow-up (also carried by ADR-0084). Cache
+  keys are one-way content-derived hashes, so orphaned etag-keyed entries
+  cannot be detected exactly; the new periodic `preview.gc` job instead
+  sweeps the flat cache prefix by modtime TTL (`previews.cache_max_age`,
+  default 720h, validated >= 1h or 0 for the default) — safe because the
+  worst case is one regeneration of a hot entry, never wrong bytes. The job
+  throttles itself to one pass per 24h in-memory against the runner's 5s
+  periodic re-enqueue, tolerates per-entry delete failures (Warn + continue,
+  since the runner retries a failed Run forever), treats a missing cache
+  directory as a completed empty pass, and is registered only when
+  `previews.enabled` — before `jr.Start`, which seeds periodic jobs only
+  for already-registered names.
 - **2026-09-24** — Phase 5k: preview pre-generation on upload events
   (ADR-0084), closing ADR-0053's pre-generation follow-up. With
   `previews.pregenerate_enabled` (opt-in, default false) every

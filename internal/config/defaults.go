@@ -49,7 +49,7 @@ func hardcodedDefault() *Config {
 				"local": {Type: "localfs", Root: "/var/lib/ncgo/data"},
 			},
 		},
-		Previews: PreviewsConfig{Enabled: true, MaxDimension: 2048, PregenerateEnabled: false, PregenerateSizes: []int{32, 256}},
+		Previews: PreviewsConfig{Enabled: true, MaxDimension: 2048, PregenerateEnabled: false, PregenerateSizes: []int{32, 256}, CacheMaxAge: 720 * time.Hour},
 		Auth: AuthConfig{
 			Argon2id: Argon2idConfig{MemoryKB: 65536, Iterations: 3, Parallelism: 4},
 		},
@@ -97,6 +97,7 @@ func defaultFlat() map[string]any {
 		"previews.max_dimension":              2048,
 		"previews.pregenerate_enabled":        false,
 		"previews.pregenerate_sizes":          []int{32, 256},
+		"previews.cache_max_age":              720 * time.Hour,
 		"web.static_root":                     "",
 		"auth.argon2id.memory_kb":             uint32(65536),
 		"auth.argon2id.iterations":            uint32(3),

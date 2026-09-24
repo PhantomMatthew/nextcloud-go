@@ -26,7 +26,8 @@ func TestDefaultSnapshot(t *testing.T) {
 		t.Errorf("storage.default_backend = %q", got.Storage.DefaultBackend)
 	}
 	if !got.Previews.Enabled || got.Previews.MaxDimension != 2048 ||
-		got.Previews.PregenerateEnabled || !slices.Equal(got.Previews.PregenerateSizes, []int{32, 256}) {
+		got.Previews.PregenerateEnabled || !slices.Equal(got.Previews.PregenerateSizes, []int{32, 256}) ||
+		got.Previews.CacheMaxAge != 720*time.Hour {
 		t.Errorf("previews defaults: %+v", got.Previews)
 	}
 	if got.Web.StaticRoot != "" {
@@ -355,6 +356,7 @@ func TestValidateRules(t *testing.T) {
 			c.Previews.PregenerateEnabled = true
 			c.Previews.PregenerateSizes = nil
 		}, "previews.pregenerate_sizes"},
+		{"previews_cache_max_age_low", func(c *Config) { c.Previews.CacheMaxAge = 30 * time.Minute }, "previews.cache_max_age"},
 		{"web_static_root_relative", func(c *Config) { c.Web.StaticRoot = "relative/web" }, "web.static_root"},
 	}
 	for _, tt := range tests {
@@ -427,6 +429,17 @@ func TestValidatePregenerateOK(t *testing.T) {
 	c.Previews.PregenerateSizes = []int{64, 1024}
 	if err := c.Validate(); err != nil {
 		t.Errorf("Validate() with valid pregeneration = %v", err)
+	}
+}
+
+func TestValidateCacheMaxAgeOK(t *testing.T) {
+	t.Parallel()
+	for _, d := range []time.Duration{0, time.Hour, 24 * time.Hour} {
+		c := Default()
+		c.Previews.CacheMaxAge = d
+		if err := c.Validate(); err != nil {
+			t.Errorf("Validate() with cache_max_age %s = %v", d, err)
+		}
 	}
 }
 
