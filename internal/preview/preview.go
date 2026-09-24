@@ -206,6 +206,21 @@ func (g *Generator) generate(ctx context.Context, rc io.Reader, key string, x, y
 	if err != nil || len(data) > maxSourceBytes {
 		return nil, errNotPreviewable
 	}
+	out, err := render(data, x, y)
+	if err != nil {
+		return nil, err
+	}
+	if err := g.store(ctx, key, out); err != nil {
+		// The preview is still served; only reuse is lost.
+		g.logger().WarnContext(ctx, "preview cache write failed", slog.Any("error", err))
+	}
+	return out, nil
+}
+
+// render sniffs, bounds-checks, decodes, scales, and encodes data into one
+// generated preview for the x-by-y box. Non-images, corrupt content, and
+// over-limit source dimensions all collapse to errNotPreviewable.
+func render(data []byte, x, y int) (*generated, error) {
 	switch http.DetectContentType(data[:min(sniffBytes, len(data))]) {
 	case mimeJPEG, mimePNG, "image/gif":
 	default:
@@ -238,12 +253,98 @@ func (g *Generator) generate(ctx context.Context, rc io.Reader, key string, x, y
 		out.contentType = mimePNG
 	}
 	out.data = buf.Bytes()
-
-	if err := g.store(ctx, key, out); err != nil {
-		// The preview is still served; only reuse is lost.
-		g.logger().WarnContext(ctx, "preview cache write failed", slog.Any("error", err))
-	}
 	return out, nil
+}
+
+// Pregenerate renders the configured hot-size boxes for uid/path into the
+// cache ahead of any client request (ADR-0084). It runs from the jobs
+// runner, which retries a failed Run forever, so the error contract differs
+// from serve: only infrastructure failures (the source Read itself) are
+// returned for retry. Every per-file condition — missing, unreadable,
+// non-image, oversized, corrupt — is a quiet nil, mirroring the endpoint's
+// uniform-404 philosophy.
+func (g *Generator) Pregenerate(ctx context.Context, uid, path string, boxes []int) error {
+	if g == nil || g.Source == nil || g.Cache == nil {
+		return nil
+	}
+	np, err := files.NormalizePath(path)
+	if err != nil || np == "/" {
+		return nil
+	}
+	rc, entry, err := g.Source.Read(ctx, uid, np)
+	if err != nil {
+		switch {
+		case errors.Is(err, webdav.ErrNotFound),
+			errors.Is(err, webdav.ErrForbidden),
+			errors.Is(err, webdav.ErrIsDir):
+			return nil
+		default:
+			return err
+		}
+	}
+	defer rc.Close()
+
+	// Head-sniff before the full read: unlike serve (which a client asked
+	// for), this background path must not ReadAll up to 256MiB of every
+	// uploaded video.
+	head := make([]byte, sniffBytes)
+	n, err := io.ReadFull(rc, head)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return nil
+	}
+	head = head[:n]
+	if n == 0 {
+		return nil
+	}
+	switch http.DetectContentType(head) {
+	case mimeJPEG, mimePNG, "image/gif":
+	default:
+		return nil
+	}
+	rest, err := io.ReadAll(io.LimitReader(rc, int64(maxSourceBytes+1-n)))
+	if err != nil {
+		return nil
+	}
+	data := make([]byte, 0, n+len(rest))
+	data = append(data, head...)
+	data = append(data, rest...)
+	if len(data) > maxSourceBytes {
+		return nil
+	}
+
+	for _, b := range boxes {
+		key := cacheKey(uid, np, entry.ETag, b, b)
+		if f, _, _ := g.openCached(ctx, key); f != nil {
+			_ = f.Close()
+			continue
+		}
+		_, err, _ := g.group.Do(key, func() (any, error) {
+			// A concurrent run (or a serve request) may have filled the
+			// cache while this one waited on the flight.
+			if f, _, _ := g.openCached(ctx, key); f != nil {
+				_ = f.Close()
+				return nil, nil
+			}
+			out, rerr := render(data, b, b)
+			if rerr != nil {
+				return nil, rerr
+			}
+			if serr := g.store(ctx, key, out); serr != nil {
+				// Reuse is lost, but the next run rebuilds; never fatal.
+				g.logger().WarnContext(ctx, "preview cache write failed", slog.Any("error", serr))
+			}
+			return out, nil
+		})
+		if err != nil {
+			// Not-previewable fails every box identically; anything else is
+			// infrastructure and worth a runner retry.
+			if errors.Is(err, errNotPreviewable) {
+				return nil
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // scale returns src fit into the x-by-y box, never upscaling. Sources that

@@ -191,6 +191,19 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-24** — Phase 5k: preview pre-generation on upload events
+  (ADR-0084), closing ADR-0053's pre-generation follow-up. With
+  `previews.pregenerate_enabled` (opt-in, default false) every
+  `files.uploaded` event enqueues one `preview.pregenerate` jobs row
+  carrying the msgpack payload verbatim; the job renders the configured
+  hot sizes (`previews.pregenerate_sizes`, default `[32, 256]` — files
+  list and gallery boxes, clamped to `max_dimension` and deduped) into the
+  etag-keyed cache ahead of any client request. The background path
+  head-sniffs 512 bytes before the full read so non-images never trigger a
+  256 MiB `ReadAll`, shares the serve path's `render` helper and
+  singleflight group (HTTP behavior byte-identical), and is idempotent
+  under at-least-once delivery; per-file conditions return nil while only
+  infrastructure failures retry.
 - **2026-09-24** — Phase 5j2: background share-expiry dismisses
   notifications (ADR-0083), closing the one deletion path ADR-0082 did
   not cover. The `shares.expire` job bulk-deletes by predicate without

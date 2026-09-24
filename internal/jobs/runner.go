@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	JobSharesExpire = "shares.expire"
-	JobLocksExpire  = "locks.expire"
+	JobSharesExpire       = "shares.expire"
+	JobLocksExpire        = "locks.expire"
+	JobPreviewPregenerate = "preview.pregenerate"
 )
 
 // maxUnknownJobAttempts bounds how many times a row whose name no runner

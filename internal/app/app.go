@@ -274,6 +274,24 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	if cfg.Previews.Enabled {
 		a.previewGen = preview.NewGenerator(dav, st, "appdata_"+a.instanceID+"/previews", cfg.Previews.MaxDimension, logger)
 	}
+	// Event-driven (not periodic): one jobs row per upload, with the
+	// files.uploaded msgpack payload forwarded verbatim (ADR-0084).
+	if a.previewGen != nil && cfg.Previews.PregenerateEnabled {
+		if err := jr.Register(preview.NewPregenerateJob(a.previewGen, cfg.Previews.PregenerateSizes, logger)); err != nil {
+			if cerr := a.closeResources(ctx); cerr != nil {
+				return nil, errors.Join(err, cerr)
+			}
+			return nil, err
+		}
+		bus.Subscribe(func(ctx context.Context, ev events.Event) {
+			if ev.Topic != files.EventFilesUploaded {
+				return
+			}
+			if err := jr.Enqueue(ctx, jobs.JobPreviewPregenerate, ev.Payload, time.Now()); err != nil {
+				logger.WarnContext(ctx, "preview pregeneration enqueue failed", slog.Any("error", err))
+			}
+		})
+	}
 	if cfg.Web.StaticRoot != "" {
 		ui, err := web.NewStaticUI(cfg.Web.StaticRoot, logger)
 		if err != nil {

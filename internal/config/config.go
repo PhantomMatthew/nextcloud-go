@@ -84,9 +84,14 @@ type EncryptionConfig struct {
 
 // PreviewsConfig controls server-side image preview generation (ADR-0053).
 // MaxDimension caps the requested preview box edge (x/y are clamped to it).
+// PregenerateEnabled (ADR-0084, opt-in) renders PregenerateSizes — square
+// box edges for the hot client sizes — ahead of any request, from
+// files.uploaded events; it requires Enabled.
 type PreviewsConfig struct {
-	Enabled      bool `koanf:"enabled"`
-	MaxDimension int  `koanf:"max_dimension"`
+	Enabled            bool  `koanf:"enabled"`
+	MaxDimension       int   `koanf:"max_dimension"`
+	PregenerateEnabled bool  `koanf:"pregenerate_enabled"`
+	PregenerateSizes   []int `koanf:"pregenerate_sizes"`
 }
 
 // WebConfig controls serving the pre-compiled Nextcloud web frontend

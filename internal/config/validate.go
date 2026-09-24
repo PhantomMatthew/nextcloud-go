@@ -108,6 +108,22 @@ func (c *Config) Validate() error {
 	if c.Previews.MaxDimension < 32 || c.Previews.MaxDimension > 4096 {
 		errs = append(errs, &ValidationError{Field: "previews.max_dimension", Reason: "must be between 32 and 4096"})
 	}
+	if c.Previews.PregenerateEnabled {
+		// Same dead-key rule as metrics_listen (ADR-0076): pregeneration
+		// consumes files.uploaded only when the generator exists, and the
+		// generator exists only when previews are enabled.
+		if !c.Previews.Enabled {
+			errs = append(errs, &ValidationError{Field: "previews.pregenerate_enabled", Reason: "requires previews.enabled (pregeneration without previews would be a dead key)"})
+		}
+		if len(c.Previews.PregenerateSizes) == 0 {
+			errs = append(errs, &ValidationError{Field: "previews.pregenerate_sizes", Reason: "must not be empty when previews.pregenerate_enabled is set"})
+		}
+	}
+	for i, s := range c.Previews.PregenerateSizes {
+		if s < 1 || s > 4096 {
+			errs = append(errs, &ValidationError{Field: "previews.pregenerate_sizes", Reason: fmt.Sprintf("entry %d (%d) must be between 1 and 4096", i, s)})
+		}
+	}
 
 	if strings.TrimSpace(c.Web.StaticRoot) != "" && !filepath.IsAbs(c.Web.StaticRoot) {
 		errs = append(errs, &ValidationError{Field: "web.static_root", Reason: "must be an absolute path"})

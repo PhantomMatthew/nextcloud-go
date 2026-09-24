@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -24,7 +25,8 @@ func TestDefaultSnapshot(t *testing.T) {
 	if got.Storage.DefaultBackend != "local" {
 		t.Errorf("storage.default_backend = %q", got.Storage.DefaultBackend)
 	}
-	if !got.Previews.Enabled || got.Previews.MaxDimension != 2048 {
+	if !got.Previews.Enabled || got.Previews.MaxDimension != 2048 ||
+		got.Previews.PregenerateEnabled || !slices.Equal(got.Previews.PregenerateSizes, []int{32, 256}) {
 		t.Errorf("previews defaults: %+v", got.Previews)
 	}
 	if got.Web.StaticRoot != "" {
@@ -343,6 +345,16 @@ func TestValidateRules(t *testing.T) {
 		}, "encryption.previous_key_paths"},
 		{"previews_dim_low", func(c *Config) { c.Previews.MaxDimension = 31 }, "previews.max_dimension"},
 		{"previews_dim_high", func(c *Config) { c.Previews.MaxDimension = 4097 }, "previews.max_dimension"},
+		{"previews_pregenerate_size_zero", func(c *Config) { c.Previews.PregenerateSizes = []int{32, 0} }, "previews.pregenerate_sizes"},
+		{"previews_pregenerate_size_high", func(c *Config) { c.Previews.PregenerateSizes = []int{4097} }, "previews.pregenerate_sizes"},
+		{"previews_pregenerate_without_enabled", func(c *Config) {
+			c.Previews.Enabled = false
+			c.Previews.PregenerateEnabled = true
+		}, "previews.pregenerate_enabled"},
+		{"previews_pregenerate_empty_sizes", func(c *Config) {
+			c.Previews.PregenerateEnabled = true
+			c.Previews.PregenerateSizes = nil
+		}, "previews.pregenerate_sizes"},
 		{"web_static_root_relative", func(c *Config) { c.Web.StaticRoot = "relative/web" }, "web.static_root"},
 	}
 	for _, tt := range tests {
@@ -405,6 +417,16 @@ func TestValidateMetricsListenOK(t *testing.T) {
 		if err := c.Validate(); err != nil {
 			t.Errorf("Validate() with metrics_listen %q = %v", addr, err)
 		}
+	}
+}
+
+func TestValidatePregenerateOK(t *testing.T) {
+	t.Parallel()
+	c := Default()
+	c.Previews.PregenerateEnabled = true
+	c.Previews.PregenerateSizes = []int{64, 1024}
+	if err := c.Validate(); err != nil {
+		t.Errorf("Validate() with valid pregeneration = %v", err)
 	}
 }
 
