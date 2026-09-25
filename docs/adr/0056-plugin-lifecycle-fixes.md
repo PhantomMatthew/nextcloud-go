@@ -109,13 +109,16 @@ A strict review of the Phase 4 plugin stack found three functional gaps:
 
 ## Deferred
 
-- **Cache-key cleanup on uninstall.** `cache.Cache` (Get/Set/Delete/
+- ~~**Cache-key cleanup on uninstall.** `cache.Cache` (Get/Set/Delete/
   Increment) has no prefix delete or scan, so `plugin:<id>:` keys survive
   uninstall (memory cache dies with the process; Redis keys would need a
   SCAN-based deleter). The interface was deliberately not widened in this
-  increment.
-- **§13 private-IP egress check** for `http_*` (block private ranges
-  unless granted) remains pending.
+  increment.~~ (**Resolved by ADR-0058 + ADR-0063**: `DeleteByPrefix`
+  widened the interface and the reconciler purges `plugin:<id>:` keys on
+  uninstall detection.)
+- ~~**§13 private-IP egress check** for `http_*` (block private ranges
+  unless granted) remains pending.~~ (**Resolved by ADR-0057**: egress IP
+  guard with the `http.outbound_allow_private` grant.)
 - **Newly confirmed spec deviations** (recorded in the spec Change Log):
   `runtime.fuel_per_call` is parsed but unenforced (wazero v1 has no fuel
   API; CPU budget is wall-clock timeout only), per-plugin

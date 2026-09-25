@@ -191,6 +191,12 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-25** — Docs housekeeping: struck stale follow-up pointers whose
+  work shipped under later ADRs — ADR-0056's cache-key cleanup
+  (ADR-0058+0063) and §13 private-IP egress check (ADR-0057), ADR-0052's
+  SSE-C bullet (rejected by ADR-0074), ADR-0071's tokens-subcommand
+  pointers (shipped by ADR-0073), and ADR-0080's precompressed-assets
+  pointer (ADR-0081). No code changes; no new decisions.
 - **2026-09-25** — Phase 5r: per-plugin metrics panel in the admin console
   (ADR-0091), closing the ADR-0055 dashboard deferral (except memory
   high-water, still blocked on wazero introspection). The render-only

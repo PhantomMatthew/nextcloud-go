@@ -164,7 +164,9 @@ DAV/files/trash/versions write is sealed without touching callers.
   4x): `ncgo-cli encryption encrypt-all|decrypt-all [--user uid]
   [--dry-run]`.
 - **Filename encryption** to close the metadata-leakage gap.
-- **SSE-C for the S3 backend** as an alternative/complement.
+- ~~**SSE-C for the S3 backend** as an alternative/complement.~~
+  (**Rejected by ADR-0074**: a server-held SSE-C key shares the decorator's
+  threat model exactly — per-request header plumbing for no security gain.)
 
 ## Verification
 

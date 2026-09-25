@@ -197,11 +197,12 @@ is byte-identical to NC's (research above), copying rows works when — and
 only when — the operator carries the source `config.php` `secret` into
 ncgo's `instance.secret` (`NCGO_SECRET`) **before first use and keeps it
 forever** (rotating the secret invalidates every imported token at once).
-The 4y scope is research + guidance; a future `import-nextcloud tokens`
-subcommand is a small, well-specified follow-up (read `oc_authtoken`
+The 4y scope is research + guidance; ~~a future `import-nextcloud tokens`
+subcommand is a small, well-specified follow-up~~ (**since shipped:
+ADR-0073**, implementing exactly the pinned mapping) (read `oc_authtoken`
 `WHERE type = 1`, map uid → user, copy `token` → `token_hash`,
 `login_name`, `name`, `type`; synthesize an `id`; skip rows whose user is
-missing). Until it ships, the manual recipe for small instances:
+missing). The manual recipe for small instances remains:
 
 ```sql
 -- run against the ncgo database after users import, with instance.secret
@@ -256,11 +257,13 @@ states both paths.
   `addressbook shares` lines and writes `calendar_shares` rows; re-runs
   are all-skipped; access divergence shows as `N updated`.
 - ADR-0048's email/quota follow-up and ADR-0051's calendar-share follow-up
-  are resolved; the `tokens` subcommand is the only remaining
-  import-nextcloud follow-up, with its design pinned here.
+  are resolved; ~~the `tokens` subcommand is the only remaining
+  import-nextcloud follow-up, with its design pinned here~~ (**shipped by
+  ADR-0073** — no import-nextcloud follow-ups remain).
 - Operators must be told (command help + this ADR): default path = fresh
   secret + re-login + reissued app passwords; carry-over path = copy
-  `secret` + manual SQL (or the future subcommand).
+  `secret` + manual SQL (~~or the future subcommand~~ → the shipped
+  ADR-0073 `tokens` subcommand).
 
 ## Verification
 

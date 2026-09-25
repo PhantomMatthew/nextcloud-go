@@ -136,8 +136,9 @@ memberships via the users importer's group/membership pass.)
 - The console is a second, tiny frontend in the repo; the hand-written
   constraint (no framework, no build step, ~250 lines) is what keeps that
   maintainable and is part of the decision, not a style preference.
-- ADR-0054's embedded-console follow-up is resolved; its precompressed-
-  assets follow-up remains open.
+- ADR-0054's embedded-console follow-up is resolved; its ~~precompressed-
+  assets follow-up remains open~~ (**resolved by ADR-0081**: `.br`/`.gz`
+  sidecar negotiation in `StaticUI.serveFile`).
 
 ## Verification
 
