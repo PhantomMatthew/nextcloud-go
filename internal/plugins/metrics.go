@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"time"
 
@@ -69,6 +70,43 @@ func (h *Host) wrapHostMetrics(name string, fn any) any {
 		}
 		return out
 	}).Interface()
+}
+
+// recordEntryCall records one guest entry-point invocation in the §12
+// entry-call families: a latency observation and a call counter labeled by
+// plugin/entry/result class. Callers gate on a non-nil registry, so this
+// never runs on the zero-overhead uninstrumented path.
+func (p *Plugin) recordEntryCall(entry string, start time.Time, err error) {
+	reg := p.host.cfg.Metrics
+	plugin := p.manifest.Plugin.ID
+	reg.ObserveHistogram(observability.MetricPluginEntryCallDurationSeconds,
+		time.Since(start).Seconds(),
+		observability.Label{Name: "plugin", Value: plugin},
+		observability.Label{Name: "entry", Value: entry})
+	reg.IncCounter(observability.MetricPluginEntryCallsTotal,
+		observability.Label{Name: "plugin", Value: plugin},
+		observability.Label{Name: "entry", Value: entry},
+		observability.Label{Name: "result", Value: classifyCallResult(err)})
+}
+
+// classifyCallResult maps a guest call error to its bounded result-class
+// label value. DeadlineExceeded is checked first: wrapTrap double-wraps the
+// underlying error with %w, so a call that timed out matches both ErrTrap
+// and context.DeadlineExceeded, and the timeout is the more useful signal.
+// Anything else — acquire failures included — collapses to "error".
+func classifyCallResult(err error) string {
+	switch {
+	case err == nil:
+		return "ok"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, ErrTrap):
+		return "trap"
+	case errors.Is(err, ErrMissingExport):
+		return "missing_export"
+	default:
+		return "error"
+	}
 }
 
 // countStorageBytes records n actually-transferred storage bytes in the §12

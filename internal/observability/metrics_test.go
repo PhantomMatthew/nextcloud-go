@@ -155,6 +155,36 @@ func TestRegistryHistogramBuckets(t *testing.T) {
 	}
 }
 
+func TestRegistryEntryFamiliesRender(t *testing.T) {
+	r := NewRegistry()
+	r.IncCounter(MetricPluginEntryCallsTotal,
+		Label{Name: "plugin", Value: "com.example.probe"},
+		Label{Name: "entry", Value: "ncgo_on_install"},
+		Label{Name: "result", Value: "ok"})
+	r.ObserveHistogram(MetricPluginEntryCallDurationSeconds, 0.002,
+		Label{Name: "plugin", Value: "com.example.probe"},
+		Label{Name: "entry", Value: "ncgo_on_install"})
+	out := render(t, r)
+	want := "# HELP ncgo_plugin_entry_calls_total Per-plugin guest entry-point invocations by result class.\n" +
+		"# TYPE ncgo_plugin_entry_calls_total counter\n" +
+		`ncgo_plugin_entry_calls_total{entry="ncgo_on_install",plugin="com.example.probe",result="ok"} 1` + "\n"
+	if !strings.Contains(out, want) {
+		t.Errorf("render missing entry counter family:\nwant %q\ngot:\n%s", want, out)
+	}
+	wants := []string{
+		"# HELP ncgo_plugin_entry_call_duration_seconds Per-plugin guest entry-point latency in seconds.",
+		"# TYPE ncgo_plugin_entry_call_duration_seconds histogram",
+		`ncgo_plugin_entry_call_duration_seconds_bucket{entry="ncgo_on_install",plugin="com.example.probe",le="0.005"} 1`,
+		`ncgo_plugin_entry_call_duration_seconds_bucket{entry="ncgo_on_install",plugin="com.example.probe",le="+Inf"} 1`,
+		`ncgo_plugin_entry_call_duration_seconds_count{entry="ncgo_on_install",plugin="com.example.probe"} 1`,
+	}
+	for _, w := range wants {
+		if !strings.Contains(out, w) {
+			t.Errorf("render missing %q, got:\n%s", w, out)
+		}
+	}
+}
+
 func TestRegistryZeroSeriesRender(t *testing.T) {
 	r := NewRegistry()
 	out := render(t, r)
@@ -163,6 +193,8 @@ func TestRegistryZeroSeriesRender(t *testing.T) {
 		{MetricPluginHostCallDurationSeconds, "histogram"},
 		{MetricPluginCapabilityDenialsTotal, "counter"},
 		{MetricPluginStorageBytesTotal, "counter"},
+		{MetricPluginEntryCallsTotal, "counter"},
+		{MetricPluginEntryCallDurationSeconds, "histogram"},
 	} {
 		if !strings.Contains(out, "# HELP "+fam.name+" ") {
 			t.Errorf("zero-series render missing HELP for %s:\n%s", fam.name, out)

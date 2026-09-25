@@ -101,8 +101,8 @@ hundred lines of stdlib Go.
   memory high-water, denial events): a UI concern; the Prometheus families
   above already carry the data it needs. Memory high-water marks require
   wazero memory introspection not yet wired.
-- **Guest entry-point call metrics** (`Plugin.call` latency/errors): only
-  host calls are instrumented in this increment.
+- ~~**Guest entry-point call metrics** (`Plugin.call` latency/errors): only
+  host calls are instrumented in this increment.~~ (**resolved by ADR-0088**)
 - The pre-existing `observability.metrics_listen` (a separate listener
   address) and `observability.otel_endpoint` config keys were never read by
   any code and were **removed** in Phase 4k (2026-09-22) — defined-but-dead

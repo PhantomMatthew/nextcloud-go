@@ -34,10 +34,25 @@ func (p *Plugin) Call(ctx context.Context, entry string, args ...uint64) ([]uint
 }
 
 // call is the shared entry-point invocation; inHook marks lifecycle hooks.
+// With a metrics registry configured (host cfg.Metrics) every invocation —
+// raw Call, callEntry, and the lifecycle hooks funnelling through them —
+// records the §12 entry-call families; a nil registry keeps the call
+// byte-identical to the uninstrumented path (zero added overhead).
 func (p *Plugin) call(ctx context.Context, entry string, inHook bool, args ...uint64) ([]uint64, error) {
 	if p == nil || p.host == nil {
 		return nil, fmt.Errorf("plugins: nil plugin")
 	}
+	if p.host.cfg.Metrics == nil {
+		return p.callInner(ctx, entry, inHook, args...)
+	}
+	start := time.Now()
+	results, err := p.callInner(ctx, entry, inHook, args...)
+	p.recordEntryCall(entry, start, err)
+	return results, err
+}
+
+// callInner is the uninstrumented entry-point invocation body.
+func (p *Plugin) callInner(ctx context.Context, entry string, inHook bool, args ...uint64) ([]uint64, error) {
 	callCtx, cancel := context.WithTimeout(withCall(ctx, p, inHook), p.callTimeout())
 	defer cancel()
 

@@ -191,6 +191,17 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-25** — Phase 5o: guest entry-point call metrics (ADR-0088),
+  closing the ADR-0055 deferral that left only host calls instrumented.
+  `Plugin.call` — the single funnel for `Call`, `callEntry`, and the
+  lifecycle hooks — now records `ncgo_plugin_entry_calls_total`
+  `{plugin,entry,result}` and `ncgo_plugin_entry_call_duration_seconds`
+  `{plugin,entry}` whenever the host carries a metrics registry; a nil
+  registry keeps the call path byte-identical (zero added overhead). Result
+  classes are `ok`/`timeout`/`trap`/`missing_export`/`error`, classified on
+  the Go error with `context.DeadlineExceeded` checked before `ErrTrap`
+  because `wrapTrap`'s `%w: %w` double-wrap matches both; the `entry` label
+  space is bounded by the plugin manifest, not network input.
 - **2026-09-24** — Phase 5n: WebP preview input (ADR-0087), closing the
   input half of ADR-0053's WebP follow-up. A blank import of
   `golang.org/x/image/webp` (already in the approved x/image module — no

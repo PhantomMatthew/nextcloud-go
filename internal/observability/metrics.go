@@ -16,8 +16,11 @@ import (
 
 // Metric family names registered by NewRegistry. Label cardinality is
 // deliberately bounded: plugin and function come from the fixed ABI surface,
-// result is a small classified set (see ClassifyResult) — never a raw error
-// code — and op/scope are two-value enumerations.
+// result is a small classified set (see ClassifyResult and the guest-call
+// classifier in internal/plugins) — never a raw error code — op/scope are
+// two-value enumerations, and entry names are host-requested exports declared
+// in the plugin manifest, so the entry label space is bounded by the
+// manifest, not by network input.
 const (
 	// MetricPluginHostCallsTotal counts ABI host calls by plugin, function,
 	// and result class.
@@ -33,6 +36,13 @@ const (
 	// (user|system). Counted where the bytes actually move: stream reads and
 	// successful stream-close commits.
 	MetricPluginStorageBytesTotal = "ncgo_plugin_storage_bytes_total"
+	// MetricPluginEntryCallsTotal counts guest entry-point invocations
+	// (Plugin.call: Call, callEntry, and the lifecycle hooks funnelling
+	// through them) by plugin, entry name, and result class.
+	MetricPluginEntryCallsTotal = "ncgo_plugin_entry_calls_total"
+	// MetricPluginEntryCallDurationSeconds observes guest entry-point
+	// latency by plugin and entry name.
+	MetricPluginEntryCallDurationSeconds = "ncgo_plugin_entry_call_duration_seconds"
 )
 
 // histogramBuckets are the fixed latency bucket upper bounds (seconds) used
@@ -94,6 +104,10 @@ func NewRegistry() *Registry {
 		"Per-plugin ABI host calls denied for a missing capability grant.", "plugin", "function")
 	r.RegisterCounter(MetricPluginStorageBytesTotal,
 		"Per-plugin storage bytes transferred through the storage ABI by operation and scope.", "plugin", "op", "scope")
+	r.RegisterCounter(MetricPluginEntryCallsTotal,
+		"Per-plugin guest entry-point invocations by result class.", "plugin", "entry", "result")
+	r.RegisterHistogram(MetricPluginEntryCallDurationSeconds,
+		"Per-plugin guest entry-point latency in seconds.", "plugin", "entry")
 	return r
 }
 
