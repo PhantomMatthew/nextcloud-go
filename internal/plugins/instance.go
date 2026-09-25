@@ -199,6 +199,16 @@ func (im *instanceManager) instantiate(ctx context.Context) (*instance, error) {
 	if err != nil {
 		return nil, wrapTrap(err)
 	}
+	// Reactor-convention initialisation (ADR-0092): real compiler
+	// toolchains (TinyGo, wasi-libc) export _initialize to set up runtime
+	// state per instance; wasmgen probe modules do not. Call it once per
+	// instance before any other export when present.
+	if init := mod.ExportedFunction("_initialize"); init != nil {
+		if _, err := init.Call(ctx); err != nil {
+			_ = mod.Close(ctx)
+			return nil, wrapTrap(err)
+		}
+	}
 	inst := &instance{mod: mod, handles: newSharedHandleTable(im.host.handleAgg, im.manifest.Plugin.ID)}
 	im.host.registerHandles(mod, inst.handles)
 	return inst, nil

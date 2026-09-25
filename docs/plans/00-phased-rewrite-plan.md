@@ -191,6 +191,24 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-25** — Phase 5s: TinyGo toolchain landed + plugin target
+  migration to wasip1 reactor (ADR-0092). With TinyGo 0.42.0 finally
+  installed, building the example plugins exposed four latent defects the
+  wasmgen-probe-only posture could never see: pluginsdk's `wasm` build
+  tag/`_wasm.go` suffix were never selected under TinyGo's wasm-unknown
+  (GOARCH=arm) so historical artifacts were hollow stub builds; the ctx
+  bindings passed wasmimport functions as values (TinyGo rejects); msgpack
+  pulls a `go` statement that wasm-unknown's scheduler=none refuses; and
+  wasm-unknown+asyncify is unrunnable here because its task scheduler needs
+  host stack-switching hooks wazero cannot express. Decision: plugins build
+  with `-target=wasip1 -buildmode=c-shared` (self-contained asyncify,
+  reactor `_initialize` per instance), the host instantiates wazero's WASI
+  and load-gates it to exactly six imports (fd_write, poll_oneoff,
+  clock_time_get, args_sizes_get, args_get, random_get — no stdin/fs/
+  sockets), and pluginsdk's 17 binding files moved to `tinygo`/`_tinygo.go`.
+  New tinygo-gated e2e test compiles and runs examples/hello-plugin for
+  real; the WASI policy probes now pin path_open rejected / fd_write
+  allowed. Zero new dependencies (WASI ships inside wazero).
 - **2026-09-25** — Docs housekeeping: struck stale follow-up pointers whose
   work shipped under later ADRs — ADR-0056's cache-key cleanup
   (ADR-0058+0063) and §13 private-IP egress check (ADR-0057), ADR-0052's

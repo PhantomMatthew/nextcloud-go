@@ -62,9 +62,27 @@ func TestHostForbiddenImport(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = h.Close(ctx) })
-	_, err = h.Load(ctx, helloManifest(), wasmgen.WASIModule())
+	// path_open is inside the WASI namespace but outside the ADR-0092
+	// allowlist: plugins never get filesystem access.
+	_, err = h.Load(ctx, helloManifest(), wasmgen.WASIPathOpenModule())
 	if !errors.Is(err, ErrForbiddenImport) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestHostAllowedWASIImport pins the other half of the ADR-0092 policy: an
+// allowlisted wasi_snapshot_preview1 import (fd_write) passes the import
+// guard, so the module fails later — at the missing-export check.
+func TestHostAllowedWASIImport(t *testing.T) {
+	ctx := context.Background()
+	h, err := NewHost(ctx, HostConfig{}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close(ctx) })
+	_, err = h.Load(ctx, helloManifest(), wasmgen.WASIModule())
+	if !errors.Is(err, ErrMissingExport) {
+		t.Fatalf("err = %v, want ErrMissingExport (import guard passed)", err)
 	}
 }
 

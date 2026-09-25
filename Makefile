@@ -79,16 +79,16 @@ verify: ## go mod verify + tidy diff check
 
 .PHONY: example-plugin
 example-plugin: ## Build examples/hello-plugin with TinyGo (optional)
-	tinygo build -o examples/hello-plugin/hello.wasm -target=wasm-unknown -no-debug ./examples/hello-plugin
+	tinygo build -o examples/hello-plugin/hello.wasm -target=wasip1 -buildmode=c-shared -no-debug ./examples/hello-plugin
 
 .PHONY: example-plugins
 example-plugins: ## Build all example plugins with TinyGo (skipped when tinygo is not installed)
 	@if ! which tinygo >/dev/null 2>&1; then \
 		echo "tinygo not installed; skipping example plugin builds"; \
 	else \
-		tinygo build -o examples/hello-plugin/hello.wasm -target=wasm-unknown -no-debug ./examples/hello-plugin && \
-		tinygo build -o examples/file-tagger/file-tagger.wasm -target=wasm-unknown -no-debug ./examples/file-tagger && \
-		tinygo build -o examples/webhook-forwarder/webhook-forwarder.wasm -target=wasm-unknown -no-debug ./examples/webhook-forwarder; \
+		tinygo build -o examples/hello-plugin/hello.wasm -target=wasip1 -buildmode=c-shared -no-debug ./examples/hello-plugin && \
+		tinygo build -o examples/file-tagger/file-tagger.wasm -target=wasip1 -buildmode=c-shared -no-debug ./examples/file-tagger && \
+		tinygo build -o examples/webhook-forwarder/webhook-forwarder.wasm -target=wasip1 -buildmode=c-shared -no-debug ./examples/webhook-forwarder; \
 	fi
 
 .PHONY: capture-up

@@ -476,8 +476,16 @@ and exhaustion still answers `ErrUnavailable` (-12) from the same host
 calls, so well-behaved guests need no change (a guest only observes a
 refusal its per-instance code path already had to handle).
 
-**WASI is not exposed.** Plugins cannot use `wasi_snapshot_preview1` to bypass the
-ABI. wazero is configured with no WASI module attached.
+**WASI surface (wasip1 reactor, ADR-0092).** Plugins build with TinyGo for
+`-target=wasip1 -buildmode=c-shared` (reactor mode: `_initialize` once per
+instance, then exported entry points). The runtime attaches wazero's WASI
+preview1 module, but the load guard admits only this import subset:
+`fd_write` (stdio), `poll_oneoff` + `clock_time_get` (clock/timers),
+`args_sizes_get` + `args_get` (empty argv), `random_get` (CSPRNG). Every
+other WASI name — `fd_read`, `path_open`, `proc_exit`, `environ_get`, … —
+fails the load with `ErrForbiddenImport`: no stdin, filesystem, sockets, or
+environment for guests. Stdout/stderr writes are discarded by the host
+module configuration; plugin logging goes through `ncgo.log`.
 
 **Trap handling**: Any trap (memory OOB, division by zero, fuel exhaustion, timeout)
 → instance destroyed, error logged with plugin ID + stack trace, request fails with
@@ -495,7 +503,7 @@ HTTP 502 (or job marked failed).
 Plugin SDK convention (`pkg/pluginsdk/`):
 
 ```go
-//go:build wasm
+//go:build tinygo
 
 package pluginsdk
 
@@ -543,8 +551,14 @@ on_request   = "ncgo_on_request"
 
 ### Plugin Code (Go, compiled with TinyGo to WASM)
 
+Build with TinyGo for wasip1 reactor mode (ADR-0092):
+`tinygo build -o tagger.wasm -target=wasip1 -buildmode=c-shared -no-debug .`
+The `tinygo` build tag selects the SDK's real bindings (the `_tinygo.go`
+files); the `wasm` tag is **not** what TinyGo's wasm-unknown target sets —
+it must not be used here.
+
 ```go
-//go:build wasm
+//go:build tinygo
 package main
 
 import (
@@ -552,7 +566,7 @@ import (
     "github.com/PhantomMatthew/nextcloud-go/pkg/pluginsdk"
 )
 
-//export ncgo_on_install
+//go:wasmexport ncgo_on_install
 func onInstall() int32 {
     pluginsdk.DBExec(`
         CREATE TABLE IF NOT EXISTS file_tags (
@@ -564,7 +578,7 @@ func onInstall() int32 {
     return 0
 }
 
-//export ncgo_on_event
+//go:wasmexport ncgo_on_event
 func onEvent(topic, payload string) int32 {
     if topic != "files.uploaded" {
         return 0
@@ -582,7 +596,7 @@ func onEvent(topic, payload string) int32 {
     return 0
 }
 
-//export ncgo_on_request
+//go:wasmexport ncgo_on_request
 func onRequest(req pluginsdk.Request) pluginsdk.Response {
     rows, _ := pluginsdk.DBQuery(
         "SELECT file_path FROM file_tags WHERE tag = ?", "auto:invoice",
@@ -702,6 +716,18 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-25** — Phase 5s toolchain correction (ADR-0092): plugins build
+  with TinyGo for **wasip1 reactor mode** (`-target=wasip1
+  -buildmode=c-shared`), replacing the never-exercised wasm-unknown
+  assumption — wasm-unknown's asyncify scheduler requires host
+  stack-switching hooks (`env.tinygo_launch`/`tinygo_rewind`) that wazero's
+  public API cannot implement. §8's "WASI is not exposed" becomes a pinned
+  WASI import allowlist (`fd_write`, `poll_oneoff`, `clock_time_get`,
+  `args_sizes_get`, `args_get`, `random_get`; everything else rejected).
+  The SDK's real bindings moved from the `wasm` build tag/`_wasm.go`
+  suffix (never selected under TinyGo's wasm-unknown GOARCH=arm — the old
+  artifacts were hollow stub builds) to `tinygo`/`_tinygo.go`; §10's
+  example updated accordingly, including `//go:wasmexport`.
 - **2026-09-23** — Phase 4v re-scoped the three §8 open-handle budgets from
   per instance to **per plugin, shared across instances** (ADR-0068),
   closing the ADR-0060 aggregate-cap follow-up. The budget values are

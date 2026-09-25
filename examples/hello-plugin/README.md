@@ -2,7 +2,7 @@
 
 TinyGo guest that logs `hello from wasm` from `ncgo_on_install` via `ncgo.log`.
 
-Build (requires TinyGo with `wasm-unknown`):
+Build (requires TinyGo; wasip1 reactor mode, ADR-0092):
 
 ```bash
 make example-plugin

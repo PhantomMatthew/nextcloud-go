@@ -201,6 +201,10 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 		_ = rt.Close(ctx)
 		return nil, fmt.Errorf("plugins: host module: %w", err)
 	}
+	if err := h.instantiateWASI(ctx); err != nil {
+		_ = rt.Close(ctx)
+		return nil, fmt.Errorf("plugins: wasi module: %w", err)
+	}
 	return h, nil
 }
 
@@ -302,11 +306,19 @@ func (h *Host) Load(ctx context.Context, m *Manifest, wasm []byte) (*Plugin, err
 		return nil, fmt.Errorf("plugins: compile: %w", err)
 	}
 	for _, imp := range compiled.ImportedFunctions() {
-		mod, _, isImport := imp.Import()
-		if isImport && mod != "ncgo" {
-			_ = compiled.Close(ctx)
-			return nil, fmt.Errorf("%w: %s", ErrForbiddenImport, mod)
+		mod, name, isImport := imp.Import()
+		if !isImport || mod == "ncgo" {
+			continue
 		}
+		// ADR-0092: plugins are built for wasip1 reactor mode; the module may
+		// import exactly the pinned WASI subset below (stdio write, clock,
+		// empty argv, CSPRNG). Notably absent: fd_read, path_open, sock_* —
+		// no stdin, filesystem, or sockets for guests.
+		if mod == "wasi_snapshot_preview1" && allowedWASIImports[name] {
+			continue
+		}
+		_ = compiled.Close(ctx)
+		return nil, fmt.Errorf("%w: %s.%s", ErrForbiddenImport, mod, name)
 	}
 	for _, mem := range compiled.ImportedMemories() {
 		mod, _, isImport := mem.Import()

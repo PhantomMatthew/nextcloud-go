@@ -27,11 +27,11 @@ topic.
 
 ## Build and install
 
-Build the guest (requires TinyGo with `wasm-unknown`; the host rejects WASI
-imports, so plain `GOOS=wasip1 go build` does not work):
+Build the guest (requires TinyGo; wasip1 reactor mode — the host admits a
+pinned `wasi_snapshot_preview1` subset, ADR-0092):
 
 ```bash
-make example-plugins        # or: tinygo build -o examples/file-tagger/file-tagger.wasm -target=wasm-unknown -no-debug ./examples/file-tagger
+make example-plugins        # or: tinygo build -o examples/file-tagger/file-tagger.wasm -target=wasip1 -buildmode=c-shared -no-debug ./examples/file-tagger
 ```
 
 Pack, sign, install, enable:
@@ -77,8 +77,6 @@ need quoting on PostgreSQL.
 ## Caveats
 
 - The guest imports `github.com/vmihailenco/msgpack/v5` (already a host
-  dependency). Its TinyGo/`wasm-unknown` compatibility is assumed but
-  unverified in this environment — TinyGo is not installed here, so the
-  committed sources are validated via the `!tinygo` stub build and
-  `go vet` only (`ncgo-cli plugin check` cannot exercise this plugin's
-  DB-touching `on_install`; see above).
+  dependency). TinyGo/wasip1 compatibility is verified by
+  `make example-plugins` (ADR-0092); `ncgo-cli plugin check` still cannot
+  exercise this plugin's DB-touching `on_install` (see above).

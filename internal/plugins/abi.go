@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/tetratelabs/wazero/api"
+	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 
 	"github.com/PhantomMatthew/nextcloud-go/pkg/pluginsdk"
 )
@@ -84,6 +85,30 @@ func (h *Host) registerHostModule(ctx context.Context) error {
 	export("crypto_hmac", h.cryptoHMAC)
 
 	_, err := b.Instantiate(ctx)
+	return err
+}
+
+// allowedWASIImports is the exact WASI preview1 surface a plugin module may
+// import (ADR-0092) — pinned to what a TinyGo wasip1 reactor build links:
+// stdio write, the clock pair, empty argv, and the CSPRNG. Anything else —
+// fd_read, path_open, proc_exit, environ_get, ... — is rejected at load:
+// plugins get no stdin, no filesystem, and no sockets. The functions
+// themselves come from wazero's bundled WASI implementation.
+var allowedWASIImports = map[string]bool{
+	"fd_write":       true,
+	"poll_oneoff":    true,
+	"clock_time_get": true,
+	"args_sizes_get": true,
+	"args_get":       true,
+	"random_get":     true,
+}
+
+// instantiateWASI wires wazero's WASI preview1 implementation into the
+// runtime so wasip1-reactor plugin modules instantiate (ADR-0092). What a
+// guest may actually link is still gated per-import by the Load guard above
+// (allowedWASIImports); instantiation only makes the names resolvable.
+func (h *Host) instantiateWASI(ctx context.Context) error {
+	_, err := wasi_snapshot_preview1.Instantiate(ctx, h.rt)
 	return err
 }
 

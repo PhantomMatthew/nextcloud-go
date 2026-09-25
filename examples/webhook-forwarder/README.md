@@ -30,7 +30,7 @@ webhook as a JSON POST, optionally signed with HMAC-SHA256.
 ## Build and install
 
 ```bash
-make example-plugins        # requires TinyGo (wasm-unknown); see file-tagger README
+make example-plugins        # requires TinyGo (wasip1 reactor, ADR-0092); see file-tagger README
 go run ./cmd/ncgo-cli plugin check examples/webhook-forwarder
 go run ./cmd/ncgo-cli plugin pack examples/webhook-forwarder -o /tmp/webhook-forwarder.ncplugin
 go run ./cmd/ncgo-cli plugin install --force-unsigned /tmp/webhook-forwarder.ncplugin
@@ -73,7 +73,7 @@ The sink receives
 ## Caveats
 
 - The guest imports `github.com/vmihailenco/msgpack/v5` (already a host
-  dependency). Its TinyGo/`wasm-unknown` compatibility is assumed but
-  unverified in this environment — TinyGo is not installed here, so the
-  committed sources are validated via the `!tinygo` stub build, `go vet`,
-  and `ncgo-cli plugin check` only.
+  dependency). TinyGo/wasip1 compatibility is verified by
+  `make example-plugins` (ADR-0092); committed sources are additionally
+  validated via the `!tinygo` stub build, `go vet`, and
+  `ncgo-cli plugin check`.

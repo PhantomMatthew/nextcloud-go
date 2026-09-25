@@ -1447,6 +1447,21 @@ func WASIModule() []byte {
 	return out
 }
 
+// WASIPathOpenModule imports wasi_snapshot_preview1.path_open — inside the
+// WASI module namespace but outside the pinned allowlist (ADR-0092), so the
+// Load guard must still reject it (no filesystem for plugins).
+func WASIPathOpenModule() []byte {
+	types := vec(ft([]byte{i32, i32, i32, i64, i32, i32, i64, i64, i32}, []byte{i32}))
+	imp := append(name("wasi_snapshot_preview1"), name("path_open")...)
+	imp = append(imp, 0x00)
+	imp = append(imp, u32(0)...)
+	out := make([]byte, 0, 64)
+	out = append(out, 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00)
+	out = append(out, section(1, types)...)
+	out = append(out, section(2, vec(imp))...)
+	return out
+}
+
 // NoExportsModule is a valid empty wasm module.
 func NoExportsModule() []byte {
 	return []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
