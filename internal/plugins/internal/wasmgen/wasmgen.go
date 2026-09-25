@@ -1462,6 +1462,78 @@ func WASIPathOpenModule() []byte {
 	return out
 }
 
+// WASIFdWriteModule builds a module whose ncgo_on_install writes each chunk to
+// fd (1 = stdout, 2 = stderr) with one fd_write call per chunk, exercising the
+// host's stdio line buffering (ADR-0093): split chunks must reassemble into
+// lines. The module exports its memory as "memory" (WASI reads iovecs from
+// guest memory) and carries the required ncgo_abi_version/ncgo_alloc/ncgo_free
+// stubs so it passes Load.
+func WASIFdWriteModule(fd int32, chunks ...[]byte) []byte {
+	const (
+		iovOff   = 16 // iovec {ptr,len} scratch
+		nwOff    = 24 // nwritten out-param scratch
+		dataBase = 1024
+	)
+	types := vec(
+		ft([]byte{i32, i32, i32, i32}, []byte{i32}), // 0: fd_write
+		ft(nil, []byte{i32}),                        // 1: ()->i32
+		ft([]byte{i32}, []byte{i32}),                // 2: ncgo_alloc
+		ft([]byte{i32, i32}, nil),                   // 3: ncgo_free
+	)
+	imp := append(name("wasi_snapshot_preview1"), name("fd_write")...)
+	imp = append(imp, 0x00)
+	imp = append(imp, u32(0)...)
+	// Import occupies func index 0; declared functions follow.
+	exports := vec(
+		export("memory", 0x02, 0),
+		export("ncgo_on_install", 0x00, 1),
+		export("ncgo_abi_version", 0x00, 2),
+		export("ncgo_alloc", 0x00, 3),
+		export("ncgo_free", 0x00, 4),
+	)
+	var expr, data []byte
+	for _, ch := range chunks {
+		off := dataBase + len(data)
+		data = append(data, ch...)
+		if len(ch) == 0 {
+			continue
+		}
+		expr = append(expr, i32c(iovOff)...)
+		expr = append(expr, i32c(i32n(off))...)
+		expr = append(expr, opI32Store, 0x00, 0x00)
+		expr = append(expr, i32c(iovOff)...)
+		expr = append(expr, i32c(i32n(len(ch)))...)
+		expr = append(expr, opI32Store, 0x00, 0x04)
+		expr = append(expr, i32c(fd)...)
+		expr = append(expr, i32c(iovOff)...)
+		expr = append(expr, i32c(1)...)
+		expr = append(expr, i32c(nwOff)...)
+		expr = append(expr, opCall, 0x00, opDrop)
+	}
+	expr = append(expr, i32c(0)...)
+	seg := make([]byte, 0, 8+len(data))
+	seg = append(seg, 0x00) // active segment, memory 0
+	seg = append(seg, i32c(dataBase)...)
+	seg = append(seg, opEnd)
+	seg = append(seg, u32(u32len(len(data)))...)
+	seg = append(seg, data...)
+	out := make([]byte, 0, 128+len(data))
+	out = append(out, 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00)
+	out = append(out, section(1, types)...)
+	out = append(out, section(2, vec(imp))...)
+	out = append(out, section(3, vec(u32(1), u32(1), u32(2), u32(3)))...)
+	out = append(out, section(5, vec([]byte{0x00, 0x01}))...)
+	out = append(out, section(7, exports)...)
+	out = append(out, section(10, vec(
+		code(0, expr),
+		code(0, i32c(1)),           // ncgo_abi_version
+		code(0, i32c(dataBase+32)), // ncgo_alloc: static stub, never called here
+		code(0, nil),               // ncgo_free
+	))...)
+	out = append(out, section(11, vec(seg))...)
+	return out
+}
+
 // NoExportsModule is a valid empty wasm module.
 func NoExportsModule() []byte {
 	return []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}

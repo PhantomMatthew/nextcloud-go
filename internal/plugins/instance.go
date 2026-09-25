@@ -158,6 +158,8 @@ func (t *handleTable) closeAll() error {
 type instance struct {
 	mod     api.Module
 	handles *handleTable
+	stdout  *stdioLogWriter
+	stderr  *stdioLogWriter
 }
 
 // close releases leftover handles and closes the module.
@@ -167,6 +169,13 @@ func (in *instance) close(h *Host) {
 	}
 	h.unregisterHandles(in.mod)
 	_ = in.mod.Close(context.Background())
+	// No writes can arrive after module close; flush any partial stdio line.
+	if in.stdout != nil {
+		in.stdout.flush()
+	}
+	if in.stderr != nil {
+		in.stderr.flush()
+	}
 }
 
 // instanceManager owns the instance lifecycle for one plugin according to its
@@ -194,7 +203,11 @@ func (im *instanceManager) instantiate(ctx context.Context) (*instance, error) {
 	// Instance names must be unique within the runtime (wazero rejects
 	// duplicates); the plugin id alone is not enough for pooled instances.
 	name := fmt.Sprintf("%s#%d", im.manifest.Plugin.ID, im.seq.Add(1))
-	cfg := wazero.NewModuleConfig().WithName(name).WithStartFunctions()
+	// Wire the WASI stdio fds into the host log stream (ADR-0093) before
+	// instantiation so _initialize output is captured too.
+	stdout := newStdioLogWriter(im.host.logger, im.manifest.Plugin.ID, im.manifest.Plugin.Version, "stdout")
+	stderr := newStdioLogWriter(im.host.logger, im.manifest.Plugin.ID, im.manifest.Plugin.Version, "stderr")
+	cfg := wazero.NewModuleConfig().WithName(name).WithStartFunctions().WithStdout(stdout).WithStderr(stderr)
 	mod, err := im.host.rt.InstantiateModule(ctx, im.compiled, cfg)
 	if err != nil {
 		return nil, wrapTrap(err)
@@ -209,7 +222,7 @@ func (im *instanceManager) instantiate(ctx context.Context) (*instance, error) {
 			return nil, wrapTrap(err)
 		}
 	}
-	inst := &instance{mod: mod, handles: newSharedHandleTable(im.host.handleAgg, im.manifest.Plugin.ID)}
+	inst := &instance{mod: mod, handles: newSharedHandleTable(im.host.handleAgg, im.manifest.Plugin.ID), stdout: stdout, stderr: stderr}
 	im.host.registerHandles(mod, inst.handles)
 	return inst, nil
 }

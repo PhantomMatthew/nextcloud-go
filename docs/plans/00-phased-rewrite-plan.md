@@ -191,6 +191,15 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-25** — Phase 5t: plugin stdout/stderr routed into the host log
+  stream (ADR-0093), closing the ADR-0092 follow-up. Each instance's WASI
+  stdio fds are wired to a per-instance line-buffering writer on the module
+  config (`internal/plugins/stdiolog.go`): stdout→INFO, stderr→WARN,
+  `plugin.id`/`plugin.version`/`plugin.stdio` attrs, 4096-byte line cap with
+  truncation marker, blank lines dropped, `\r` stripped, partial lines
+  flushed at instance close, and `fd_write` can never fail the guest.
+  wasmgen gains `WASIFdWriteModule` (real `fd_write` calls plus the required
+  export stubs); ABI spec §7 updated.
 - **2026-09-25** — Phase 5s: TinyGo toolchain landed + plugin target
   migration to wasip1 reactor (ADR-0092). With TinyGo 0.42.0 finally
   installed, building the example plugins exposed four latent defects the

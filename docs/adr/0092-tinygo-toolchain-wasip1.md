@@ -113,8 +113,8 @@ invisible without a real compiler:
 
 ### Follow-ups (explicit, not in v1)
 
-- Route plugin stdout/stderr (`fd_write`) into the plugin log stream
-  instead of discarding.
+- ~~Route plugin stdout/stderr (`fd_write`) into the plugin log stream
+  instead of discarding.~~ (**resolved by ADR-0093**)
 - Evaluate `wasm-unknown` again only if wazero grows the host-hook surface
   (stack-pointer globals + table calls).
 

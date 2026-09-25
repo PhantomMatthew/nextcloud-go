@@ -484,8 +484,11 @@ preview1 module, but the load guard admits only this import subset:
 `args_sizes_get` + `args_get` (empty argv), `random_get` (CSPRNG). Every
 other WASI name — `fd_read`, `path_open`, `proc_exit`, `environ_get`, … —
 fails the load with `ErrForbiddenImport`: no stdin, filesystem, sockets, or
-environment for guests. Stdout/stderr writes are discarded by the host
-module configuration; plugin logging goes through `ncgo.log`.
+environment for guests. Stdout/stderr writes are line-buffered per instance
+into the host log stream (ADR-0093): stdout at INFO, stderr at WARN, with
+`plugin.id`/`plugin.version`/`plugin.stdio` attributes, a 4096-byte line cap
+with a truncation marker, and partial lines flushed at instance close.
+Structured, level-controlled logging still goes through `ncgo.log`.
 
 **Trap handling**: Any trap (memory OOB, division by zero, fuel exhaustion, timeout)
 → instance destroyed, error logged with plugin ID + stack trace, request fails with
@@ -716,6 +719,13 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-25** — Phase 5t (ADR-0093): plugin stdout/stderr (`fd_write`) is
+  no longer discarded — each instance's stdio fds are line-buffered into the
+  host log stream: stdout→INFO, stderr→WARN, `plugin.id`/`plugin.version`/
+  `plugin.stdio` attributes, 4096-byte line cap with a `…[truncated]`
+  marker, blank lines dropped, trailing `\r` stripped, and partial lines
+  flushed at instance close. §7 updated. Guests need no change; `ncgo.log`
+  remains the structured, level-controlled channel.
 - **2026-09-25** — Phase 5s toolchain correction (ADR-0092): plugins build
   with TinyGo for **wasip1 reactor mode** (`-target=wasip1
   -buildmode=c-shared`), replacing the never-exercised wasm-unknown
