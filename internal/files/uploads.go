@@ -481,16 +481,12 @@ func (u *Uploads) Assemble(ctx context.Context, srcUser, transferID, destUser, d
 		}
 	}
 
-	existing, statErr := u.Files.Stat(ctx, destUser, dest)
+	// The Stat preserves the 409-on-existing semantics for overwrite=false;
+	// the If: etag itself is enforced atomically by WriteIf (ADR-0094).
+	_, statErr := u.Files.Stat(ctx, destUser, dest)
 	exists := statErr == nil
 	if statErr != nil && !errors.Is(statErr, webdav.ErrNotFound) {
 		return nil, false, statErr
-	}
-	ifETag := parseIfETag(ifHeader)
-	if ifETag != "" {
-		if !exists || existing.ETag != ifETag {
-			return nil, false, webdav.ErrPrecondition
-		}
 	}
 	if exists && !overwrite {
 		return nil, false, webdav.ErrExists
@@ -542,7 +538,7 @@ func (u *Uploads) Assemble(ctx context.Context, srcUser, transferID, destUser, d
 		}
 		body = io.TeeReader(body, hasher)
 	}
-	entry, created, err := u.Files.Write(ctx, destUser, dest, body, mtime)
+	entry, created, err := u.Files.WriteIf(ctx, destUser, dest, body, mtime, &webdav.WriteCond{IfETags: webdav.ParseIfETags(ifHeader)})
 	if err != nil {
 		return nil, false, err
 	}
@@ -592,24 +588,6 @@ func (u *Uploads) orderedChunks(ctx context.Context, user, tid string) ([]chunkI
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].index < out[j].index })
 	return out, nil
-}
-
-func parseIfETag(h string) string {
-	h = strings.TrimSpace(h)
-	if h == "" {
-		return ""
-	}
-	i := strings.Index(h, "([")
-	if i < 0 {
-		return ""
-	}
-	rest := strings.TrimSpace(h[i+2:])
-	rest = strings.TrimPrefix(rest, `"`)
-	j := strings.IndexAny(rest, `"]`)
-	if j < 0 {
-		return strings.Trim(rest, `"`)
-	}
-	return strings.Trim(rest[:j], `"`)
 }
 
 func splitChecksum(v string) (algo, hexPart string, ok bool) {

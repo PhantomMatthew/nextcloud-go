@@ -191,6 +191,25 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-26** — Phase 5u: atomic conditional DAV writes (ADR-0094). PUT
+  evaluated If-Match/If-None-Match after a Stat and plain PUT ignored the
+  `If:` etag state list NC desktop sends — both TOCTOU lost-update windows;
+  chunked assemble re-checked the If-etag the same way. New
+  `webdav.WriteCond` (IfETags/IfMatch/IfNoneMatch + `Evaluate`) and the
+  optional `webdav.CondWriteFS` interface let filesystems enforce
+  preconditions atomically: `files.DAV` serializes same-path writes through
+  a 256-stripe FNV-1a lock table shared by `Write` and `WriteIf` (plain
+  writes serialize too — plugin/CLI writers race the same storage keys),
+  evaluates the cond against the in-lock filecache state, and CAS-guards the
+  overwrite with `SQLStore.UpdateMetaIfETag`
+  (`UPDATE ... WHERE id=? AND etag=?`, zero rows → `ErrETagConflict` → 412).
+  `If:` parsing handles uri-tagged and multiple lists, strips weak `W/`
+  tags, skips `Not` lists; lock-token-only `If:` stays on the fast path,
+  which also drops the always-on pre-write Stat. Assemble now delegates the
+  If-etag to `WriteIf` (409 overwrite semantics kept), PublicDAV mirrors
+  with `WriteIf`, version restores serialize per path, and OCM-remote
+  mounts pass conditions through unenforced (documented). Multi-process
+  content clobber (staging-key publish) listed as follow-up.
 - **2026-09-25** — Phase 5t: plugin stdout/stderr routed into the host log
   stream (ADR-0093), closing the ADR-0092 follow-up. Each instance's WASI
   stdio fds are wired to a per-instance line-buffering writer on the module

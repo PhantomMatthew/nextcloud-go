@@ -3,8 +3,10 @@ package webdav
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -421,6 +423,107 @@ func TestHandler_PUT_OCChunkedNotImplemented(t *testing.T) {
 	rr := doRequestBody(h, "PUT", "/remote.php/dav/files/admin/foo.txt", p, map[string]string{HeaderOCChunked: "1"}, "x")
 	if rr.Code != http.StatusNotImplemented {
 		t.Fatalf("status = %d, want 501", rr.Code)
+	}
+}
+
+// condRecordingFS wraps InMemoryFS with a WriteIf that records the cond it
+// received, so tests can assert the handler parsed and forwarded the
+// conditional headers intact (ADR-0094).
+type condRecordingFS struct {
+	*InMemoryFS
+	writeCalls   int
+	writeIfCalls int
+	lastCond     *WriteCond
+	writeIfErr   error
+}
+
+func (f *condRecordingFS) Write(ctx context.Context, user, p string, r io.Reader, mtime *time.Time) (*Entry, bool, error) {
+	f.writeCalls++
+	return f.InMemoryFS.Write(ctx, user, p, r, mtime)
+}
+
+func (f *condRecordingFS) WriteIf(ctx context.Context, user, p string, r io.Reader, mtime *time.Time, cond *WriteCond) (*Entry, bool, error) {
+	f.writeIfCalls++
+	f.lastCond = cond
+	if f.writeIfErr != nil {
+		return nil, false, f.writeIfErr
+	}
+	return f.InMemoryFS.Write(ctx, user, p, r, mtime)
+}
+
+func newCondTestHandler(fake *condRecordingFS) *Handler {
+	h, err := NewHandler("/remote.php/dav/files/", fake, "oc123abc")
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+func TestHandler_PUT_IfETagRoutedToWriteIf(t *testing.T) {
+	fake := &condRecordingFS{InMemoryFS: NewInMemoryFS()}
+	h := newCondTestHandler(fake)
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	rr := doRequestBody(h, "PUT", "/remote.php/dav/files/admin/foo.txt", p, map[string]string{
+		HeaderIf:          `</remote.php/dav/files/admin/foo.txt> (["etag123"] <opaquelocktoken:x>)`,
+		HeaderIfMatch:     `"abc", W/"def"`,
+		HeaderIfNoneMatch: `"zzz"`,
+	}, "body")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rr.Code)
+	}
+	if fake.writeIfCalls != 1 || fake.writeCalls != 0 {
+		t.Fatalf("WriteIf calls = %d, Write calls = %d; want 1/0", fake.writeIfCalls, fake.writeCalls)
+	}
+	cond := fake.lastCond
+	if cond == nil {
+		t.Fatal("cond not recorded")
+	}
+	if !slices.Equal(cond.IfETags, []string{"etag123"}) {
+		t.Errorf("IfETags = %v", cond.IfETags)
+	}
+	if !slices.Equal(cond.IfMatch, []string{"abc", "def"}) {
+		t.Errorf("IfMatch = %v", cond.IfMatch)
+	}
+	if !slices.Equal(cond.IfNoneMatch, []string{"zzz"}) {
+		t.Errorf("IfNoneMatch = %v", cond.IfNoneMatch)
+	}
+}
+
+func TestHandler_PUT_WriteIfPreconditionMaps412(t *testing.T) {
+	fake := &condRecordingFS{InMemoryFS: NewInMemoryFS(), writeIfErr: ErrPrecondition}
+	h := newCondTestHandler(fake)
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	rr := doRequestBody(h, "PUT", "/remote.php/dav/files/admin/foo.txt", p, map[string]string{
+		HeaderIf: `(["stale"])`,
+	}, "body")
+	if rr.Code != http.StatusPreconditionFailed {
+		t.Fatalf("status = %d, want 412", rr.Code)
+	}
+}
+
+func TestHandler_PUT_IfLockTokenOnlyUsesPlainWrite(t *testing.T) {
+	fake := &condRecordingFS{InMemoryFS: NewInMemoryFS()}
+	h := newCondTestHandler(fake)
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	rr := doRequestBody(h, "PUT", "/remote.php/dav/files/admin/foo.txt", p, map[string]string{
+		HeaderIf: `(<opaquelocktoken:11112222333344445555666677778888>)`,
+	}, "body")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rr.Code)
+	}
+	if fake.writeCalls != 1 || fake.writeIfCalls != 0 {
+		t.Fatalf("Write calls = %d, WriteIf calls = %d; want 1/0 (lock-token-only If: must not trigger the conditional path)", fake.writeCalls, fake.writeIfCalls)
+	}
+}
+
+func TestHandler_PUT_LegacyFSIfNoneMatchStarOnMissing(t *testing.T) {
+	// InMemoryFS has no WriteIf: the legacy Stat+Evaluate branch must let a
+	// create-only precondition through.
+	h := newTestHandler()
+	p := &auth.Principal{UID: "admin", AuthMethod: auth.AuthMethodBasic}
+	rr := doRequestBody(h, "PUT", "/remote.php/dav/files/admin/new.txt", p, map[string]string{HeaderIfNoneMatch: "*"}, "v1")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", rr.Code)
 	}
 }
 

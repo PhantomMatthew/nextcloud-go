@@ -6,7 +6,6 @@ import (
 	"io"
 	"path"
 	"strings"
-	"time"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
 )
@@ -190,35 +189,6 @@ func (d *DAV) CheckLock(ctx context.Context, user, p, ifHeader string) error {
 		return d.checkLockOwned(ctx, m.OwnerUID, ownerPath, ifHeader)
 	}
 	return d.checkLockOwned(ctx, user, p, ifHeader)
-}
-
-func (d *DAV) writeMaybeIncoming(ctx context.Context, user, p string, r io.Reader, mtime *time.Time, snapshot bool) (*webdav.Entry, bool, error) {
-	np, err := NormalizePath(p)
-	if err != nil {
-		return nil, false, mapMeta(err)
-	}
-	if _, err := d.statOwned(ctx, user, np); err == nil {
-		return d.write(ctx, user, np, r, mtime, snapshot)
-	} else if err != nil && !errors.Is(err, webdav.ErrNotFound) {
-		return nil, false, err
-	}
-	if m, ownerPath, err := d.lookupIncoming(ctx, user, np); err == nil {
-		if m.Remote {
-			return d.writeRemote(ctx, np, m, r)
-		}
-		need := webdav.PermUpdate
-		if _, serr := d.statOwned(ctx, m.OwnerUID, ownerPath); errors.Is(serr, webdav.ErrNotFound) {
-			need = webdav.PermCreate
-		} else if serr != nil {
-			return nil, false, serr
-		}
-		if m.Permissions&need == 0 {
-			return nil, false, webdav.ErrForbidden
-		}
-		e, created, werr := d.write(ctx, m.OwnerUID, ownerPath, r, mtime, snapshot)
-		return incomingEntry(e, np, m.Permissions), created, werr
-	}
-	return d.write(ctx, user, np, r, mtime, snapshot)
 }
 
 func (d *DAV) mkdirMaybeIncoming(ctx context.Context, user, p string) (*webdav.Entry, error) {

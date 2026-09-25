@@ -307,7 +307,7 @@ func (v *Versions) RestoreVersion(ctx context.Context, user, fileID, revision, d
 		return nil, false, mapStorage(err)
 	}
 	defer rc.Close()
-	return v.Files.write(ctx, user, f.Path, rc, nil, true)
+	return v.Files.writeConditional(ctx, user, f.Path, rc, nil, true, nil)
 }
 
 // RollbackLatest restores the newest snapshot without creating another version, then deletes it.
@@ -335,7 +335,7 @@ func (v *Versions) RollbackLatest(ctx context.Context, user, p string) error {
 		return mapStorage(err)
 	}
 	defer rc.Close()
-	if _, _, err := v.Files.write(ctx, user, np, rc, nil, false); err != nil {
+	if _, _, err := v.Files.writeConditional(ctx, user, np, rc, nil, false, nil); err != nil {
 		return err
 	}
 	if err := v.Storage.Delete(ctx, key); err != nil && !errors.Is(err, storage.ErrNotFound) {

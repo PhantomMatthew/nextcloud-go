@@ -146,6 +146,41 @@ func TestSQLStoreFilecache(t *testing.T) {
 	}
 }
 
+func TestUpdateMetaIfETag(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+	store := NewSQLStore(db)
+	uid := seedUser(t, db)
+	if _, err := store.EnsureRoot(ctx, uid); err != nil {
+		t.Fatal(err)
+	}
+	file := &File{UserID: uid, Path: "/a.txt", Size: 5, MIME: "text/plain", Permissions: 31}
+	if err := store.Insert(ctx, file); err != nil {
+		t.Fatal(err)
+	}
+
+	guarded := *file
+	guarded.Size = 9
+	guarded.ETag = "rotated"
+	if err := store.UpdateMetaIfETag(ctx, &guarded, "bogus"); !errors.Is(err, ErrETagConflict) {
+		t.Fatalf("stale etag err = %v, want ErrETagConflict", err)
+	}
+	if err := store.UpdateMetaIfETag(ctx, &guarded, file.ETag); err != nil {
+		t.Fatalf("matching etag: %v", err)
+	}
+	got, err := store.GetByPath(ctx, uid, "/a.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Size != 9 || got.ETag != "rotated" {
+		t.Fatalf("after guarded update = %+v", got)
+	}
+	// The row now carries the rotated etag, so the same guard fails closed.
+	if err := store.UpdateMetaIfETag(ctx, &guarded, file.ETag); !errors.Is(err, ErrETagConflict) {
+		t.Fatalf("replay err = %v, want ErrETagConflict", err)
+	}
+}
+
 func TestSearchByName(t *testing.T) {
 	ctx := t.Context()
 	db := testDB(t)

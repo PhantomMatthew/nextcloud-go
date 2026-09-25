@@ -110,11 +110,45 @@ func TestUploadsMoveCopyForbidden(t *testing.T) {
 	}
 }
 
-func TestParseIfETag(t *testing.T) {
-	t.Parallel()
-	got := parseIfETag(`</remote.php/dav/files/alice/foo.bin> (["abc123etag"])`)
-	if got != "abc123etag" {
-		t.Fatalf("got %q", got)
+func TestUploadsAssembleIfETag(t *testing.T) {
+	ctx := t.Context()
+	up, dav := newUploads(t)
+	if _, _, err := dav.Write(ctx, "alice", "/out.bin", strings.NewReader("old-content"), nil); err != nil {
+		t.Fatal(err)
+	}
+	st, err := dav.Stat(ctx, "alice", "/out.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage := func(tid string) {
+		t.Helper()
+		if _, err := up.Mkdir(ctx, "alice", "/"+tid); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := up.Write(ctx, "alice", "/"+tid+"/00001", strings.NewReader("new-content"), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stage("tid-if1")
+	_, _, err = up.Assemble(ctx, "alice", "tid-if1", "alice", "/out.bin", true, nil, "", `(["wrong-etag"])`)
+	if !errors.Is(err, webdav.ErrPrecondition) {
+		t.Fatalf("mismatch err = %v, want ErrPrecondition", err)
+	}
+	if got := readBody(t, dav, "/out.bin"); got != "old-content" {
+		t.Fatalf("body = %q, want untouched old-content", got)
+	}
+
+	stage("tid-if2")
+	ent, _, err := up.Assemble(ctx, "alice", "tid-if2", "alice", "/out.bin", true, nil, "", `</remote.php/dav/files/alice/out.bin> (["`+st.ETag+`"])`)
+	if err != nil {
+		t.Fatalf("match err = %v", err)
+	}
+	if ent.Size != int64(len("new-content")) {
+		t.Fatalf("size = %d", ent.Size)
+	}
+	if got := readBody(t, dav, "/out.bin"); got != "new-content" {
+		t.Fatalf("body = %q", got)
 	}
 }
 

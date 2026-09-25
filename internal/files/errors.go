@@ -10,4 +10,7 @@ var (
 	ErrIsDir         = errors.New("files: is a directory")
 	ErrInvalidPath   = errors.New("files: invalid path")
 	ErrForbidden     = errors.New("files: forbidden")
+	// ErrETagConflict reports a zero-row UpdateMetaIfETag: the etag read when
+	// the write preconditions were evaluated no longer matches (ADR-0094).
+	ErrETagConflict = errors.New("files: etag conflict")
 )

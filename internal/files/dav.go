@@ -39,6 +39,8 @@ type DAV struct {
 	LiveProps webdav.LivePropProvider
 	// Events, when set, receives files.uploaded after a successful Write.
 	Events *events.Bus
+	// writeLocks serializes same-path writes in-process (ADR-0094).
+	writeLocks writeLockTable
 }
 
 // NewDAV returns a DAV adapter.
@@ -484,7 +486,7 @@ func (d *DAV) listRemote(ctx context.Context, np string, m *IncomingMount) ([]*w
 }
 
 func (d *DAV) Write(ctx context.Context, user, p string, r io.Reader, mtime *time.Time) (*webdav.Entry, bool, error) {
-	ent, created, err := d.writeMaybeIncoming(ctx, user, p, r, mtime, true)
+	ent, created, err := d.writeConditional(ctx, user, p, r, mtime, true, nil)
 	if err != nil {
 		return nil, false, err
 	}
@@ -514,7 +516,10 @@ func (d *DAV) emitUploaded(ctx context.Context, user string, ent *webdav.Entry, 
 	d.Events.Publish(ctx, events.Event{Topic: EventFilesUploaded, Payload: payload, Source: "host", UserID: user})
 }
 
-func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *time.Time, snapshot bool) (*webdav.Entry, bool, error) {
+// write is the locked write core: callers must hold the writeLocks stripe
+// for (user, p) — see writeConditional. Inside the lock only Versions,
+// Storage, and Meta calls happen, none of which re-enter write locking.
+func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *time.Time, snapshot bool, cond *webdav.WriteCond) (*webdav.Entry, bool, error) {
 	u, err := d.resolveUser(ctx, user)
 	if err != nil {
 		return nil, false, err
@@ -547,6 +552,16 @@ func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *tim
 		return nil, false, mapMeta(err)
 	case existing.IsDir:
 		return nil, false, webdav.ErrIsDir
+	}
+
+	// Evaluate preconditions against the in-lock filecache state (ADR-0094);
+	// a nil cond is a no-op guard.
+	expectETag := ""
+	if !created && existing != nil {
+		expectETag = existing.ETag
+	}
+	if err := cond.Evaluate(!created, expectETag); err != nil {
+		return nil, false, err
 	}
 
 	if !created && snapshot && d.Versions != nil {
@@ -598,8 +613,16 @@ func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *tim
 		existing.Mtime = mt
 		existing.Checksum = checksum
 		existing.ETag = ComputeFileETag(existing.ID, mt, n)
-		if err := d.Meta.UpdateMeta(ctx, existing); err != nil {
-			return nil, false, d.compensateDelete(ctx, key, mapMeta(err))
+		// Conditional writes CAS the filecache row against the etag read
+		// during evaluation; unconditional writes keep the plain update.
+		var uerr error
+		if cond == nil {
+			uerr = d.Meta.UpdateMeta(ctx, existing)
+		} else {
+			uerr = d.Meta.UpdateMetaIfETag(ctx, existing, expectETag)
+		}
+		if uerr != nil {
+			return nil, false, d.compensateDelete(ctx, key, mapMeta(uerr))
 		}
 		f = existing
 	}
@@ -1009,6 +1032,8 @@ func mapMeta(err error) error {
 		return webdav.ErrIsDir
 	case errors.Is(err, ErrForbidden):
 		return webdav.ErrForbidden
+	case errors.Is(err, ErrETagConflict):
+		return webdav.ErrPrecondition
 	default:
 		return err
 	}

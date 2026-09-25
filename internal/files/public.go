@@ -157,6 +157,32 @@ func (p *PublicDAV) Write(ctx context.Context, token, rel string, r io.Reader, m
 	return publicize(ent, sh), created, nil
 }
 
+// WriteIf is Write with the preconditions forwarded to the owner's DAV,
+// which enforces them atomically (ADR-0094); permission checks mirror Write.
+func (p *PublicDAV) WriteIf(ctx context.Context, token, rel string, r io.Reader, mtime *time.Time, cond *webdav.WriteCond) (*webdav.Entry, bool, error) {
+	sh, owner, err := p.resolve(ctx, token)
+	if err != nil {
+		return nil, false, err
+	}
+	abs, err := jailPath(sh, rel)
+	if err != nil {
+		return nil, false, err
+	}
+	_, statErr := p.Files.Stat(ctx, owner.UID, abs)
+	need := webdav.PermUpdate
+	if statErr != nil {
+		need = webdav.PermCreate
+	}
+	if sh.Permissions&need == 0 {
+		return nil, false, webdav.ErrForbidden
+	}
+	ent, created, err := p.Files.WriteIf(ctx, owner.UID, abs, r, mtime, cond)
+	if err != nil {
+		return nil, false, err
+	}
+	return publicize(ent, sh), created, nil
+}
+
 func (p *PublicDAV) Mkdir(ctx context.Context, token, rel string) (*webdav.Entry, error) {
 	sh, owner, err := p.resolve(ctx, token)
 	if err != nil {

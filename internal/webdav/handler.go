@@ -261,30 +261,6 @@ func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	existing, statErr := h.FS.Stat(r.Context(), user, sub)
-	if statErr != nil && !errors.Is(statErr, ErrNotFound) {
-		writeFSError(w, statErr)
-		return
-	}
-	exists := statErr == nil
-
-	if ifMatch := r.Header.Get(HeaderIfMatch); ifMatch != "" {
-		if !exists || !etagMatches(ifMatch, existing.ETag) {
-			http.Error(w, "Precondition Failed", http.StatusPreconditionFailed)
-			return
-		}
-	}
-	if inm := r.Header.Get(HeaderIfNoneMatch); inm != "" {
-		if inm == "*" && exists {
-			http.Error(w, "Precondition Failed", http.StatusPreconditionFailed)
-			return
-		}
-		if exists && etagMatches(inm, existing.ETag) {
-			http.Error(w, "Precondition Failed", http.StatusPreconditionFailed)
-			return
-		}
-	}
-
 	var mtimePtr *time.Time
 	mtimeAccepted := false
 	if v := r.Header.Get(HeaderOCMtime); v != "" {
@@ -302,7 +278,30 @@ func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
 		body = io.LimitReader(r.Body, r.ContentLength)
 	}
 
-	entry, created, err := h.FS.Write(r.Context(), user, sub, body, mtimePtr)
+	cond := &WriteCond{
+		IfETags:     ParseIfETags(r.Header.Get(HeaderIf)),
+		IfMatch:     splitETagList(r.Header.Get(HeaderIfMatch)),
+		IfNoneMatch: splitETagList(r.Header.Get(HeaderIfNoneMatch)),
+	}
+	if len(cond.IfETags) == 0 && len(cond.IfMatch) == 0 && len(cond.IfNoneMatch) == 0 {
+		cond = nil
+	}
+
+	var (
+		entry   *Entry
+		created bool
+		err     error
+	)
+	if cond == nil {
+		// Fast path: no precondition headers (an If: header carrying only
+		// lock tokens included), so the pre-write Stat is unnecessary —
+		// write errors surface identically from Write itself (ADR-0094).
+		entry, created, err = h.FS.Write(r.Context(), user, sub, body, mtimePtr)
+	} else if cw, isCond := h.FS.(CondWriteFS); isCond {
+		entry, created, err = cw.WriteIf(r.Context(), user, sub, body, mtimePtr, cond)
+	} else {
+		entry, created, err = h.writeCondLegacy(r, user, sub, body, mtimePtr, cond)
+	}
 	if err != nil {
 		writeFSError(w, err)
 		return
@@ -321,6 +320,25 @@ func (h *Handler) put(w http.ResponseWriter, r *http.Request) {
 	} else {
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+// writeCondLegacy evaluates preconditions at the HTTP layer for filesystems
+// that do not implement CondWriteFS; the Stat→check→write sequence is not
+// atomic there (ADR-0094).
+func (h *Handler) writeCondLegacy(r *http.Request, user, sub string, body io.Reader, mtime *time.Time, cond *WriteCond) (*Entry, bool, error) {
+	existing, statErr := h.FS.Stat(r.Context(), user, sub)
+	if statErr != nil && !errors.Is(statErr, ErrNotFound) {
+		return nil, false, statErr
+	}
+	exists := statErr == nil
+	etag := ""
+	if exists {
+		etag = existing.ETag
+	}
+	if err := cond.Evaluate(exists, etag); err != nil {
+		return nil, false, err
+	}
+	return h.FS.Write(r.Context(), user, sub, body, mtime)
 }
 
 func (h *Handler) methodNotAllowed(w http.ResponseWriter, _ *http.Request) {
@@ -407,18 +425,6 @@ func normalizeDepth(d string) string {
 		return "1"
 	}
 	return "1"
-}
-
-func etagMatches(header, etag string) bool {
-	for _, raw := range strings.Split(header, ",") {
-		v := strings.TrimSpace(raw)
-		v = strings.TrimPrefix(v, "W/")
-		v = strings.Trim(v, `"`)
-		if v == etag || v == "*" {
-			return true
-		}
-	}
-	return false
 }
 
 func writeFSError(w http.ResponseWriter, err error) {

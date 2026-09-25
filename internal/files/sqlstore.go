@@ -20,6 +20,7 @@ type Store interface {
 	ListChildren(ctx context.Context, userID, parentID int64) ([]File, error)
 	Insert(ctx context.Context, f *File) error
 	UpdateMeta(ctx context.Context, f *File) error
+	UpdateMetaIfETag(ctx context.Context, f *File, expectETag string) error
 	DeleteSubtree(ctx context.Context, userID int64, p string) error
 	RenameSubtree(ctx context.Context, userID int64, srcPath, dstPath string, now time.Time) error
 	Usage(ctx context.Context, userID int64) (int64, error)
@@ -202,6 +203,41 @@ func (s *SQLStore) UpdateMeta(ctx context.Context, f *File) error {
 	if f == nil || f.ID == 0 {
 		return fmt.Errorf("files: invalid file")
 	}
+	query, args := updateMetaStmt(f)
+	if _, err := s.db.Exec(ctx, query+`
+WHERE id = ?`, append(args, f.ID)...); err != nil {
+		return fmt.Errorf("files: update: %w", err)
+	}
+	return nil
+}
+
+// UpdateMetaIfETag is UpdateMeta guarded by the etag the caller read when it
+// evaluated its write preconditions (ADR-0094): a zero-row update means a
+// concurrent write landed first and reports ErrETagConflict.
+func (s *SQLStore) UpdateMetaIfETag(ctx context.Context, f *File, expectETag string) error {
+	if f == nil || f.ID == 0 {
+		return fmt.Errorf("files: invalid file")
+	}
+	query, args := updateMetaStmt(f)
+	res, err := s.db.Exec(ctx, query+`
+WHERE id = ? AND etag = ?`, append(args, f.ID, expectETag)...)
+	if err != nil {
+		return fmt.Errorf("files: update: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("files: update: %w", err)
+	}
+	if n == 0 {
+		return ErrETagConflict
+	}
+	return nil
+}
+
+// updateMetaStmt builds the shared UPDATE statement and column arguments for
+// UpdateMeta and UpdateMetaIfETag; callers append their own WHERE clause and
+// trailing arguments.
+func updateMetaStmt(f *File) (string, []any) {
 	isDir := 0
 	if f.IsDir {
 		isDir = 1
@@ -210,14 +246,9 @@ func (s *SQLStore) UpdateMeta(ctx context.Context, f *File) error {
 	if f.Checksum != "" {
 		checksum = f.Checksum
 	}
-	_, err := s.db.Exec(ctx, `
-UPDATE files SET name = ?, path = ?, is_dir = ?, size = ?, mtime_ms = ?, etag = ?, checksum = ?, mime = ?, permissions = ?, parent_id = ?
-WHERE id = ?`,
-		f.Name, f.Path, isDir, f.Size, f.Mtime.UTC().UnixMilli(), f.ETag, checksum, f.MIME, f.Permissions, nullInt(f.ParentID), f.ID)
-	if err != nil {
-		return fmt.Errorf("files: update: %w", err)
-	}
-	return nil
+	return `
+UPDATE files SET name = ?, path = ?, is_dir = ?, size = ?, mtime_ms = ?, etag = ?, checksum = ?, mime = ?, permissions = ?, parent_id = ?`,
+		[]any{f.Name, f.Path, isDir, f.Size, f.Mtime.UTC().UnixMilli(), f.ETag, checksum, f.MIME, f.Permissions, nullInt(f.ParentID)}
 }
 
 func (s *SQLStore) DeleteSubtree(ctx context.Context, userID int64, p string) error {
