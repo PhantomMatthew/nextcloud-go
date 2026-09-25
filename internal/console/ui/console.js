@@ -50,13 +50,24 @@
     row.appendChild(td);
   }
 
-  function fmtQuota(bytes) {
-    if (bytes == null) return "unlimited";
+  function fmtBytes(bytes) {
     if (bytes < 1024) return bytes + " B";
     const units = ["KiB", "MiB", "GiB", "TiB"];
     let v = bytes, u = -1;
     do { v /= 1024; u++; } while (v >= 1024 && u < units.length - 1);
     return v.toFixed(1) + " " + units[u];
+  }
+
+  function fmtQuota(bytes) {
+    if (bytes == null) return "unlimited";
+    return fmtBytes(bytes);
+  }
+
+  function fmtSecs(v) {
+    if (!v) return "0";
+    if (v < 0.001) return (v * 1e6).toFixed(0) + " µs";
+    if (v < 1) return (v * 1000).toFixed(1) + " ms";
+    return v.toFixed(3) + " s";
   }
 
   function fmtTime(rfc3339) {
@@ -165,7 +176,41 @@
     }
   }
 
-  const loaders = { status: loadStatus, users: loadUsers, jobs: loadJobs, notifications: loadNotifs };
+  async function loadPlugins() {
+    const tbody = document.querySelector("#plugins-table tbody");
+    tbody.textContent = "";
+    // Fetched directly (not via loadJSON): a 503 means metrics are disabled,
+    // which is a section-body message, not a banner error.
+    const res = await fetch("/console/api/plugins", { headers: { Accept: "application/json" } });
+    if (res.status === 401 || res.status === 403) {
+      authBanner(res.status);
+      throw new Error("auth " + res.status);
+    }
+    if (res.status === 503) {
+      emptyRow(tbody.insertRow(), 11, "metrics disabled");
+      return;
+    }
+    if (!res.ok) throw new Error("/console/api/plugins: HTTP " + res.status);
+    const data = await res.json();
+    const list = data.plugins || [];
+    if (list.length === 0) emptyRow(tbody.insertRow(), 11, "no plugin metrics yet");
+    for (const p of list) {
+      const tr = tbody.insertRow();
+      cell(tr, p.plugin);
+      cell(tr, p.host_calls);
+      cell(tr, p.host_errors);
+      cell(tr, p.entry_calls);
+      cell(tr, p.entry_errors);
+      cell(tr, fmtSecs(p.host_call_mean_seconds));
+      cell(tr, fmtSecs(p.host_call_p95_seconds));
+      cell(tr, fmtSecs(p.entry_call_mean_seconds));
+      cell(tr, fmtSecs(p.entry_call_p95_seconds));
+      cell(tr, fmtBytes(p.storage_bytes));
+      cell(tr, p.capability_denials);
+    }
+  }
+
+  const loaders = { status: loadStatus, users: loadUsers, jobs: loadJobs, notifications: loadNotifs, plugins: loadPlugins };
 
   function reload(name) {
     loaders[name]().catch((err) => {
@@ -192,4 +237,5 @@
   reload("users");
   reload("jobs");
   reload("notifications");
+  reload("plugins");
 })();

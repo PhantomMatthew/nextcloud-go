@@ -12,6 +12,7 @@ import (
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/config"
 	"github.com/PhantomMatthew/nextcloud-go/internal/notifications"
+	"github.com/PhantomMatthew/nextcloud-go/internal/observability"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 )
 
@@ -178,5 +179,97 @@ func TestConsoleNotificationsRoute(t *testing.T) {
 	}
 	if rr := get("bob", "bob"); rr.Code != http.StatusForbidden {
 		t.Errorf("bob api notifications = %d, want 403", rr.Code)
+	}
+}
+
+// TestConsolePluginsRoute pins the ADR-0091 wiring two ways: with metrics
+// disabled (the default) the endpoint answers 503 JSON for an admin and 401
+// anonymous; with metrics enabled the seeded registry aggregates through the
+// mounted router.
+func TestConsolePluginsRouteDisabled(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	cfg := DevConfig()
+	cfg.Database.DSN = "file:ncgo-console-plugins-off?mode=memory&cache=shared"
+	cfg.Storage.Backends = map[string]config.BackendConfig{
+		"local": {Type: "localfs", Root: t.TempDir()},
+	}
+	// DevConfig leaves observability.metrics_enabled false, so a.metrics
+	// stays nil — the endpoint's 503 path.
+	a, err := New(ctx, cfg, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Close(ctx) })
+
+	get := func(uid, pass string) *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/console/api/plugins", nil)
+		if uid != "" {
+			req.SetBasicAuth(uid, pass)
+		}
+		rr := httptest.NewRecorder()
+		a.Handler().ServeHTTP(rr, req)
+		return rr
+	}
+
+	rr := get("admin", "admin")
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("admin api plugins (metrics off) = %d %s, want 503", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"error":"metrics disabled"`) {
+		t.Errorf("body = %s", rr.Body.String())
+	}
+	if rr := get("", ""); rr.Code != http.StatusUnauthorized {
+		t.Errorf("anonymous api plugins = %d, want 401", rr.Code)
+	}
+}
+
+func TestConsolePluginsRouteEnabled(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	cfg := DevConfig()
+	cfg.Database.DSN = "file:ncgo-console-plugins-on?mode=memory&cache=shared"
+	cfg.Storage.Backends = map[string]config.BackendConfig{
+		"local": {Type: "localfs", Root: t.TempDir()},
+	}
+	cfg.Observability.MetricsEnabled = true
+	a, err := New(ctx, cfg, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Close(ctx) })
+
+	// Seed the process-wide registry app.New constructed (in-package access);
+	// the console handler must read this same instance.
+	a.metrics.IncCounter(observability.MetricPluginHostCallsTotal,
+		observability.Label{Name: "plugin", Value: "demo"},
+		observability.Label{Name: "function", Value: "cache_get"},
+		observability.Label{Name: "result", Value: "ok"})
+	a.metrics.ObserveHistogram(observability.MetricPluginHostCallDurationSeconds, 0.01,
+		observability.Label{Name: "plugin", Value: "demo"},
+		observability.Label{Name: "function", Value: "cache_get"})
+
+	get := func(uid, pass string) *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/console/api/plugins", nil)
+		if uid != "" {
+			req.SetBasicAuth(uid, pass)
+		}
+		rr := httptest.NewRecorder()
+		a.Handler().ServeHTTP(rr, req)
+		return rr
+	}
+
+	rr := get("admin", "admin")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin api plugins = %d %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	for _, want := range []string{`"plugin":"demo"`, `"host_calls":1`, `"host_errors":0`, `"host_call_mean_seconds":0.01`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q: %s", want, body)
+		}
+	}
+	if rr := get("", ""); rr.Code != http.StatusUnauthorized {
+		t.Errorf("anonymous api plugins = %d, want 401", rr.Code)
 	}
 }

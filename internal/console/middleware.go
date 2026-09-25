@@ -37,7 +37,7 @@ func RequireAdmin(groups GroupLookup) func(http.Handler) http.Handler {
 			}
 			gids, err := groups.UserGroupGIDs(r.Context(), p.UID)
 			if err != nil {
-				writeError(w, r, "group lookup failed")
+				writeError(w, r, http.StatusInternalServerError, "group lookup failed")
 				return
 			}
 			if !slices.Contains(gids, users.AdminGroupGID) {

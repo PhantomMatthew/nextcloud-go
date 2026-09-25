@@ -97,10 +97,11 @@ hundred lines of stdlib Go.
   `plugin.host.<function>` spans with `plugin.id` / `ncgo.function` /
   `ncgo.result_code` attributes — the mapping this label scheme predicted —
   and requests emit router-named server spans.
-- **Per-plugin admin dashboard** (request count, error rate, p50/p95/p99,
+- ~~**Per-plugin admin dashboard** (request count, error rate, p50/p95/p99,
   memory high-water, denial events): a UI concern; the Prometheus families
   above already carry the data it needs. Memory high-water marks require
-  wazero memory introspection not yet wired.
+  wazero memory introspection not yet wired.~~ (**resolved by ADR-0091**,
+  except memory high-water, which remains blocked on wazero introspection)
 - ~~**Guest entry-point call metrics** (`Plugin.call` latency/errors): only
   host calls are instrumented in this increment.~~ (**resolved by ADR-0088**)
 - The pre-existing `observability.metrics_listen` (a separate listener

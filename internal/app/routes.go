@@ -233,6 +233,9 @@ func (a *App) mountRoutes() error {
 		Cfg:        a.Cfg,
 		InstanceID: a.instanceID,
 		Status:     statusProvider,
+		// Nil when observability.metrics_enabled is false — the plugins
+		// endpoint's 503 path (ADR-0091).
+		Metrics: a.metrics,
 	}
 	consoleMw := []httpx.Middleware{
 		httpx.Middleware(console.Auth(authCfg)),

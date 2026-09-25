@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
 	"github.com/PhantomMatthew/nextcloud-go/internal/jobs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/notifications"
+	"github.com/PhantomMatthew/nextcloud-go/internal/observability"
 	"github.com/PhantomMatthew/nextcloud-go/internal/status"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 )
@@ -101,6 +103,61 @@ func testHandler() (*Handler, *fakeUserStore, *fakeJobsStore, *fakeNotifsStore) 
 			ShouldNotify: true, CreatedAt: time.UnixMilli(jobRunAtMs).UTC(),
 		},
 	}}
+	reg := observability.NewRegistry()
+	// alpha: host-call traffic across two functions with one error class, two
+	// capability denials, and three latency observations.
+	hc := func(result string) {
+		reg.IncCounter(observability.MetricPluginHostCallsTotal,
+			observability.Label{Name: "plugin", Value: "alpha"},
+			observability.Label{Name: "function", Value: "cache_get"},
+			observability.Label{Name: "result", Value: result})
+	}
+	hc("ok")
+	hc("ok")
+	reg.IncCounter(observability.MetricPluginHostCallsTotal,
+		observability.Label{Name: "plugin", Value: "alpha"},
+		observability.Label{Name: "function", Value: "cache_set"},
+		observability.Label{Name: "result", Value: "internal"})
+	for i := 0; i < 2; i++ {
+		reg.IncCounter(observability.MetricPluginCapabilityDenialsTotal,
+			observability.Label{Name: "plugin", Value: "alpha"},
+			observability.Label{Name: "function", Value: "cache_set"})
+	}
+	hd := func(seconds float64, function string) {
+		reg.ObserveHistogram(observability.MetricPluginHostCallDurationSeconds, seconds,
+			observability.Label{Name: "plugin", Value: "alpha"},
+			observability.Label{Name: "function", Value: function})
+	}
+	hd(0.01, "cache_get")
+	hd(0.03, "cache_get")
+	hd(0.5, "cache_set")
+	// beta: entry-point traffic only (no host families at all).
+	ec := func(entry, result string) {
+		reg.IncCounter(observability.MetricPluginEntryCallsTotal,
+			observability.Label{Name: "plugin", Value: "beta"},
+			observability.Label{Name: "entry", Value: entry},
+			observability.Label{Name: "result", Value: result})
+	}
+	ec("Call", "ok")
+	ec("Call", "ok")
+	ec("Call", "ok")
+	ec("onTransfer", "timeout")
+	ed := func(seconds float64) {
+		reg.ObserveHistogram(observability.MetricPluginEntryCallDurationSeconds, seconds,
+			observability.Label{Name: "plugin", Value: "beta"},
+			observability.Label{Name: "entry", Value: "Call"})
+	}
+	ed(0.002)
+	ed(0.2)
+	// gamma: storage bytes only — the zero-family plugin.
+	reg.AddCounter(observability.MetricPluginStorageBytesTotal, 100,
+		observability.Label{Name: "plugin", Value: "gamma"},
+		observability.Label{Name: "op", Value: "write"},
+		observability.Label{Name: "scope", Value: "user"})
+	reg.AddCounter(observability.MetricPluginStorageBytesTotal, 50,
+		observability.Label{Name: "plugin", Value: "gamma"},
+		observability.Label{Name: "op", Value: "read"},
+		observability.Label{Name: "scope", Value: "system"})
 	h := &Handler{
 		Users:  fu,
 		Jobs:   fj,
@@ -119,6 +176,7 @@ func testHandler() (*Handler, *fakeUserStore, *fakeJobsStore, *fakeNotifsStore) 
 		},
 		InstanceID: "octestinstance",
 		Status:     status.Provider{Installed: true},
+		Metrics:    reg,
 	}
 	return h, fu, fj, fn
 }
@@ -475,6 +533,111 @@ func TestConsoleNotifsNilStore(t *testing.T) {
 		t.Fatalf("nil notifs store = %d", rr.Code)
 	}
 	if !strings.Contains(rr.Body.String(), `"error"`) || !strings.Contains(rr.Body.String(), "notifications store unavailable") {
+		t.Errorf("body = %s", rr.Body.String())
+	}
+}
+
+type pluginRow struct {
+	Plugin               string  `json:"plugin"`
+	HostCalls            int64   `json:"host_calls"`
+	HostErrors           int64   `json:"host_errors"`
+	EntryCalls           int64   `json:"entry_calls"`
+	EntryErrors          int64   `json:"entry_errors"`
+	HostCallMeanSeconds  float64 `json:"host_call_mean_seconds"`
+	HostCallP50Seconds   float64 `json:"host_call_p50_seconds"`
+	HostCallP95Seconds   float64 `json:"host_call_p95_seconds"`
+	HostCallP99Seconds   float64 `json:"host_call_p99_seconds"`
+	EntryCallMeanSeconds float64 `json:"entry_call_mean_seconds"`
+	EntryCallP50Seconds  float64 `json:"entry_call_p50_seconds"`
+	EntryCallP95Seconds  float64 `json:"entry_call_p95_seconds"`
+	EntryCallP99Seconds  float64 `json:"entry_call_p99_seconds"`
+	StorageBytes         int64   `json:"storage_bytes"`
+	CapabilityDenials    int64   `json:"capability_denials"`
+}
+
+func TestConsolePluginsPayload(t *testing.T) {
+	h, _, _, _ := testHandler()
+	rr := do(t, adminChain(h), http.MethodGet, "/console/api/plugins")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	var p struct {
+		Plugins []pluginRow `json:"plugins"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &p); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Plugins) != 3 {
+		t.Fatalf("plugins = %+v", p.Plugins)
+	}
+	// Rows are id-sorted: alpha, beta, gamma.
+	alpha, beta, gamma := p.Plugins[0], p.Plugins[1], p.Plugins[2]
+	if alpha.Plugin != "alpha" || beta.Plugin != "beta" || gamma.Plugin != "gamma" {
+		t.Fatalf("plugin order = %q, %q, %q", alpha.Plugin, beta.Plugin, gamma.Plugin)
+	}
+
+	// alpha: 3 host calls summed over function (2 ok + 1 internal), 2
+	// denials, latency merged from the per-function series (count 3,
+	// sum 0.54).
+	if alpha.HostCalls != 3 || alpha.HostErrors != 1 {
+		t.Errorf("alpha host calls/errors = %d/%d, want 3/1", alpha.HostCalls, alpha.HostErrors)
+	}
+	if alpha.EntryCalls != 0 || alpha.EntryErrors != 0 || alpha.StorageBytes != 0 {
+		t.Errorf("alpha zero families = %+v", alpha)
+	}
+	if alpha.CapabilityDenials != 2 {
+		t.Errorf("alpha denials = %d, want 2", alpha.CapabilityDenials)
+	}
+	approx := func(got, want float64) bool { return math.Abs(got-want) < 1e-9 }
+	if !approx(alpha.HostCallMeanSeconds, 0.18) {
+		t.Errorf("alpha host mean = %v, want 0.18", alpha.HostCallMeanSeconds)
+	}
+	// Merged buckets: obs 0.01 (le=.01), 0.03 (le=.05), 0.5 (le=.5).
+	if !approx(alpha.HostCallP50Seconds, 0.0375) {
+		t.Errorf("alpha host p50 = %v, want 0.0375", alpha.HostCallP50Seconds)
+	}
+	if !approx(alpha.HostCallP95Seconds, 0.4625) {
+		t.Errorf("alpha host p95 = %v, want 0.4625", alpha.HostCallP95Seconds)
+	}
+	if alpha.HostCallP99Seconds <= 0.25 || alpha.HostCallP99Seconds > 0.5 {
+		t.Errorf("alpha host p99 = %v, want within (0.25, 0.5]", alpha.HostCallP99Seconds)
+	}
+
+	// beta: entry-only plugin; host families contribute zeros.
+	if beta.EntryCalls != 4 || beta.EntryErrors != 1 {
+		t.Errorf("beta entry calls/errors = %d/%d, want 4/1", beta.EntryCalls, beta.EntryErrors)
+	}
+	if beta.HostCalls != 0 || beta.HostErrors != 0 || beta.CapabilityDenials != 0 || beta.StorageBytes != 0 {
+		t.Errorf("beta zero families = %+v", beta)
+	}
+	if !approx(beta.EntryCallMeanSeconds, 0.101) {
+		t.Errorf("beta entry mean = %v, want 0.101", beta.EntryCallMeanSeconds)
+	}
+	if !approx(beta.EntryCallP95Seconds, 0.235) {
+		t.Errorf("beta entry p95 = %v, want 0.235", beta.EntryCallP95Seconds)
+	}
+
+	// gamma: storage-only plugin — 150 bytes summed over op/scope.
+	if gamma.StorageBytes != 150 {
+		t.Errorf("gamma storage bytes = %d, want 150", gamma.StorageBytes)
+	}
+	if gamma.HostCalls != 0 || gamma.EntryCalls != 0 || gamma.CapabilityDenials != 0 ||
+		gamma.HostCallMeanSeconds != 0 || gamma.EntryCallP95Seconds != 0 {
+		t.Errorf("gamma zero families = %+v", gamma)
+	}
+}
+
+func TestConsolePluginsNilMetrics(t *testing.T) {
+	h, _, _, _ := testHandler()
+	h.Metrics = nil
+	rr := do(t, adminChain(h), http.MethodGet, "/console/api/plugins")
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("nil metrics registry = %d, want 503", rr.Code)
+	}
+	if !strings.HasPrefix(rr.Header().Get("Content-Type"), "application/json") {
+		t.Errorf("Content-Type = %q, want JSON", rr.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(rr.Body.String(), `"error":"metrics disabled"`) {
 		t.Errorf("body = %s", rr.Body.String())
 	}
 }

@@ -191,6 +191,20 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-25** — Phase 5r: per-plugin metrics panel in the admin console
+  (ADR-0091), closing the ADR-0055 dashboard deferral (except memory
+  high-water, still blocked on wazero introspection). The render-only
+  registry gains a typed read API — `CounterSeries`/`HistogramSeries`
+  snapshots (canonical labels, cumulative buckets ending +Inf, defensive
+  copies) plus `Quantile` with Prometheus `histogram_quantile` interpolation
+  semantics — behind `GET /console/api/plugins`, which aggregates the six
+  per-plugin families into one id-sorted row per plugin: call/error counts
+  summed over function/result/op/scope, latency mean/p50/p95/p99 from the
+  per-function (per-entry) histogram series merged bucket-by-bucket over the
+  single fixed le grid, storage bytes, and capability denials. A nil
+  registry (metrics disabled) answers 503, which the console's new Plugins
+  section renders as a section-body "metrics disabled" message instead of
+  the table. Zero new dependencies.
 - **2026-09-25** — Phase 5q: admin-console surfacing of notifications
   (ADR-0090), closing the ADR-0082 deferral that left notifications visible
   only to their recipient through the OCS bell. `notifications.SQLStore`
