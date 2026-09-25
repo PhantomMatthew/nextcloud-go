@@ -191,6 +191,19 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-25** — Phase 5p: plugin old-version archive GC (ADR-0089),
+  closing the ADR-0056 deferral that kept every superseded
+  `<install_dir>/<id>/<version>.ncplugin` forever. After a successful
+  upgrade install (post-Upsert only, so failed upgrades never lose the
+  still-installed old archive), a best-effort sweep keeps exactly the
+  current and previous archives — the minimal rollback story — and deletes
+  anything strictly older; ReadDir/Remove failures Warn-log and never fail
+  the install. Fresh installs do not sweep, one plugin's GC never touches
+  another's directory, Uninstall still RemoveAlls the whole tree, and a
+  same-version reinstall is a GC no-op so the previous distinct version's
+  archive — the last rollback artifact — survives a routine re-upload,
+  while a downgrade keeps both directions' archives. The directory is now
+  bounded at two files per plugin.
 - **2026-09-25** — Phase 5o: guest entry-point call metrics (ADR-0088),
   closing the ADR-0055 deferral that left only host calls instrumented.
   `Plugin.call` — the single funnel for `Call`, `callEntry`, and the

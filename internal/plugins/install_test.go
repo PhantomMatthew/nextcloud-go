@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -537,4 +538,141 @@ func TestLoadTrustedKeys(t *testing.T) {
 	if _, err := LoadTrustedKeys(dir); !errors.Is(err, ErrSignatureInvalid) {
 		t.Fatalf("err = %v", err)
 	}
+}
+
+// archiveDirNames returns the sorted entry names of one plugin install dir.
+func archiveDirNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	slices.Sort(names)
+	return names
+}
+
+// TestInstallUpgradeArchiveGC proves ADR-0089: each successful upgrade
+// keeps exactly the current and previous archives in <InstallDir>/<id>/,
+// collects anything strictly older, and the registry row points at the new
+// archive file. A same-version reinstall is a GC no-op — the previous
+// distinct version's archive is the last rollback artifact and must
+// survive — and the next real upgrade converges the directory again.
+func TestInstallUpgradeArchiveGC(t *testing.T) {
+	pub, priv, err := GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := testInstaller(t, []ed25519.PublicKey{pub})
+	ctx := context.Background()
+	dir := filepath.Join(in.InstallDir, "com.example.inst")
+
+	for _, version := range []string{"1.0.0", "2.0.0", "3.0.0"} {
+		raw := buildArchive(t, installManifest(version, ""), priv)
+		if _, err := in.Install(ctx, raw, InstallOptions{}); err != nil {
+			t.Fatalf("install %s: %v", version, err)
+		}
+	}
+	if names := archiveDirNames(t, dir); !slices.Equal(names, []string{"2.0.0.ncplugin", "3.0.0.ncplugin"}) {
+		t.Fatalf("dir after v1->v2->v3 = %v", names)
+	}
+	row, err := in.Registry.Get(ctx, "com.example.inst")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.ArchivePath != filepath.Join(dir, "3.0.0.ncplugin") {
+		t.Fatalf("archive path = %q", row.ArchivePath)
+	}
+
+	// Same-version reinstall: GC is a no-op, both archives survive.
+	raw := buildArchive(t, installManifest("3.0.0", ""), priv)
+	if _, err := in.Install(ctx, raw, InstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if names := archiveDirNames(t, dir); !slices.Equal(names, []string{"2.0.0.ncplugin", "3.0.0.ncplugin"}) {
+		t.Fatalf("dir after same-version reinstall = %v", names)
+	}
+
+	// The next real upgrade converges the directory to current+previous.
+	v4 := buildArchive(t, installManifest("4.0.0", ""), priv)
+	if _, err := in.Install(ctx, v4, InstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if names := archiveDirNames(t, dir); !slices.Equal(names, []string{"3.0.0.ncplugin", "4.0.0.ncplugin"}) {
+		t.Fatalf("dir after v4 upgrade = %v", names)
+	}
+}
+
+// TestInstallFreshInstallNoGC pins the GC scope: fresh installs never sweep,
+// and one plugin's install never touches another plugin's directory.
+func TestInstallFreshInstallNoGC(t *testing.T) {
+	pub, priv, err := GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := testInstaller(t, []ed25519.PublicKey{pub})
+	ctx := context.Background()
+
+	for _, version := range []string{"1.0.0", "2.0.0"} {
+		raw := buildArchive(t, installManifest(version, ""), priv)
+		if _, err := in.Install(ctx, raw, InstallOptions{}); err != nil {
+			t.Fatalf("install %s: %v", version, err)
+		}
+	}
+	dirA := filepath.Join(in.InstallDir, "com.example.inst")
+	before := archiveDirNames(t, dirA)
+	if !slices.Equal(before, []string{"1.0.0.ncplugin", "2.0.0.ncplugin"}) {
+		t.Fatalf("plugin A dir = %v", before)
+	}
+
+	manifestB := []byte(strings.Replace(string(installManifest("1.0.0", "")),
+		"com.example.inst", "com.example.other", 1))
+	rawB := buildArchive(t, manifestB, priv)
+	if _, err := in.Install(ctx, rawB, InstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if names := archiveDirNames(t, dirA); !slices.Equal(names, before) {
+		t.Fatalf("plugin A dir changed by B's fresh install: %v -> %v", before, names)
+	}
+	dirB := filepath.Join(in.InstallDir, "com.example.other")
+	if names := archiveDirNames(t, dirB); !slices.Equal(names, []string{"1.0.0.ncplugin"}) {
+		t.Fatalf("plugin B dir = %v", names)
+	}
+}
+
+// TestGCOldArchives sweeps a synthetic directory directly: strictly-older
+// archives go, the keep-set stays, and non-archives and subdirectories are
+// never touched — including a subdirectory with an archive-looking name,
+// which must survive via the IsDir skip. A missing directory is a
+// Warn-and-return, never a panic, even with a nil logger.
+func TestGCOldArchives(t *testing.T) {
+	in := &Installer{Logger: slog.New(slog.DiscardHandler)}
+	dir := t.TempDir()
+	write := func(name string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("1.0.0.ncplugin")
+	write("2.0.0.ncplugin")
+	write("3.0.0.ncplugin")
+	write("notes.txt")
+	if err := os.Mkdir(filepath.Join(dir, "0.9.0.ncplugin"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	in.gcOldArchives(dir, "3.0.0", "2.0.0")
+
+	want := []string{"0.9.0.ncplugin", "2.0.0.ncplugin", "3.0.0.ncplugin", "notes.txt"}
+	if names := archiveDirNames(t, dir); !slices.Equal(names, want) {
+		t.Fatalf("dir = %v, want %v", names, want)
+	}
+
+	in.gcOldArchives(filepath.Join(dir, "nope"), "3.0.0", "2.0.0")
+	(&Installer{}).gcOldArchives(filepath.Join(dir, "nope"), "3.0.0", "2.0.0")
 }

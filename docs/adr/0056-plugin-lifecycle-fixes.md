@@ -122,5 +122,6 @@ A strict review of the Phase 4 plugin stack found three functional gaps:
   `runtime.memory_limit_mb` is validated but not applied (host-global cap
   only), and trap-during-request returns 502 (spec text corrected from
   500).
-- Old-version archives under `<install_dir>/<id>/` are kept after upgrade
-  (pre-existing behavior; potential rollback story, no GC yet).
+- ~~Old-version archives under `<install_dir>/<id>/` are kept after upgrade
+  (pre-existing behavior; potential rollback story, no GC yet).~~
+  (**resolved by ADR-0089**)

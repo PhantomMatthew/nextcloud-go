@@ -208,7 +208,40 @@ func (in *Installer) Install(ctx context.Context, raw []byte, opts InstallOption
 		_ = os.Remove(archivePath)
 		return nil, err
 	}
+	// GC only when the version actually changed: a same-version reinstall
+	// (re-signed/rebuilt archive, same version string) must not delete the
+	// previous distinct version's archive — the last rollback artifact.
+	if upgrade && a.Manifest.Plugin.Version != fromVersion {
+		in.gcOldArchives(dir, a.Manifest.Plugin.Version, fromVersion)
+	}
 	return row, nil
+}
+
+// gcOldArchives removes superseded archives from dir, keeping the
+// current and previous versions (ADR-0089: minimal rollback story).
+// Housekeeping only: failures are Warn-logged, never returned.
+func (in *Installer) gcOldArchives(dir, keepCurrent, keepPrevious string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if in.Logger != nil {
+			in.Logger.Warn("plugins: archive GC read dir failed",
+				slog.String("dir", dir), slog.String("error", err.Error()))
+		}
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".ncplugin") {
+			continue
+		}
+		if name == keepCurrent+".ncplugin" || name == keepPrevious+".ncplugin" {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && in.Logger != nil {
+			in.Logger.Warn("plugins: archive GC remove failed",
+				slog.String("path", filepath.Join(dir, name)), slog.String("error", err.Error()))
+		}
+	}
 }
 
 // Uninstall runs the on_uninstall hook best-effort, then removes everything
