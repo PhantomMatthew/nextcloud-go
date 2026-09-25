@@ -144,7 +144,28 @@
     }
   }
 
-  const loaders = { status: loadStatus, users: loadUsers, jobs: loadJobs };
+  async function loadNotifs() {
+    const data = await loadJSON("/console/api/notifications?limit=50");
+    const tbody = document.querySelector("#notifications-table tbody");
+    tbody.textContent = "";
+    const list = data.notifications || [];
+    if (list.length === 0) emptyRow(tbody.insertRow(), 10, "no notifications");
+    for (const n of list) {
+      const tr = tbody.insertRow();
+      cell(tr, n.id);
+      cell(tr, n.user);
+      cell(tr, n.app);
+      cell(tr, n.object_type);
+      cell(tr, n.object_id);
+      cell(tr, n.subject);
+      cell(tr, n.message);
+      cell(tr, n.link);
+      cell(tr, n.icon);
+      cell(tr, fmtTime(n.created_at));
+    }
+  }
+
+  const loaders = { status: loadStatus, users: loadUsers, jobs: loadJobs, notifications: loadNotifs };
 
   function reload(name) {
     loaders[name]().catch((err) => {
@@ -170,4 +191,5 @@
   reload("status");
   reload("users");
   reload("jobs");
+  reload("notifications");
 })();

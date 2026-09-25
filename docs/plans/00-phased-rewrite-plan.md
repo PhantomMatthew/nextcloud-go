@@ -191,6 +191,16 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-25** — Phase 5q: admin-console surfacing of notifications
+  (ADR-0090), closing the ADR-0082 deferral that left notifications visible
+  only to their recipient through the OCS bell. `notifications.SQLStore`
+  gains `ListRecent(ctx, limit)` — newest-first across all users, reading the
+  denormalized `user_uid` column with no users-table join — behind a narrow
+  `console.NotifsStore` dependency, a read-only `GET
+  /console/api/notifications` endpoint (id, user, app, object type/id,
+  subject, message, link, icon, RFC3339 created_at; rich templates stay out
+  of v1), and a Notifications section in the no-framework console shell
+  following the jobs view's fetch/table/refresh pattern.
 - **2026-09-25** — Phase 5p: plugin old-version archive GC (ADR-0089),
   closing the ADR-0056 deferral that kept every superseded
   `<install_dir>/<id>/<version>.ncplugin` forever. After a successful

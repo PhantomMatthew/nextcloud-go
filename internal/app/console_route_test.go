@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/config"
+	"github.com/PhantomMatthew/nextcloud-go/internal/notifications"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 )
 
@@ -110,5 +111,72 @@ func TestConsoleMounted(t *testing.T) {
 	rr = get("/apps/dashboard", "", "")
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "spa shell") {
 		t.Errorf("catch-all control = %d, want SPA shell 200", rr.Code)
+	}
+}
+
+// TestConsoleNotificationsRoute pins the ADR-0090 wiring: the console
+// notifications endpoint reads the real notifications store through the
+// mounted router, and a seeded row surfaces with the pinned fields.
+func TestConsoleNotificationsRoute(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	cfg := DevConfig()
+	cfg.Database.DSN = "file:ncgo-console-notifs?mode=memory&cache=shared"
+	cfg.Storage.Backends = map[string]config.BackendConfig{
+		"local": {Type: "localfs", Root: t.TempDir()},
+	}
+	a, err := New(ctx, cfg, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Close(ctx) })
+
+	admin, err := a.Users.GetByUID(ctx, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := &notifications.Notification{
+		UserID: admin.ID, App: "files_sharing", UserUID: "admin",
+		ObjectType: "share", ObjectID: "ocinternal:7",
+		Subject: "You received hello.txt as a share by Bob", ShouldNotify: true,
+	}
+	if err := a.notifStore.Insert(ctx, n); err != nil {
+		t.Fatal(err)
+	}
+
+	get := func(uid, pass string) *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/console/api/notifications", nil)
+		if uid != "" {
+			req.SetBasicAuth(uid, pass)
+		}
+		rr := httptest.NewRecorder()
+		a.Handler().ServeHTTP(rr, req)
+		return rr
+	}
+
+	rr := get("admin", "admin")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin api notifications = %d %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	for _, want := range []string{`"user":"admin"`, `"app":"files_sharing"`, `"object_id":"ocinternal:7"`, "hello.txt"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q: %s", want, body)
+		}
+	}
+
+	// The gate still applies on the new path: anonymous 401, non-admin 403.
+	if rr := get("", ""); rr.Code != http.StatusUnauthorized {
+		t.Errorf("anonymous api notifications = %d, want 401", rr.Code)
+	}
+	hash, err := a.hasher.Hash("bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Users.Create(ctx, &users.User{UID: "bob", DisplayName: "Bob", PasswordHash: hash, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if rr := get("bob", "bob"); rr.Code != http.StatusForbidden {
+		t.Errorf("bob api notifications = %d, want 403", rr.Code)
 	}
 }

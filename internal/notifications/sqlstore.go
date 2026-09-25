@@ -136,6 +136,51 @@ func (s *SQLStore) ListETag(ctx context.Context, userID int64) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// ListRecent returns up to limit notifications across all users ordered by
+// id DESC — newest first. The admin console notifications view reads it; a
+// limit <= 0 selects the default page size. user_uid is a stored column, so
+// no users-table join is needed.
+func (s *SQLStore) ListRecent(ctx context.Context, limit int) ([]Notification, error) {
+	if s == nil {
+		return nil, fmt.Errorf("notifications: nil store")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT id, user_id, app, user_uid, object_type, object_id, subject, subject_rich, subject_rich_parameters,
+       message, message_rich, message_rich_parameters, link, icon, should_notify, created_at
+FROM notifications
+ORDER BY id DESC
+LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("notifications: list recent: %w", err)
+	}
+	out, scanErr := scanNotifications(rows)
+	if cerr := rows.Close(); cerr != nil && scanErr == nil {
+		scanErr = fmt.Errorf("notifications: list recent close: %w", cerr)
+	}
+	if scanErr != nil {
+		return nil, scanErr
+	}
+	return out, nil
+}
+
+func scanNotifications(rows database.Rows) ([]Notification, error) {
+	var out []Notification
+	for rows.Next() {
+		n, err := scanNotification(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("notifications: scan: %w", err)
+	}
+	return out, nil
+}
+
 type scanner interface {
 	Scan(dest ...any) error
 }

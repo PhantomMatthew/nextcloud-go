@@ -14,6 +14,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/config"
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
 	"github.com/PhantomMatthew/nextcloud-go/internal/jobs"
+	"github.com/PhantomMatthew/nextcloud-go/internal/notifications"
 	"github.com/PhantomMatthew/nextcloud-go/internal/status"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 	"github.com/PhantomMatthew/nextcloud-go/internal/version"
@@ -38,6 +39,11 @@ type JobsStore interface {
 	ListRecent(ctx context.Context, limit int) ([]jobs.Row, error)
 }
 
+// NotifsStore is the notifications.SQLStore read subset the console needs.
+type NotifsStore interface {
+	ListRecent(ctx context.Context, limit int) ([]notifications.Notification, error)
+}
+
 // DBProbe reports database health for the status view (database.DB).
 type DBProbe interface {
 	Ping(ctx context.Context) error
@@ -45,11 +51,12 @@ type DBProbe interface {
 }
 
 // Handler serves the embedded admin console: the page and its two assets,
-// plus the three read-only JSON endpoints the page renders. All routes are
+// plus the four read-only JSON endpoints the page renders. All routes are
 // GET/HEAD; anything else answers 405.
 type Handler struct {
 	Users      UserStore
 	Jobs       JobsStore
+	Notifs     NotifsStore
 	DB         DBProbe
 	Cfg        *config.Config
 	InstanceID string
@@ -57,7 +64,8 @@ type Handler struct {
 }
 
 // ServeHTTP dispatches the console namespace: the shell at /console and
-// /console/, the two embedded assets, and /console/api/{status,users,jobs}.
+// /console/, the two embedded assets, and
+// /console/api/{status,users,jobs,notifications}.
 // Any other /console/* path 404s — there is no SPA fallback here.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -78,6 +86,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveUsers(w, r)
 	case "/console/api/jobs":
 		h.serveJobs(w, r)
+	case "/console/api/notifications":
+		h.serveNotifications(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -277,6 +287,56 @@ func (h *Handler) serveJobs(w http.ResponseWriter, r *http.Request) {
 			LastError:   row.LastError,
 			Attempts:    row.Attempts,
 			State:       jobState(row),
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+type notifsPayload struct {
+	Notifications []notifInfo `json:"notifications"`
+}
+
+type notifInfo struct {
+	ID         int64  `json:"id"`
+	User       string `json:"user"`
+	App        string `json:"app"`
+	ObjectType string `json:"object_type"`
+	ObjectID   string `json:"object_id"`
+	Subject    string `json:"subject"`
+	Message    string `json:"message"`
+	Link       string `json:"link"`
+	Icon       string `json:"icon"`
+	CreatedAt  string `json:"created_at"`
+}
+
+// serveNotifications lists the newest notifications across all users — the
+// instance-wide audit view (ADR-0090). Rich subject/message fields are
+// deliberately omitted in v1: the shell renders plain text, so the rendered
+// subject/message columns carry the audit need.
+func (h *Handler) serveNotifications(w http.ResponseWriter, r *http.Request) {
+	if h.Notifs == nil {
+		writeError(w, r, "notifications store unavailable")
+		return
+	}
+	limit, _ := pageParams(r)
+	items, err := h.Notifs.ListRecent(r.Context(), limit)
+	if err != nil {
+		writeError(w, r, "notification list failed")
+		return
+	}
+	out := notifsPayload{Notifications: make([]notifInfo, 0, len(items))}
+	for _, n := range items {
+		out.Notifications = append(out.Notifications, notifInfo{
+			ID:         n.ID,
+			User:       n.UserUID,
+			App:        n.App,
+			ObjectType: n.ObjectType,
+			ObjectID:   n.ObjectID,
+			Subject:    n.Subject,
+			Message:    n.Message,
+			Link:       n.Link,
+			Icon:       n.Icon,
+			CreatedAt:  n.CreatedAt.UTC().Format(time.RFC3339),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

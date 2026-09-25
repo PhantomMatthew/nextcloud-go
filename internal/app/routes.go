@@ -228,6 +228,7 @@ func (a *App) mountRoutes() error {
 	consoleHandler := &console.Handler{
 		Users:      a.Users,
 		Jobs:       a.jobsStore,
+		Notifs:     a.notifStore,
 		DB:         a.DB,
 		Cfg:        a.Cfg,
 		InstanceID: a.instanceID,

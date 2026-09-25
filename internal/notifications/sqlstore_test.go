@@ -129,6 +129,61 @@ func TestSQLStore_DeleteByObject(t *testing.T) {
 	}
 }
 
+func TestSQLStore_ListRecent(t *testing.T) {
+	ctx := t.Context()
+	db := testDB(t)
+	us := users.NewSQLStore(db)
+	alice := &users.User{UID: "alice", DisplayName: "Alice", PasswordHash: "x", Enabled: true}
+	if err := us.Create(ctx, alice); err != nil {
+		t.Fatal(err)
+	}
+	bob := &users.User{UID: "bob", DisplayName: "Bob", PasswordHash: "x", Enabled: true}
+	if err := us.Create(ctx, bob); err != nil {
+		t.Fatal(err)
+	}
+	store := NewSQLStore(db)
+
+	got, err := store.ListRecent(ctx, 0)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("empty store list recent = %v %v", got, err)
+	}
+
+	seed := func(userID int64, uid, subject string) *Notification {
+		n := &Notification{UserID: userID, App: "files_sharing", UserUID: uid, ObjectType: "share", ObjectID: "ocinternal:" + subject, Subject: subject, ShouldNotify: true}
+		if err := store.Insert(ctx, n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	a1 := seed(alice.ID, "alice", "a1")
+	b1 := seed(bob.ID, "bob", "b1")
+	a2 := seed(alice.ID, "alice", "a2")
+
+	// Newest first across users; the uid rides the stored column.
+	got, err = store.ListRecent(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0].ID != a2.ID || got[1].ID != b1.ID || got[2].ID != a1.ID {
+		t.Fatalf("order = %+v", got)
+	}
+	if got[0].UserUID != "alice" || got[1].UserUID != "bob" {
+		t.Errorf("uids = %+v", got)
+	}
+
+	got, err = store.ListRecent(ctx, 2)
+	if err != nil || len(got) != 2 || got[0].ID != a2.ID || got[1].ID != b1.ID {
+		t.Fatalf("limit honored = %+v %v", got, err)
+	}
+}
+
+func TestSQLStore_ListRecentNilStore(t *testing.T) {
+	var store *SQLStore
+	if _, err := store.ListRecent(t.Context(), 0); err == nil {
+		t.Fatal("nil store must error")
+	}
+}
+
 func TestHandler_ListGetDeleteAndETag(t *testing.T) {
 	ctx := t.Context()
 	db := testDB(t)

@@ -14,6 +14,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/config"
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
 	"github.com/PhantomMatthew/nextcloud-go/internal/jobs"
+	"github.com/PhantomMatthew/nextcloud-go/internal/notifications"
 	"github.com/PhantomMatthew/nextcloud-go/internal/status"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 )
@@ -55,6 +56,16 @@ func (f *fakeJobsStore) ListRecent(_ context.Context, limit int) ([]jobs.Row, er
 	return f.rows, nil
 }
 
+type fakeNotifsStore struct {
+	items    []notifications.Notification
+	gotLimit int
+}
+
+func (f *fakeNotifsStore) ListRecent(_ context.Context, limit int) ([]notifications.Notification, error) {
+	f.gotLimit = limit
+	return f.items, nil
+}
+
 type fakeDBProbe struct {
 	dialect database.Dialect
 	pingErr error
@@ -63,7 +74,7 @@ type fakeDBProbe struct {
 func (f fakeDBProbe) Ping(_ context.Context) error { return f.pingErr }
 func (f fakeDBProbe) Dialect() database.Dialect    { return f.dialect }
 
-func testHandler() (*Handler, *fakeUserStore, *fakeJobsStore) {
+func testHandler() (*Handler, *fakeUserStore, *fakeJobsStore, *fakeNotifsStore) {
 	quota := int64(1073741824)
 	fu := &fakeUserStore{
 		total: 2,
@@ -78,10 +89,23 @@ func testHandler() (*Handler, *fakeUserStore, *fakeJobsStore) {
 		{ID: 2, Name: "running.job", RunAt: jobRunAtMs, StartedAt: jobRunAtMs},
 		{ID: 1, Name: "queued.job", RunAt: jobRunAtMs},
 	}}
+	fn := &fakeNotifsStore{items: []notifications.Notification{
+		{
+			ID: 2, UserID: 2, App: "files_sharing", UserUID: "bob", ObjectType: "share", ObjectID: "ocinternal:9",
+			Subject: "You received b.txt as a share by Alice", ShouldNotify: true,
+			CreatedAt: time.UnixMilli(jobRunAtMs + 1000).UTC(),
+		},
+		{
+			ID: 1, UserID: 1, App: "files_sharing", UserUID: "alice", ObjectType: "share", ObjectID: "ocinternal:7",
+			Subject: "You received a.txt as a share by Bob", Message: "hello", Link: "https://example.com/f/7", Icon: "icon.svg",
+			ShouldNotify: true, CreatedAt: time.UnixMilli(jobRunAtMs).UTC(),
+		},
+	}}
 	h := &Handler{
-		Users: fu,
-		Jobs:  fj,
-		DB:    fakeDBProbe{dialect: database.DialectSQLite},
+		Users:  fu,
+		Jobs:   fj,
+		Notifs: fn,
+		DB:     fakeDBProbe{dialect: database.DialectSQLite},
 		Cfg: &config.Config{
 			Storage: config.StorageConfig{
 				DefaultBackend: "local",
@@ -96,7 +120,7 @@ func testHandler() (*Handler, *fakeUserStore, *fakeJobsStore) {
 		InstanceID: "octestinstance",
 		Status:     status.Provider{Installed: true},
 	}
-	return h, fu, fj
+	return h, fu, fj, fn
 }
 
 // gated wraps the handler the way mountRoutes does: an injected (or absent)
@@ -125,7 +149,7 @@ func do(t *testing.T, h http.Handler, method, path string) *httptest.ResponseRec
 }
 
 func TestConsoleAuthGate(t *testing.T) {
-	h, _, _ := testHandler()
+	h, _, _, _ := testHandler()
 	tests := []struct {
 		name       string
 		chain      http.Handler
@@ -184,7 +208,7 @@ func TestConsoleAuthGate(t *testing.T) {
 }
 
 func TestConsoleHeadAsset(t *testing.T) {
-	h, _, _ := testHandler()
+	h, _, _, _ := testHandler()
 	rr := do(t, adminChain(h), http.MethodHead, "/console/console.js")
 	if rr.Code != http.StatusOK {
 		t.Fatalf("HEAD = %d", rr.Code)
@@ -195,7 +219,7 @@ func TestConsoleHeadAsset(t *testing.T) {
 }
 
 func TestConsoleAuthMiddleware(t *testing.T) {
-	h, _, _ := testHandler()
+	h, _, _, _ := testHandler()
 	// No verifiers configured: every request fails authentication and the
 	// console failure writer answers — JSON on api paths, login-link HTML
 	// on the page, never an empty WebDAV-style challenge.
@@ -230,7 +254,7 @@ func (v okVerifier) Verify(_ context.Context, uid, _ string) (*auth.Principal, e
 }
 
 func TestConsoleStatus(t *testing.T) {
-	h, _, _ := testHandler()
+	h, _, _, _ := testHandler()
 	rr := do(t, adminChain(h), http.MethodGet, "/console/api/status")
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d", rr.Code)
@@ -282,7 +306,7 @@ func TestConsoleStatus(t *testing.T) {
 }
 
 func TestConsoleUsersPagination(t *testing.T) {
-	h, fu, _ := testHandler()
+	h, fu, _, _ := testHandler()
 	tests := []struct {
 		query      string
 		wantLimit  int
@@ -310,7 +334,7 @@ func TestConsoleUsersPagination(t *testing.T) {
 }
 
 func TestConsoleUsersPayload(t *testing.T) {
-	h, _, _ := testHandler()
+	h, _, _, _ := testHandler()
 	rr := do(t, adminChain(h), http.MethodGet, "/console/api/users")
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d", rr.Code)
@@ -339,7 +363,7 @@ func TestConsoleUsersPayload(t *testing.T) {
 }
 
 func TestConsoleJobsPayload(t *testing.T) {
-	h, _, fj := testHandler()
+	h, _, fj, _ := testHandler()
 	rr := do(t, adminChain(h), http.MethodGet, "/console/api/jobs")
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d", rr.Code)
@@ -390,6 +414,68 @@ func TestConsoleJobsPayload(t *testing.T) {
 	rr = do(t, adminChain(h), http.MethodGet, "/console/api/jobs?limit=5")
 	if fj.gotLimit != 5 || rr.Code != http.StatusOK {
 		t.Errorf("jobs?limit=5: gotLimit = %d, status = %d", fj.gotLimit, rr.Code)
+	}
+}
+
+func TestConsoleNotifsPayload(t *testing.T) {
+	h, _, _, fn := testHandler()
+	rr := do(t, adminChain(h), http.MethodGet, "/console/api/notifications")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	if fn.gotLimit != 50 {
+		t.Errorf("notifications limit = %d, want default 50", fn.gotLimit)
+	}
+	var p struct {
+		Notifications []struct {
+			ID         int64  `json:"id"`
+			User       string `json:"user"`
+			App        string `json:"app"`
+			ObjectType string `json:"object_type"`
+			ObjectID   string `json:"object_id"`
+			Subject    string `json:"subject"`
+			Message    string `json:"message"`
+			Link       string `json:"link"`
+			Icon       string `json:"icon"`
+			CreatedAt  string `json:"created_at"`
+		} `json:"notifications"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &p); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Notifications) != 2 {
+		t.Fatalf("notifications = %+v", p.Notifications)
+	}
+	first := p.Notifications[0]
+	if first.ID != 2 || first.User != "bob" || first.App != "files_sharing" ||
+		first.ObjectType != "share" || first.ObjectID != "ocinternal:9" ||
+		first.Subject != "You received b.txt as a share by Alice" {
+		t.Errorf("first = %+v", first)
+	}
+	if first.CreatedAt != "2025-05-01T12:00:01Z" {
+		t.Errorf("created_at = %q", first.CreatedAt)
+	}
+	second := p.Notifications[1]
+	if second.ID != 1 || second.User != "alice" || second.Message != "hello" ||
+		second.Link != "https://example.com/f/7" || second.Icon != "icon.svg" {
+		t.Errorf("second = %+v", second)
+	}
+
+	rr = do(t, adminChain(h), http.MethodGet, "/console/api/notifications?limit=5")
+	if fn.gotLimit != 5 || rr.Code != http.StatusOK {
+		t.Errorf("notifications?limit=5: gotLimit = %d, status = %d", fn.gotLimit, rr.Code)
+	}
+}
+
+func TestConsoleNotifsNilStore(t *testing.T) {
+	h, _, _, _ := testHandler()
+	h.Notifs = nil
+	rr := do(t, adminChain(h), http.MethodGet, "/console/api/notifications")
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("nil notifs store = %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), `"error"`) || !strings.Contains(rr.Body.String(), "notifications store unavailable") {
+		t.Errorf("body = %s", rr.Body.String())
 	}
 }
 

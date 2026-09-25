@@ -90,9 +90,10 @@ DAV sharing backends implement.
   notifications outage degrades to missing bells, never to failed shares.
 - Group-join backfill (NC's `userAddedToGroup` listener) is deferred: ncgo
   group membership changes are CLI/import-driven today; revisit if a
-  group-membership API ships. Remote-share notifications (OCM subjects) and
+  group-membership API ships. Remote-share notifications (OCM subjects) ~~and
   admin-console surfacing of notifications (the Phase 5h console could list
-  them later) are likewise deferred.
+  them later)~~ (**console surfacing resolved by ADR-0090**) are likewise
+  deferred.
 
 ## Verification
 
