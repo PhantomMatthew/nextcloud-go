@@ -61,7 +61,7 @@ type App struct {
 	tracing    *sdktrace.TracerProvider
 
 	hasher        auth.PasswordHasher
-	authStore     auth.Store
+	authStore     *auth.SQLStore
 	loginStore    login.Store
 	sessions      session.Store
 	keyResolver   *encrypt.SQLResolver
@@ -206,6 +206,12 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		return nil, err
 	}
 	a.keyResolver = keyResolver
+	// ADR-0102: revoking an app password also deletes its key wrap. The hook
+	// is best-effort (a failure never fails the delete; reconcile's orphan
+	// purge is the safety net), wired only when the resolver exists.
+	if keyResolver != nil {
+		a.authStore.TokenKeys = keyResolver
+	}
 	meta := files.NewSQLStore(db)
 	a.fileMeta = meta
 	bus := events.NewBus(logger)

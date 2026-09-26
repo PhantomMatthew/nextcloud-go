@@ -191,6 +191,33 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-26** — Phase 5w-4b: SSE **app-token key wraps** (ADR-0102),
+  delivering ADR-0100's phase 4-b: app-password/bearer clients of enrolled
+  users unlock files again (4-a left them at per-file `ErrKeyLocked` →
+  403). Migration 0022 (three dialects: `app_token_keys`, id column
+  mirroring `app_passwords.id`, no FK — explicit-lifecycle convention);
+  the `NCGOAK1` construction byte-exact per ADR-0100 §3 (HKDF-SHA256 token
+  KEK, 16 B salt, 60 B AES-256-GCM blob — the raw token is never stored);
+  wrap-at-issuance in the login-v2 grant (the `AppPasswordIssuer.Issue`
+  signature widens to return the token id — `web` and `ocs` — and a wrap
+  failure fails the grant loudly, 500); per-request verifier unlock through
+  the structural `auth.AppTokenKeyUnlocker` seam on BOTH the app-password
+  verifier (one lookup by the matched row's stored hash) and the bearer
+  verifier (cache-hit AND miss paths, primary-then-legacy two-call
+  fallback), fail-closed on corruption exactly like the 4-a session copy;
+  **no KEK cache** (ADR-0100 §7 parenthetical strike-annotated — HKDF is
+  µs; a key-material cache adds exposure surface); cryptographic revocation
+  via the best-effort `auth.TokenKeysHook` on `SQLStore.DeleteByHash`
+  (reconcile's new orphan purge is the safety net); purge coverage from
+  every direction (unenroll, `DestroyEnrollment`, `OnUserDeleted`, and
+  `PruneStaleKeys` — now returning `PruneStats` with the token-wrap count);
+  `encryption status` gains `app token key wraps: N` and the
+  unwrapped-enrolled-token warning with the re-issue remedy; BrowserLogin
+  inheritance (an app-password form login whose token holds a wrap gets the
+  key sealed onto the new session); imported tokens documented as wrap-less
+  (re-issue after import). Pre-enrollment and OCS-issued tokens
+  authenticate but cannot unlock files until re-issued from a password
+  login. Zero new dependencies.
 - **2026-09-26** — Phase 5w-4a: SSE password-wrapped user keys —
   **enrollment + identity path** (ADR-0101), delivering ADR-0100's phase
   4-a and recording two implementation refinements (strike-annotated

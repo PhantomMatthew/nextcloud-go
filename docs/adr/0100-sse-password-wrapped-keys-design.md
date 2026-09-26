@@ -219,8 +219,10 @@ symmetric (`scheme = 0`), delete the `user_key_pw` row.
   App passwords are issued inside an unlocked browser session (login-v2
   grant) with the raw token in hand: seal the private key under the
   token KEK (§3) into `app_token_keys`. The app-password verifier unwraps
-  per request (bounded in-memory KEK cache keyed by token hash) and
-  attaches the key to the Principal — DAV clients keep working for
+  per request ~~(bounded in-memory KEK cache keyed by token hash)~~
+  (**refined by ADR-0102**: no KEK cache — HKDF derive+open per request is
+  microseconds, and a long-lived key-material cache adds exposure surface)
+  and attaches the key to the Principal — DAV clients keep working for
   enrolled users. Revoking the token deletes its wrap row: cryptographic
   revocation. Tokens issued BEFORE enrollment hold no wrap; those
   clients fail loudly until the token is re-issued (documented).

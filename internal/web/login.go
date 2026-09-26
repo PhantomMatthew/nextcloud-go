@@ -19,8 +19,8 @@ import (
 const LoginNonceCookie = "ncgo_login_nonce"
 
 // LoginKeyHandler is the password-wrapped-keys seam of the login handlers
-// (ADR-0100): *encrypt.SQLResolver satisfies it structurally; web must not
-// import encrypt. Nil-ok on both handlers.
+// (ADR-0100, extended by ADR-0102): *encrypt.SQLResolver satisfies it
+// structurally; web must not import encrypt. Nil-ok on both handlers.
 type LoginKeyHandler interface {
 	// UnlockForLogin runs the enrollment state machine at a password login
 	// and returns the user's unlocked private key (nil when the user is
@@ -29,6 +29,10 @@ type LoginKeyHandler interface {
 	// SealSessionKey seals an unlocked private key for storage on a session
 	// row.
 	SealSessionKey(priv []byte, sessionID string) ([]byte, error)
+	// WrapKeyForToken seals an unlocked private key under a newly issued app
+	// password's raw token (ADR-0102 wrap-at-issuance), so the token's
+	// requests can unlock files.
+	WrapKeyForToken(ctx context.Context, appPasswordID, tokenRaw string, priv []byte) error
 }
 
 // BrowserLogin serves the SPA's browser form login and logout:
@@ -43,7 +47,9 @@ type BrowserLogin struct {
 	Now        func() time.Time
 	After      func(time.Duration)
 	// Keys, when non-nil, enrolls/unlocks password-wrapped keys at basic
-	// logins and stores the sealed key copy on the new session (ADR-0100).
+	// logins and stores the sealed key copy on the new session (ADR-0100);
+	// a verifier-attached key (app-password login whose token holds a wrap,
+	// ADR-0102) is sealed onto the session the same way.
 	Keys LoginKeyHandler
 }
 
@@ -87,6 +93,14 @@ func (h *BrowserLogin) HandleLogin(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "login key unlock failed", http.StatusInternalServerError)
 			return
 		}
+	}
+	// ADR-0102: an app-password form login whose token holds a key wrap
+	// arrives with the unlocked key attached by the chain verifier — the new
+	// session inherits it, sealed onto the session row exactly like a
+	// password-unlocked key. (Both key sources exist only when key handling
+	// is wired, so priv implies h.Keys non-nil.)
+	if priv == nil {
+		priv = principal.UnlockedKey
 	}
 	u, err := h.Users.GetByUID(r.Context(), principal.UID)
 	if err != nil {

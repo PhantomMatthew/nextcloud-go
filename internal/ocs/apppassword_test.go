@@ -21,9 +21,9 @@ type stubIssuer struct {
 	gotUID     string
 }
 
-func (s *stubIssuer) Issue(r *http.Request, p *auth.Principal) (string, error) {
+func (s *stubIssuer) Issue(r *http.Request, p *auth.Principal) (string, string, error) {
 	s.gotUID = p.UID
-	return s.issueToken, s.issueErr
+	return s.issueToken, "tok-id", s.issueErr
 }
 
 func (s *stubIssuer) Revoke(r *http.Request, p *auth.Principal, raw string) error {

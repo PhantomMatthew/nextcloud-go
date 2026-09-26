@@ -120,9 +120,22 @@ func hashTokenLegacy(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// AppTokenKeyUnlocker opens an app-password token's wrap of the user's
+// X25519 private key (ADR-0102 app-token key wraps). *encrypt.SQLResolver
+// satisfies it structurally; auth must not import encrypt, so the seam is
+// declared here. A nil return means the token carries no wrap
+// (pre-enrollment or imported token) and the request attaches no key.
+type AppTokenKeyUnlocker interface {
+	UnlockForToken(ctx context.Context, tokenHash, tokenRaw string) ([]byte, error)
+}
+
 type AppPasswordVerifier struct {
 	Store  Store
 	Secret string
+	// Keys, when non-nil, opens the verified token's key wrap and attaches
+	// the unlocked private key to the Principal (ADR-0102). Nil-ok: no key
+	// attach, phase 4-a behavior.
+	Keys AppTokenKeyUnlocker
 }
 
 func NewAppPasswordVerifier(store Store, secret string) *AppPasswordVerifier {
@@ -153,11 +166,23 @@ func (v *AppPasswordVerifier) Verify(ctx context.Context, user, password string)
 		}
 	}
 
-	return &Principal{
+	p := &Principal{
 		UID:        t.UID,
 		Enabled:    true,
 		AuthMethod: AuthMethodAppPassword,
-	}, nil
+	}
+	if v.Keys != nil {
+		// t.Hash is the row's stored hash — it matches whichever of the
+		// primary/legacy lookups above found the row, so one wrap lookup
+		// suffices. Fail closed: a corrupt wrap must not silently degrade to
+		// per-file 403s (mirroring the 4-a session-copy semantics).
+		priv, err := v.Keys.UnlockForToken(ctx, t.Hash, password)
+		if err != nil {
+			return nil, err
+		}
+		p.UnlockedKey = priv
+	}
+	return p, nil
 }
 
 func IssueAppPassword(ctx context.Context, store Store, secret, uid, loginName, name string, tokenType int) (string, *Token, error) {

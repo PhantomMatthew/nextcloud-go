@@ -28,8 +28,9 @@ func (r *SQLResolver) OnUserCreated(ctx context.Context, uid string) error {
 }
 
 // OnUserDeleted purges the deleted user's per-user key rows (ADR-0099): the
-// UK row, every wrap row the user holds, and any password-wrapped enrollment
-// row (ADR-0101), theirs alone. Wrap rows of OTHER users and files.key_uuid
+// UK row, every wrap row the user holds, any password-wrapped enrollment row
+// (ADR-0101), and every app_token_keys wrap of the user's tokens (ADR-0102),
+// theirs alone. Wrap rows of OTHER users and files.key_uuid
 // are untouched — sealed files a deleted user still owned become
 // unresolvable, the same operator territory as users.SQLStore.Delete's
 // "files are not cascaded" warning. An unknown uid is a no-op (mirrors
@@ -52,7 +53,7 @@ func (r *SQLResolver) OnUserDeleted(ctx context.Context, uid string) error {
 	if _, err := r.db.Exec(ctx, `DELETE FROM user_key_pw WHERE user_id = ?`, userID); err != nil {
 		return fmt.Errorf("encrypt: delete enrollment for user %d: %w", userID, err)
 	}
-	return nil
+	return r.deleteTokenWrapsForUser(ctx, userID)
 }
 
 // ResealUserKeys re-seals every UK row not sealed under the current ring
@@ -110,31 +111,53 @@ UPDATE user_keys SET sealed_uk = ?, key_id = ? WHERE user_id = ?`, sealed, curre
 	return resealed, nil
 }
 
+// PruneStats reports how many rows PruneStaleKeys deleted per table.
+type PruneStats struct {
+	UserKeys  int // user_keys rows whose user is gone
+	FileKeys  int // file_keys rows whose user is gone
+	TokenKeys int // app_token_keys rows whose app password is gone (ADR-0102)
+}
+
 // PruneStaleKeys deletes key rows whose owning user no longer exists — the
 // repair half of OnUserDeleted, catching deletions that ran without the
 // hook (imports, raw SQL, crashes between the row delete and the hook,
-// ADR-0099). It reports the rows affected per table.
-func (r *SQLResolver) PruneStaleKeys(ctx context.Context) (userKeys, fileKeys int, err error) {
+// ADR-0099) — plus app_token_keys rows whose app password no longer exists
+// (ADR-0102: revoked tokens whose best-effort hook failed, and app_passwords
+// rows cascade-deleted with their user). It reports the rows affected per
+// table.
+func (r *SQLResolver) PruneStaleKeys(ctx context.Context) (PruneStats, error) {
+	var stats PruneStats
 	res, err := r.db.Exec(ctx, `
 DELETE FROM user_keys WHERE user_id NOT IN (SELECT id FROM users)`)
 	if err != nil {
-		return 0, 0, fmt.Errorf("encrypt: prune stale user keys: %w", err)
+		return stats, fmt.Errorf("encrypt: prune stale user keys: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return 0, 0, fmt.Errorf("encrypt: prune stale user keys: %w", err)
+		return stats, fmt.Errorf("encrypt: prune stale user keys: %w", err)
 	}
-	userKeys = int(n)
+	stats.UserKeys = int(n)
 	res, err = r.db.Exec(ctx, `
 DELETE FROM file_keys WHERE user_id NOT IN (SELECT id FROM users)`)
 	if err != nil {
-		return 0, 0, fmt.Errorf("encrypt: prune stale file keys: %w", err)
+		return stats, fmt.Errorf("encrypt: prune stale file keys: %w", err)
 	}
 	n, err = res.RowsAffected()
 	if err != nil {
-		return 0, 0, fmt.Errorf("encrypt: prune stale file keys: %w", err)
+		return stats, fmt.Errorf("encrypt: prune stale file keys: %w", err)
 	}
-	return userKeys, int(n), nil
+	stats.FileKeys = int(n)
+	res, err = r.db.Exec(ctx, `
+DELETE FROM app_token_keys WHERE app_password_id NOT IN (SELECT id FROM app_passwords)`)
+	if err != nil {
+		return stats, fmt.Errorf("encrypt: prune stale token key wraps: %w", err)
+	}
+	n, err = res.RowsAffected()
+	if err != nil {
+		return stats, fmt.Errorf("encrypt: prune stale token key wraps: %w", err)
+	}
+	stats.TokenKeys = int(n)
+	return stats, nil
 }
 
 // MintMissingUserKeys mints a UK for every user who has none — the backfill
@@ -186,11 +209,18 @@ type KeyInventory struct {
 	StaleWraps       int64 // file_keys rows whose user is gone
 	V3Files          int64 // files rows with a key UUID
 	BrokenV3Files    int64 // v3 files with no owner wrap row (unreadable)
+	// TokenWraps counts app_token_keys rows (ADR-0102 app-token key wraps).
+	TokenWraps int64
+	// UnwrappedEnrolledTokens counts app passwords of ENROLLED users with no
+	// app_token_keys row — pre-enrollment, imported, or OCS-issued tokens
+	// that authenticate but cannot unlock files until re-issued.
+	UnwrappedEnrolledTokens int64
 }
 
 // Inventory computes the KeyInventory against the live database. All queries
-// are dialect-agnostic (placeholders, NOT IN, NOT EXISTS); the enrollment
-// counts read migration 0021's user_key_pw and file_keys.scheme (ADR-0101).
+// are dialect-agnostic (placeholders, JOIN, NOT IN, NOT EXISTS); the
+// enrollment counts read migration 0021's user_key_pw and file_keys.scheme
+// (ADR-0101), the token counts migration 0022's app_token_keys (ADR-0102).
 func (r *SQLResolver) Inventory(ctx context.Context) (KeyInventory, error) {
 	var inv KeyInventory
 	current := len(r.keys) - 1
@@ -211,6 +241,9 @@ func (r *SQLResolver) Inventory(ctx context.Context) (KeyInventory, error) {
 		{`SELECT COUNT(*) FROM files WHERE key_uuid IS NOT NULL`, nil, &inv.V3Files},
 		{`SELECT COUNT(*) FROM files f WHERE f.key_uuid IS NOT NULL AND NOT EXISTS (
 	SELECT 1 FROM file_keys k WHERE k.key_uuid = f.key_uuid AND k.user_id = f.user_id)`, nil, &inv.BrokenV3Files},
+		{`SELECT COUNT(*) FROM app_token_keys`, nil, &inv.TokenWraps},
+		{`SELECT COUNT(*) FROM app_passwords p JOIN user_key_pw e ON e.user_id = p.user_id
+	WHERE NOT EXISTS (SELECT 1 FROM app_token_keys k WHERE k.app_password_id = p.id)`, nil, &inv.UnwrappedEnrolledTokens},
 	}
 	for _, q := range queries {
 		if err := r.db.QueryRow(ctx, q.q, q.args...).Scan(q.dst); err != nil {

@@ -18,7 +18,10 @@ import (
 const wwwAuthenticateValue = `Basic realm="Authorisation Required"`
 
 type AppPasswordIssuer interface {
-	Issue(r *http.Request, principal *auth.Principal) (string, error)
+	// Issue mints a permanent app password for the principal, returning the
+	// raw token (shown to the client once) and the token id (naming the
+	// app_passwords row — the ADR-0102 key wrap keys off it).
+	Issue(r *http.Request, principal *auth.Principal) (raw, tokenID string, err error)
 }
 
 type LoginV2 struct {
@@ -34,7 +37,8 @@ type LoginV2 struct {
 	Now        func() time.Time
 	// Keys, when non-nil, unlocks password-wrapped keys at basic-authenticated
 	// grant requests and copies the key onto the session the grant issues
-	// (ADR-0100).
+	// (ADR-0100), and wraps the unlocked key under a newly issued app
+	// password's token (ADR-0102).
 	Keys LoginKeyHandler
 }
 
@@ -196,10 +200,24 @@ func (h *LoginV2) HandleGrant(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid or expired flow", http.StatusNotFound)
 		return
 	}
-	appPassword, err := h.Issuer.Issue(r, principal)
+	appPassword, tokenID, err := h.Issuer.Issue(r, principal)
 	if err != nil {
 		http.Error(w, "failed to issue app password", http.StatusInternalServerError)
 		return
+	}
+	// Wrap-at-issuance (ADR-0102): when the authenticating principal carries
+	// an unlocked key (a basic-authenticated grant of an enrolled user,
+	// unlocked at requireAuth), seal it under the new token so the token's
+	// requests can unlock files. A wrap failure fails the grant LOUDLY — a
+	// silently unwrapped token would 403 every file. With no unlocked key
+	// (an app-password-authenticated grant, or an unenrolled user) there is
+	// nothing to wrap: the token authenticates but cannot unlock files until
+	// it is re-issued from a password login.
+	if principal.UnlockedKey != nil && h.Keys != nil {
+		if err := h.Keys.WrapKeyForToken(r.Context(), tokenID, appPassword, principal.UnlockedKey); err != nil {
+			http.Error(w, "app password key wrap failed", http.StatusInternalServerError)
+			return
+		}
 	}
 	server := h.BaseURL(r)
 	if _, err := h.Service.Grant(r.Context(), stateToken, server, principal.UID, appPassword); err != nil {

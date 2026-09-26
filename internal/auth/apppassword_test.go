@@ -168,3 +168,106 @@ func TestChainVerifier_Empty(t *testing.T) {
 		t.Fatalf("empty chain: want ErrInvalidCredentials, got %v", err)
 	}
 }
+
+// stubTokenKeys is an AppTokenKeyUnlocker fake recording its calls and
+// answering per stored hash.
+type stubTokenKeys struct {
+	calls  [][2]string
+	byHash map[string][]byte
+	err    error
+}
+
+func (s *stubTokenKeys) UnlockForToken(_ context.Context, tokenHash, tokenRaw string) ([]byte, error) {
+	s.calls = append(s.calls, [2]string{tokenHash, tokenRaw})
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.byHash[tokenHash], nil
+}
+
+// TestAppPasswordVerifierAttachesTokenKey pins the ADR-0102 unlock seam: a
+// verified token's wrap opens onto the principal (keyed by the row's STORED
+// hash), no wrap attaches nothing, and an unlock error fails closed.
+func TestAppPasswordVerifierAttachesTokenKey(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	secret := "pepper"
+	raw, _, err := IssueAppPassword(ctx, store, secret, "alice", "alice", "iPhone", TokenTypePermanent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priv := []byte("0123456789abcdef0123456789abcdef")
+
+	t.Run("wrap attaches the key", func(t *testing.T) {
+		keys := &stubTokenKeys{byHash: map[string][]byte{HashToken(raw, secret): priv}}
+		v := NewAppPasswordVerifier(store, secret)
+		v.Keys = keys
+		p, err := v.Verify(ctx, "alice", raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(p.UnlockedKey) != string(priv) {
+			t.Errorf("UnlockedKey = %q, want the wrapped key", p.UnlockedKey)
+		}
+		if len(keys.calls) != 1 || keys.calls[0] != [2]string{HashToken(raw, secret), raw} {
+			t.Errorf("unlock calls = %v, want the stored primary hash + raw token", keys.calls)
+		}
+	})
+
+	t.Run("no wrap attaches nothing", func(t *testing.T) {
+		v := NewAppPasswordVerifier(store, secret)
+		v.Keys = &stubTokenKeys{}
+		p, err := v.Verify(ctx, "alice", raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.UnlockedKey != nil {
+			t.Errorf("UnlockedKey without a wrap = %q, want nil", p.UnlockedKey)
+		}
+	})
+
+	t.Run("unlock error fails closed", func(t *testing.T) {
+		boom := errors.New("token key wrap authentication failed")
+		v := NewAppPasswordVerifier(store, secret)
+		v.Keys = &stubTokenKeys{err: boom}
+		if _, err := v.Verify(ctx, "alice", raw); !errors.Is(err, boom) {
+			t.Errorf("verify err = %v, want the unlock error (fail-closed)", err)
+		}
+	})
+
+	t.Run("legacy row unlocks by its stored hash", func(t *testing.T) {
+		legacyRaw := "legacy-token-0123456789abcdef0123456789abcdef"
+		legacyHash := hashTokenLegacy(legacyRaw)
+		if err := store.Insert(ctx, &Token{
+			ID: "id-legacy", Hash: legacyHash, UID: "alice", LoginName: "alice", Type: TokenTypePermanent,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		keys := &stubTokenKeys{byHash: map[string][]byte{legacyHash: priv}}
+		v := NewAppPasswordVerifier(store, secret)
+		v.Keys = keys
+		p, err := v.Verify(ctx, "alice", legacyRaw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(p.UnlockedKey) != string(priv) {
+			t.Errorf("legacy UnlockedKey = %q, want the wrapped key", p.UnlockedKey)
+		}
+		// One call, with the row's stored (legacy) hash — the legacy fallback
+		// in the token lookup already settled which hash the row carries.
+		if len(keys.calls) != 1 || keys.calls[0] != [2]string{legacyHash, legacyRaw} {
+			t.Errorf("unlock calls = %v, want the stored legacy hash + raw token", keys.calls)
+		}
+	})
+
+	t.Run("nil Keys attaches nothing", func(t *testing.T) {
+		v := NewAppPasswordVerifier(store, secret)
+		p, err := v.Verify(ctx, "alice", raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.UnlockedKey != nil {
+			t.Errorf("UnlockedKey without Keys = %q, want nil", p.UnlockedKey)
+		}
+	})
+}

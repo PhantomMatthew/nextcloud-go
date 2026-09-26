@@ -7,7 +7,10 @@ import (
 )
 
 type AppPasswordIssuer interface {
-	Issue(r *http.Request, principal *auth.Principal) (string, error)
+	// Issue mints a permanent app password for the principal, returning the
+	// raw token and the token id (the OCS endpoint discards the id; the
+	// login-v2 grant needs it for the ADR-0102 key wrap).
+	Issue(r *http.Request, principal *auth.Principal) (raw, tokenID string, err error)
 	Revoke(r *http.Request, principal *auth.Principal, raw string) error
 }
 
@@ -22,7 +25,7 @@ func GetAppPasswordHandler(version Version, issuer AppPasswordIssuer) http.Handl
 			writeForbidden(w, r, version, "App password can't generate app password")
 			return
 		}
-		token, err := issuer.Issue(r, principal)
+		token, _, err := issuer.Issue(r, principal)
 		if err != nil {
 			writeServerError(w, r, version)
 			return

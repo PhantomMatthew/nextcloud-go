@@ -232,12 +232,12 @@ func TestSQLResolverPruneAndMint(t *testing.T) {
 	if _, err := db.Exec(ctx, `DELETE FROM users WHERE id = ?`, bobID); err != nil {
 		t.Fatal(err)
 	}
-	ukPruned, wrapPruned, err := res.PruneStaleKeys(ctx)
+	pruned, err := res.PruneStaleKeys(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ukPruned != 1 || wrapPruned != 1 {
-		t.Errorf("pruned = %d user key(s), %d wrap(s); want 1, 1", ukPruned, wrapPruned)
+	if pruned.UserKeys != 1 || pruned.FileKeys != 1 || pruned.TokenKeys != 0 {
+		t.Errorf("pruned = %+v; want {1 1 0}", pruned)
 	}
 	// alice's rows survive the prune.
 	for _, q := range []string{
@@ -253,12 +253,12 @@ func TestSQLResolverPruneAndMint(t *testing.T) {
 		}
 	}
 	// Nothing stale remains.
-	ukPruned, wrapPruned, err = res.PruneStaleKeys(ctx)
+	pruned, err = res.PruneStaleKeys(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ukPruned != 0 || wrapPruned != 0 {
-		t.Errorf("second prune = %d, %d; want 0, 0", ukPruned, wrapPruned)
+	if pruned != (PruneStats{}) {
+		t.Errorf("second prune = %+v; want zero", pruned)
 	}
 }
 

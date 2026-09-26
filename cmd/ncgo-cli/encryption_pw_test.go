@@ -12,9 +12,9 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage/encrypt"
 )
 
-// pwEnv mirrors rekeyEnv with password_wrapped_keys added to the encryption
+// pwEnv mirrors rekeyEnv with password_wrapped_keys on in the encryption
 // section.
-func pwEnv(t *testing.T, dir string, passwordWrapped bool) (cfgPath, storageRoot, dbPath string) {
+func pwEnv(t *testing.T, dir string) (cfgPath, storageRoot, dbPath string) {
 	t.Helper()
 	storageRoot = filepath.Join(dir, "storage")
 	dbPath = filepath.Join(dir, "ncgo.db")
@@ -34,18 +34,20 @@ encryption:
   enabled: true
   master_key_path: %q
   per_user_keys: true
-  password_wrapped_keys: %v
-`, dbPath, storageRoot, keyPath, passwordWrapped)
+  password_wrapped_keys: true
+`, dbPath, storageRoot, keyPath)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return cfgPath, storageRoot, dbPath
 }
 
-// enrollCLIUser enrolls uid directly through a resolver over the fixture db
-// (the server-side enrollment path is pinned elsewhere; the CLI tests need
-// the resulting state, not the login flow).
-func enrollCLIUser(t *testing.T, db database.DB, keyPath, uid, password string) {
+// enrollCLIUser enrolls alice (password "wonderland") directly through a
+// resolver over the fixture db (the server-side enrollment path is pinned
+// elsewhere; the CLI tests need the resulting state, not the login flow). It
+// returns the unlocked private key for tests that wrap it under app-password
+// tokens (ADR-0102).
+func enrollCLIUser(t *testing.T, db database.DB, keyPath string) []byte {
 	t.Helper()
 	key, err := encrypt.LoadMasterKey(keyPath)
 	if err != nil {
@@ -57,9 +59,11 @@ func enrollCLIUser(t *testing.T, db database.DB, keyPath, uid, password string) 
 	}
 	res.PasswordWrapped = true
 	res.KDF = encrypt.KeyDerivationParams{MemoryKB: 1024, Iterations: 1, Parallelism: 1}
-	if _, err := res.UnlockForLogin(context.Background(), uid, password); err != nil {
+	priv, err := res.UnlockForLogin(context.Background(), "alice", "wonderland")
+	if err != nil {
 		t.Fatal(err)
 	}
+	return priv
 }
 
 // writeV3File writes one v3-sealed file through the CLI's own storage stack.
@@ -83,13 +87,13 @@ func writeV3File(t *testing.T, cfgPath string, db database.DB, rel, content stri
 
 func TestEncryptionStatusPasswordWrapped(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath, _, dbPath := pwEnv(t, dir, true)
+	cfgPath, _, dbPath := pwEnv(t, dir)
 	if _, err := runCLI(t, "", "--config", cfgPath, "encryption", "init"); err != nil {
 		t.Fatal(err)
 	}
 	db := openRekeyDB(t, dbPath, "alice", "bob")
 	writeV3File(t, cfgPath, db, "alice/a.txt", "alpha")
-	enrollCLIUser(t, db, filepath.Join(dir, "master.key"), "alice", "wonderland")
+	enrollCLIUser(t, db, filepath.Join(dir, "master.key"))
 
 	out, err := runCLI(t, "", "--config", cfgPath, "encryption", "status")
 	if err != nil {
@@ -112,14 +116,14 @@ func TestEncryptionStatusPasswordWrapped(t *testing.T) {
 // locked, exits 0, and leaves them sealed.
 func TestEncryptionDecryptAllLockedSkip(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath, root, dbPath := pwEnv(t, dir, true)
+	cfgPath, root, dbPath := pwEnv(t, dir)
 	if _, err := runCLI(t, "", "--config", cfgPath, "encryption", "init"); err != nil {
 		t.Fatal(err)
 	}
 	db := openRekeyDB(t, dbPath, "alice")
 	writeV3File(t, cfgPath, db, "alice/a.txt", "alpha")
 	writeV3File(t, cfgPath, db, "alice/b.txt", "beta")
-	enrollCLIUser(t, db, filepath.Join(dir, "master.key"), "alice", "wonderland")
+	enrollCLIUser(t, db, filepath.Join(dir, "master.key"))
 
 	out, err := runCLI(t, "", "--config", cfgPath, "encryption", "decrypt-all")
 	if err != nil {
@@ -143,13 +147,13 @@ func TestEncryptionDecryptAllLockedSkip(t *testing.T) {
 // enrollment and every wrap row before setting the new password.
 func TestUserResetPasswordEnrolledRefusal(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath, _, dbPath := pwEnv(t, dir, true)
+	cfgPath, _, dbPath := pwEnv(t, dir)
 	if _, err := runCLI(t, "", "--config", cfgPath, "encryption", "init"); err != nil {
 		t.Fatal(err)
 	}
 	db := openRekeyDB(t, dbPath, "alice", "bob")
 	writeV3File(t, cfgPath, db, "alice/a.txt", "alpha")
-	enrollCLIUser(t, db, filepath.Join(dir, "master.key"), "alice", "wonderland")
+	enrollCLIUser(t, db, filepath.Join(dir, "master.key"))
 	ctx := context.Background()
 	count := func(q string, args ...any) int64 {
 		t.Helper()
@@ -210,5 +214,56 @@ func TestUserResetPasswordEnrolledRefusal(t *testing.T) {
 		t.Error("alice's destroyed file must not resolve after --force")
 	} else if !strings.Contains(err.Error(), "encrypt:") {
 		t.Errorf("destroyed file err = %v, want an encrypt: resolve failure", err)
+	}
+}
+
+// TestEncryptionStatusTokenWraps pins the ADR-0102 status counts: wrapped
+// app-password tokens are counted, and an enrolled user's tokens WITHOUT a
+// wrap are named with the re-issue guidance.
+func TestEncryptionStatusTokenWraps(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath, _, dbPath := pwEnv(t, dir)
+	if _, err := runCLI(t, "", "--config", cfgPath, "encryption", "init"); err != nil {
+		t.Fatal(err)
+	}
+	db := openRekeyDB(t, dbPath, "alice")
+	keyPath := filepath.Join(dir, "master.key")
+	priv := enrollCLIUser(t, db, keyPath)
+	ctx := context.Background()
+	var aliceID int64
+	if err := db.QueryRow(ctx, `SELECT id FROM users WHERE uid = 'alice'`).Scan(&aliceID); err != nil {
+		t.Fatal(err)
+	}
+	// One wrapped token and one bare token, both alice's.
+	for _, row := range [][2]string{{"tok-wrapped", "hash-wrapped"}, {"tok-bare", "hash-bare"}} {
+		if _, err := db.Exec(ctx, `
+INSERT INTO app_passwords (id, user_id, token_hash, login_name, name, type, created_at)
+VALUES (?, ?, ?, 'alice', '', 1, 0)`, row[0], aliceID, row[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key, err := encrypt.LoadMasterKey(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := encrypt.NewSQLResolver(db, [][]byte{key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := res.WrapKeyForToken(ctx, "tok-wrapped", "raw-token-0123456789abcdef0123456789", priv); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runCLI(t, "", "--config", cfgPath, "encryption", "status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"app token key wraps: 1",
+		"enrolled users' app tokens without key wrap: 1 (re-issue those app passwords — they cannot unlock files)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status missing %q:\n%s", want, out)
+		}
 	}
 }

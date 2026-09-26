@@ -31,11 +31,12 @@ func (s stubVerifier) Verify(_ context.Context, user, pass string) (*auth.Princi
 
 type stubIssuer struct {
 	password string
+	id       string
 	err      error
 }
 
-func (s stubIssuer) Issue(_ *http.Request, _ *auth.Principal) (string, error) {
-	return s.password, s.err
+func (s stubIssuer) Issue(_ *http.Request, _ *auth.Principal) (string, string, error) {
+	return s.password, s.id, s.err
 }
 
 func newHandler(t *testing.T, issuer AppPasswordIssuer) *LoginV2 {

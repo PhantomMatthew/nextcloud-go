@@ -37,7 +37,10 @@ func newImportNCTokens(f *importNCFlags) *cobra.Command {
 			"password/password_hash/keypair columns are deliberately dropped — ncgo\n" +
 			"never decrypts stored passwords.\n\n" +
 			"The import is idempotent: a token hash already present in the target\n" +
-			"is skipped, so an interrupted run can simply be repeated.",
+			"is skipped, so an interrupted run can simply be repeated.\n\n" +
+			"Imported tokens carry no key wrap (ADR-0102): for users enrolled in\n" +
+			"password-wrapped keys they authenticate but cannot unlock files —\n" +
+			"re-issue those app passwords from a password login after the import.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := loadConfig()

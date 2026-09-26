@@ -24,7 +24,9 @@ import (
 //   - enrolled && !PasswordWrapped: unenroll — open the private key with the
 //     password, ensure the symmetric UK exists (the row may already be back
 //     from an interrupted unenroll), re-wrap every scheme=1 row symmetric
-//     (scheme=0), delete the user_key_pw row, return nil.
+//     (scheme=0), delete the user_key_pw row and every app_token_keys wrap of
+//     the user's tokens (ADR-0102: the keypair is gone, so the token wraps
+//     are dead weight), return nil.
 //   - enrolled && PasswordWrapped: open the private key with the password
 //     (AEAD failure means the password changed out-of-band — a loud
 //     descriptive error, never ErrKeyLocked and never silent re-enrollment,
@@ -69,6 +71,9 @@ func (r *SQLResolver) UnlockForLogin(ctx context.Context, uid, password string) 
 		}
 		if _, err := r.db.Exec(ctx, `DELETE FROM user_key_pw WHERE user_id = ?`, userID); err != nil {
 			return nil, fmt.Errorf("encrypt: unenroll user %d: %w", userID, err)
+		}
+		if err := r.deleteTokenWrapsForUser(ctx, userID); err != nil {
+			return nil, err
 		}
 		return nil, nil
 	case enrolled:
@@ -151,8 +156,10 @@ func (r *SQLResolver) Enrolled(ctx context.Context, uid string) (bool, error) {
 // DestroyEnrollment deletes uid's user_key_pw row and EVERY file_keys wrap
 // row the user holds — the reset-password --force semantic (ADR-0100 §6):
 // the password-sealed private key is unrecoverable, so the user's v3 files
-// are permanently unreadable and their wrap rows are dead weight. Other
-// users' rows and files.key_uuid are untouched. An unknown uid is a no-op.
+// are permanently unreadable and their wrap rows are dead weight. The user's
+// app_token_keys wraps go too (ADR-0102: the keypair they seal is gone).
+// Other users' rows and files.key_uuid are untouched. An unknown uid is a
+// no-op.
 func (r *SQLResolver) DestroyEnrollment(ctx context.Context, uid string) error {
 	userID, found, err := r.lookupUserID(ctx, uid)
 	if err != nil {
@@ -167,7 +174,7 @@ func (r *SQLResolver) DestroyEnrollment(ctx context.Context, uid string) error {
 	if _, err := r.db.Exec(ctx, `DELETE FROM file_keys WHERE user_id = ?`, userID); err != nil {
 		return fmt.Errorf("encrypt: destroy wrap rows for user %d: %w", userID, err)
 	}
-	return nil
+	return r.deleteTokenWrapsForUser(ctx, userID)
 }
 
 // SealSessionKey seals an unlocked private key for storage on a session row

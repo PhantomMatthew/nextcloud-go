@@ -33,12 +33,12 @@ type appPasswordIssuer struct {
 	secret string
 }
 
-func (a *appPasswordIssuer) Issue(r *http.Request, principal *auth.Principal) (string, error) {
+func (a *appPasswordIssuer) Issue(r *http.Request, principal *auth.Principal) (string, string, error) {
 	name := r.Header.Get("User-Agent")
 	if name == "" {
 		name = "unknown client"
 	}
-	raw, _, err := auth.IssueAppPassword(
+	raw, tok, err := auth.IssueAppPassword(
 		r.Context(),
 		a.store,
 		a.secret,
@@ -47,7 +47,12 @@ func (a *appPasswordIssuer) Issue(r *http.Request, principal *auth.Principal) (s
 		name,
 		auth.TokenTypePermanent,
 	)
-	return raw, err
+	if err != nil {
+		return "", "", err
+	}
+	// The login-v2 grant wraps the user's unlocked key under the new token
+	// (ADR-0102) and needs the token id to name the wrap row.
+	return raw, tok.ID, nil
 }
 
 func (a *appPasswordIssuer) Revoke(r *http.Request, _ *auth.Principal, raw string) error {
@@ -127,13 +132,16 @@ func (a *App) mountRoutes() error {
 	// Nil keeps every key seam inert (phases 1–3 behavior).
 	var sessionKeys auth.SessionKeyUnlocker
 	var loginKeys web.LoginKeyHandler
+	var tokenKeys auth.AppTokenKeyUnlocker
 	if a.keyResolver != nil {
 		sessionKeys = a.keyResolver
 		loginKeys = a.keyResolver
+		tokenKeys = a.keyResolver
 	}
+	appPasswordVerifier.Keys = tokenKeys
 	authCfg := auth.MiddlewareConfig{
 		Verifier:     verifier,
-		Bearer:       &auth.BearerVerifier{Store: a.authStore, Users: userAccounts, Secret: a.secret, Cache: a.Cache},
+		Bearer:       &auth.BearerVerifier{Store: a.authStore, Users: userAccounts, Secret: a.secret, Cache: a.Cache, Keys: tokenKeys},
 		Sessions:     &auth.SessionVerifier{Sessions: a.sessions, Users: userAccounts, Keys: sessionKeys},
 		Throttle:     auth.NewCacheThrottler(a.Cache, 8, 30*time.Second),
 		Cookie:       session.CookieName,

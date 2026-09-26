@@ -232,8 +232,13 @@ func boxOpen(recipientPriv, blob []byte, keyUUID [keyUUIDSize]byte, userID int64
 
 // hkdfSHA256 is HKDF-SHA256(secret, salt=nil, info) → 32 bytes.
 func hkdfSHA256(secret, info []byte) []byte {
+	return hkdfSHA256Salt(secret, nil, info)
+}
+
+// hkdfSHA256Salt is HKDF-SHA256(secret, salt, info) → 32 bytes.
+func hkdfSHA256Salt(secret, salt, info []byte) []byte {
 	out := make([]byte, 32)
-	r := hkdf.New(sha256.New, secret, nil, info)
+	r := hkdf.New(sha256.New, secret, salt, info)
 	if _, err := io.ReadFull(r, out); err != nil {
 		// hkdf.Reader errors only when the underlying hash fails; sha256 never does.
 		panic(fmt.Sprintf("encrypt: hkdf: %v", err))

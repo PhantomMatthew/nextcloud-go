@@ -25,6 +25,15 @@ type spyKeys struct {
 	unlockErr   error
 	sealCalls   int
 	sealErr     error
+	wrapCalls   []wrapCall
+	wrapErr     error
+}
+
+// wrapCall records one WrapKeyForToken invocation (ADR-0102).
+type wrapCall struct {
+	id   string
+	raw  string
+	priv []byte
 }
 
 func (s *spyKeys) UnlockForLogin(_ context.Context, uid, password string) ([]byte, error) {
@@ -41,6 +50,11 @@ func (s *spyKeys) SealSessionKey(priv []byte, sessionID string) ([]byte, error) 
 		return nil, s.sealErr
 	}
 	return append([]byte("sealed:"), priv...), nil
+}
+
+func (s *spyKeys) WrapKeyForToken(_ context.Context, appPasswordID, tokenRaw string, priv []byte) error {
+	s.wrapCalls = append(s.wrapCalls, wrapCall{id: appPasswordID, raw: tokenRaw, priv: priv})
+	return s.wrapErr
 }
 
 // methodVerifier returns a basic principal for the account password and an
@@ -320,6 +334,117 @@ func TestLoginV2GrantCopiesUnlockedKey(t *testing.T) {
 		}
 		if ss.sealedUK != nil {
 			t.Errorf("sealed_uk without Keys = %q, want nil", ss.sealedUK)
+		}
+	})
+}
+
+// keyedAppVerifier mimics the ADR-0102 verifier chain: the app-password
+// principal arrives with the token-wrap key already attached.
+type keyedAppVerifier struct{ key []byte }
+
+func (v keyedAppVerifier) Verify(_ context.Context, user, pass string) (*auth.Principal, error) {
+	if user == "alice" && pass == "app-token" {
+		return &auth.Principal{UID: user, Enabled: true, AuthMethod: auth.AuthMethodAppPassword, UnlockedKey: v.key}, nil
+	}
+	return nil, auth.ErrInvalidCredentials
+}
+
+// TestBrowserLoginAppPasswordInheritsTokenKey pins ADR-0102's browser-login
+// inheritance: an app-password form login whose token holds a key wrap gets
+// the verifier-attached key sealed onto the new session — the session is
+// fully functional for enrolled users. UnlockForLogin still never runs.
+func TestBrowserLoginAppPasswordInheritsTokenKey(t *testing.T) {
+	ctx := context.Background()
+	rig := newLoginKeysRig(t)
+	rig.handler.Verifier = keyedAppVerifier{key: rig.keys.priv}
+
+	rr := rig.postLogin(t, "app-token")
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("app-password login = %d, want 303", rr.Code)
+	}
+	if len(rig.keys.unlockCalls) != 0 {
+		t.Errorf("unlock called for an app-password login: %v", rig.keys.unlockCalls)
+	}
+	if rig.keys.sealCalls != 1 {
+		t.Fatalf("seal calls = %d, want 1 (the inherited key is sealed onto the session)", rig.keys.sealCalls)
+	}
+	sid := rig.sessionCookie(t, rr)
+	sess, err := rig.sessions.Get(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append([]byte("sealed:"), rig.keys.priv...)
+	if string(sess.SealedUK) != string(want) {
+		t.Errorf("session sealed_uk = %q, want %q", sess.SealedUK, want)
+	}
+}
+
+// TestLoginV2GrantWrapsKeyForToken pins ADR-0102 wrap-at-issuance: a
+// basic-authenticated grant of an enrolled user (unlocked key on the
+// principal) wraps the key under the new token; a wrap failure 500s loudly;
+// an app-password-authenticated grant carries no key and wraps nothing.
+func TestLoginV2GrantWrapsKeyForToken(t *testing.T) {
+	grant := func(t *testing.T, h *LoginV2, basic string) *httptest.ResponseRecorder {
+		t.Helper()
+		flow, err := h.Service.Init(context.Background(), "test client")
+		if err != nil {
+			t.Fatal(err)
+		}
+		st, err := h.Service.BeginGrant(context.Background(), flow.LoginToken)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := strings.NewReader(url.Values{"stateToken": {st.StateToken}}.Encode())
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/index.php/login/v2/grant", body)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Authorization", basic)
+		rr := httptest.NewRecorder()
+		h.HandleGrant(rr, req)
+		return rr
+	}
+	newV2 := func(t *testing.T, keys *spyKeys) *LoginV2 {
+		t.Helper()
+		h := newHandler(t, stubIssuer{password: "app-pw-grant", id: "tok-42"})
+		h.Keys = keys
+		return h
+	}
+
+	t.Run("basic grant wraps the unlocked key", func(t *testing.T) {
+		keys := &spyKeys{priv: []byte("0123456789abcdef0123456789abcdef")}
+		rr := grant(t, newV2(t, keys), basicAuth("alice", "wonderland"))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("grant = %d, want 200", rr.Code)
+		}
+		if len(keys.wrapCalls) != 1 {
+			t.Fatalf("wrap calls = %v, want 1", keys.wrapCalls)
+		}
+		got := keys.wrapCalls[0]
+		if got.id != "tok-42" || got.raw != "app-pw-grant" || string(got.priv) != string(keys.priv) {
+			t.Errorf("wrap call = %+v, want (tok-42, app-pw-grant, the unlocked key)", got)
+		}
+	})
+
+	t.Run("wrap error fails the grant loudly", func(t *testing.T) {
+		keys := &spyKeys{priv: []byte("0123456789abcdef0123456789abcdef"), wrapErr: errors.New("db gone")}
+		rr := grant(t, newV2(t, keys), basicAuth("alice", "wonderland"))
+		if rr.Code != http.StatusInternalServerError {
+			t.Fatalf("grant with failing wrap = %d, want 500", rr.Code)
+		}
+		if !strings.Contains(rr.Body.String(), "app password key wrap failed") {
+			t.Errorf("body = %q, want the loud wrap failure", rr.Body.String())
+		}
+	})
+
+	t.Run("app-password grant wraps nothing", func(t *testing.T) {
+		keys := &spyKeys{}
+		h := newV2(t, keys)
+		h.Verifier = methodVerifier{}
+		rr := grant(t, h, basicAuth("alice", "app-token"))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("app-password grant = %d, want 200", rr.Code)
+		}
+		if len(keys.wrapCalls) != 0 {
+			t.Errorf("wrap called without an unlocked key: %v", keys.wrapCalls)
 		}
 	})
 }

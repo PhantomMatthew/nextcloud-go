@@ -366,6 +366,14 @@ func newEncryptionStatus() *cobra.Command {
 			fmt.Fprintf(out, "password-wrapped users: %d\n", inv.EnrolledUsers)
 			fmt.Fprintf(out, "file key wraps: %d rows across %d key uuids (%d box wraps)\n", inv.WrapRows, inv.DistinctKeyUUIDs, inv.BoxWraps)
 			fmt.Fprintf(out, "v3-sealed files: %d\n", inv.V3Files)
+			// ADR-0102: app-token key wraps ride the same inventory; tokens
+			// of enrolled users WITHOUT a wrap authenticate but cannot
+			// unlock files until re-issued.
+			fmt.Fprintf(out, "app token key wraps: %d\n", inv.TokenWraps)
+			if inv.UnwrappedEnrolledTokens > 0 {
+				fmt.Fprintf(out, "enrolled users' app tokens without key wrap: %d (re-issue those app passwords — they cannot unlock files)\n",
+					inv.UnwrappedEnrolledTokens)
+			}
 			if inv.StaleUKs > 0 || inv.StaleWraps > 0 {
 				fmt.Fprintf(out, "stale key rows (deleted users): %d uks, %d wraps (ncgo-cli encryption reconcile prunes)\n",
 					inv.StaleUKs, inv.StaleWraps)
@@ -399,7 +407,8 @@ func newEncryptionReconcile() *cobra.Command {
 			"     mode was enabled; link and OCM-remote shares have no wrappable\n" +
 			"     recipient and are skipped.\n" +
 			"  3. Prune key rows whose owning user no longer exists (deletions\n" +
-			"     that ran without the lifecycle hook).\n\n" +
+			"     that ran without the lifecycle hook), including app-token key\n" +
+			"     wraps whose app password is gone (ADR-0102).\n\n" +
 			"Safe to re-run at any time; --dry-run reports what would change\n" +
 			"without writing anything. Requires encryption.enabled and\n" +
 			"encryption.per_user_keys.",
@@ -471,13 +480,13 @@ func newEncryptionReconcile() *cobra.Command {
 					wrapErrs = append(wrapErrs, fmt.Errorf("share %d: %w", allShares[i].ID, err))
 				}
 			}
-			prunedUKs, prunedWraps, err := resolver.PruneStaleKeys(ctx)
+			pruned, err := resolver.PruneStaleKeys(ctx)
 			if err != nil {
 				return fmt.Errorf("ncgo-cli: encryption reconcile: %w", err)
 			}
 			fmt.Fprintf(out, "minted %d user key(s)\n", minted)
 			fmt.Fprintf(out, "processed %d share(s) (%d error(s))\n", len(allShares), len(wrapErrs))
-			fmt.Fprintf(out, "pruned %d user key(s), %d wrap(s)\n", prunedUKs, prunedWraps)
+			fmt.Fprintf(out, "pruned %d user key(s), %d wrap(s), %d token wrap(s)\n", pruned.UserKeys, pruned.FileKeys, pruned.TokenKeys)
 			if len(wrapErrs) > 0 {
 				return fmt.Errorf("ncgo-cli: encryption reconcile: %d share(s) failed to wrap: %w",
 					len(wrapErrs), errors.Join(wrapErrs...))
