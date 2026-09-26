@@ -143,6 +143,142 @@ SELECT wrapped_fk FROM file_keys WHERE key_uuid = ? AND user_id = ?`, keyUUID[:]
 	return fk, nil
 }
 
+// WrapKeyFor wraps the file key named by keyUUID for the user uid (a share
+// recipient, ADR-0098), lazily creating the recipient's UK on first use.
+// Re-wrapping the same (key, user) pair is a no-op, so grant hooks can retry
+// freely. An unknown uid is an error — the resolver never invents users; an
+// unknown keyUUID surfaces as ErrUnresolvableKey (there is no FK to wrap).
+func (r *SQLResolver) WrapKeyFor(ctx context.Context, keyUUID [keyUUIDSize]byte, uid string) error {
+	userID, err := r.userID(ctx, uid)
+	if err != nil {
+		return err
+	}
+	fk, err := r.Resolve(ctx, keyUUID)
+	if err != nil {
+		return err
+	}
+	return r.wrapFKForUser(ctx, keyUUID, fk, userID)
+}
+
+// UnwrapKeyFor deletes the user's wrap row for keyUUID (share revocation,
+// ADR-0098); a missing row is a no-op. Two guards keep the delete safe: the
+// user owning the files.key_uuid row for keyUUID is never unwrapped — a
+// revoke must never orphan a file from its owner (the owner can be a member
+// of a group the file is shared to) — and an unknown uid is a no-op (no live
+// user means no addressable row; stale rows of deleted users are phase-3
+// lifecycle cleanup).
+func (r *SQLResolver) UnwrapKeyFor(ctx context.Context, keyUUID [keyUUIDSize]byte, uid string) error {
+	userID, found, err := r.lookupUserID(ctx, uid)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	owner, err := r.fileOwner(ctx, keyUUID)
+	if err != nil {
+		return err
+	}
+	if owner == userID {
+		return nil
+	}
+	if _, err := r.db.Exec(ctx, `
+DELETE FROM file_keys WHERE key_uuid = ? AND user_id = ?`, keyUUID[:], userID); err != nil {
+		return fmt.Errorf("encrypt: unwrap file key %s for user %d: %w",
+			hex.EncodeToString(keyUUID[:]), userID, err)
+	}
+	return nil
+}
+
+// ReWrapSharees carries a file's share-recipient wraps across an overwrite
+// (ADR-0098): the overwrite minted newUUID with its owner row (Allocate), so
+// every non-owner recipient of oldUUID gets a wrap of the new file key,
+// after which all old-UUID rows are deleted — wrap rows belong to the live
+// file, and continuity for sharees means following the current key. A
+// recipient wrap failure aborts before the old rows are deleted so a retry
+// continues where it stopped; a re-run after success finds no old rows and
+// re-inserts nothing (idempotent).
+func (r *SQLResolver) ReWrapSharees(ctx context.Context, oldUUID, newUUID [keyUUIDSize]byte) error {
+	if oldUUID == newUUID {
+		return nil
+	}
+	fk, err := r.Resolve(ctx, newUUID)
+	if err != nil {
+		return err
+	}
+	newOwner, err := r.ownerOf(ctx, newUUID)
+	if err != nil {
+		return err
+	}
+	rows, err := r.db.Query(ctx, `
+SELECT user_id FROM file_keys WHERE key_uuid = ? ORDER BY user_id`, oldUUID[:])
+	if err != nil {
+		return fmt.Errorf("encrypt: list wraps for key uuid %s: %w", hex.EncodeToString(oldUUID[:]), err)
+	}
+	defer rows.Close()
+	var recipients []int64
+	for rows.Next() {
+		var userID int64
+		if err := rows.Scan(&userID); err != nil {
+			return fmt.Errorf("encrypt: list wraps for key uuid %s: %w", hex.EncodeToString(oldUUID[:]), err)
+		}
+		if userID != newOwner {
+			recipients = append(recipients, userID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("encrypt: list wraps for key uuid %s: %w", hex.EncodeToString(oldUUID[:]), err)
+	}
+	for _, userID := range recipients {
+		if err := r.wrapFKForUser(ctx, newUUID, fk, userID); err != nil {
+			return err
+		}
+	}
+	if _, err := r.db.Exec(ctx, `
+DELETE FROM file_keys WHERE key_uuid = ?`, oldUUID[:]); err != nil {
+		return fmt.Errorf("encrypt: delete old wraps for key uuid %s: %w", hex.EncodeToString(oldUUID[:]), err)
+	}
+	return nil
+}
+
+// wrapFKForUser inserts a wrap of fk under the user's UK (lazily created)
+// with the pinned AD; a duplicate (key uuid, user) row is a no-op.
+func (r *SQLResolver) wrapFKForUser(ctx context.Context, keyUUID [keyUUIDSize]byte, fk []byte, userID int64) error {
+	uk, err := r.loadOrCreateUK(ctx, userID)
+	if err != nil {
+		return err
+	}
+	wrapped, err := wrapSeal(uk, fk, fkAD(keyUUID, userID))
+	if err != nil {
+		return err
+	}
+	if _, err := r.db.Exec(ctx, `
+INSERT INTO file_keys (key_uuid, user_id, wrapped_fk, created_ms) VALUES (?, ?, ?, ?)`,
+		keyUUID[:], userID, wrapped, time.Now().UTC().UnixMilli()); err != nil {
+		if database.IsUniqueViolation(r.db.Dialect(), err) {
+			return nil
+		}
+		return fmt.Errorf("encrypt: wrap file key %s for user %d: %w",
+			hex.EncodeToString(keyUUID[:]), userID, err)
+	}
+	return nil
+}
+
+// fileOwner returns the user_id of the filecache row carrying keyUUID, or 0
+// when none references it (trash/versions fallback territory — no live file
+// owns the key).
+func (r *SQLResolver) fileOwner(ctx context.Context, keyUUID [keyUUIDSize]byte) (int64, error) {
+	var userID int64
+	err := r.db.QueryRow(ctx, `SELECT user_id FROM files WHERE key_uuid = ? LIMIT 1`, keyUUID[:]).Scan(&userID)
+	if err != nil {
+		if errors.Is(err, database.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("encrypt: resolve key uuid %s file owner: %w", hex.EncodeToString(keyUUID[:]), err)
+	}
+	return userID, nil
+}
+
 // ownerUID derives the owning user's uid from a storage key. DAV file keys
 // are uid + "/" + path (dav.go storageKey); the uploads, versions, and
 // trash namespaces nest the uid one level down ("versions/<uid>/<id>"), so
@@ -163,15 +299,28 @@ func ownerUID(storageKey string) string {
 // userID resolves a uid to its users.id; an unknown uid is an error (the
 // resolver never invents users).
 func (r *SQLResolver) userID(ctx context.Context, uid string) (int64, error) {
+	id, found, err := r.lookupUserID(ctx, uid)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		return 0, fmt.Errorf("encrypt: user %q not found", uid)
+	}
+	return id, nil
+}
+
+// lookupUserID resolves a uid to its users.id, reporting found = false for
+// an unknown uid.
+func (r *SQLResolver) lookupUserID(ctx context.Context, uid string) (int64, bool, error) {
 	var id int64
 	err := r.db.QueryRow(ctx, `SELECT id FROM users WHERE uid = ?`, uid).Scan(&id)
 	if err != nil {
 		if errors.Is(err, database.ErrNoRows) {
-			return 0, fmt.Errorf("encrypt: allocate: user %q not found", uid)
+			return 0, false, nil
 		}
-		return 0, fmt.Errorf("encrypt: allocate: look up user %q: %w", uid, err)
+		return 0, false, fmt.Errorf("encrypt: look up user %q: %w", uid, err)
 	}
-	return id, nil
+	return id, true, nil
 }
 
 // ownerOf names the user whose wrap row resolves keyUUID: the filecache

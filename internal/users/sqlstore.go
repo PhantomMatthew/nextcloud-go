@@ -5,15 +5,32 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
 )
 
+// MemberKeysHook is notified after successful group membership changes so
+// per-user file keys can be wrapped/unwrapped for the group's shares
+// (ADR-0098). *files.KeySharer satisfies it structurally — users must not
+// import files — and nil disables the hook. The invocation is best-effort:
+// a hook failure is Warn-logged (when Logger is set) and never fails the
+// membership change.
+type MemberKeysHook interface {
+	OnGroupMemberAdded(ctx context.Context, gid, uid string) error
+	OnGroupMemberRemoved(ctx context.Context, gid, uid string) error
+}
+
 // SQLStore persists users.
 type SQLStore struct {
 	db database.DB
+	// MemberKeys, when non-nil, is invoked after AddGroupMember /
+	// RemoveGroupMember succeed (ADR-0098 share key wrapping).
+	MemberKeys MemberKeysHook
+	// Logger, when set, receives MemberKeys hook failures.
+	Logger *slog.Logger
 }
 
 // NewSQLStore returns a user Store backed by db.
@@ -247,11 +264,37 @@ func (s *SQLStore) AddGroupMember(ctx context.Context, gid, uid string) error {
 	_, err = s.db.Exec(ctx, `INSERT INTO group_members (group_id, user_id) VALUES (?, ?)`, g.ID, u.ID)
 	if err != nil {
 		if database.IsUniqueViolation(s.db.Dialect(), err) {
+			s.memberKeysAdded(ctx, gid, uid)
 			return nil
 		}
 		return fmt.Errorf("users: add member: %w", err)
 	}
+	s.memberKeysAdded(ctx, gid, uid)
 	return nil
+}
+
+// memberKeysAdded notifies the ADR-0098 key-share hook of a membership
+// grant; failures are Warn-logged (Logger permitting) and never returned.
+func (s *SQLStore) memberKeysAdded(ctx context.Context, gid, uid string) {
+	if s.MemberKeys == nil {
+		return
+	}
+	if err := s.MemberKeys.OnGroupMemberAdded(ctx, gid, uid); err != nil && s.Logger != nil {
+		s.Logger.WarnContext(ctx, "users: member keys hook failed",
+			slog.String("gid", gid), slog.String("uid", uid), slog.Any("err", err))
+	}
+}
+
+// memberKeysRemoved notifies the ADR-0098 key-share hook of a membership
+// revoke; failures are Warn-logged (Logger permitting) and never returned.
+func (s *SQLStore) memberKeysRemoved(ctx context.Context, gid, uid string) {
+	if s.MemberKeys == nil {
+		return
+	}
+	if err := s.MemberKeys.OnGroupMemberRemoved(ctx, gid, uid); err != nil && s.Logger != nil {
+		s.Logger.WarnContext(ctx, "users: member keys hook failed",
+			slog.String("gid", gid), slog.String("uid", uid), slog.Any("err", err))
+	}
 }
 
 func (s *SQLStore) UserGroupGIDs(ctx context.Context, uid string) ([]string, error) {
@@ -327,6 +370,7 @@ func (s *SQLStore) RemoveGroupMember(ctx context.Context, gid, uid string) error
 	if _, err := s.db.Exec(ctx, `DELETE FROM group_members WHERE group_id = ? AND user_id = ?`, g.ID, u.ID); err != nil {
 		return fmt.Errorf("users: remove member: %w", err)
 	}
+	s.memberKeysRemoved(ctx, gid, uid)
 	return nil
 }
 

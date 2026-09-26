@@ -417,6 +417,40 @@ func likeContains(term string) string {
 	return b.String()
 }
 
+// ListSealedSubtree returns the v3-sealed files (key_uuid IS NOT NULL) at or
+// below path for a user — the wrap targets of a folder share (ADR-0098).
+// v1/v2-sealed and plaintext files carry NULL and are skipped by
+// construction.
+func (s *SQLStore) ListSealedSubtree(ctx context.Context, userID int64, p string) ([]File, error) {
+	np, err := NormalizePath(p)
+	if err != nil {
+		return nil, err
+	}
+	like := np + "/%"
+	if np == "/" {
+		like = "/%"
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid
+FROM files WHERE user_id = ? AND (path = ? OR path LIKE ?) AND key_uuid IS NOT NULL ORDER BY path`, userID, np, like)
+	if err != nil {
+		return nil, fmt.Errorf("files: list sealed subtree: %w", err)
+	}
+	defer rows.Close()
+	var out []File
+	for rows.Next() {
+		f, err := scanFile(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("files: list sealed subtree: %w", err)
+	}
+	return out, nil
+}
+
 func (s *SQLStore) Usage(ctx context.Context, userID int64) (int64, error) {
 	row := s.db.QueryRow(ctx, `SELECT COALESCE(SUM(size), 0) FROM files WHERE user_id = ? AND is_dir = 0`, userID)
 	var n int64

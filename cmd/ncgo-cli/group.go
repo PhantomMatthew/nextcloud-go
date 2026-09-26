@@ -3,10 +3,17 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
+	"github.com/PhantomMatthew/nextcloud-go/internal/config"
+	"github.com/PhantomMatthew/nextcloud-go/internal/database"
+	"github.com/PhantomMatthew/nextcloud-go/internal/files"
+	"github.com/PhantomMatthew/nextcloud-go/internal/sharing"
+	"github.com/PhantomMatthew/nextcloud-go/internal/storage/encrypt"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 )
 
@@ -29,6 +36,35 @@ func unknownGroupErr(gid string) error {
 
 func unknownUserErr(uid string) error {
 	return fmt.Errorf("ncgo-cli: unknown user %q", uid)
+}
+
+// groupStore returns the users store, wiring the ADR-0098 member-keys hook
+// when encryption.per_user_keys is on so CLI membership changes wrap and
+// unwrap share file keys exactly as the server does. Hook failures surface
+// as warnings on stderr; the membership change itself never fails on them.
+func groupStore(cfg *config.Config, db database.DB) (*users.SQLStore, error) {
+	us := users.NewSQLStore(db)
+	if !cfg.Encryption.Enabled || !cfg.Encryption.PerUserKeys {
+		return us, nil
+	}
+	current, previous, err := encrypt.LoadKeyring(cfg.Encryption.MasterKeyPath, cfg.Encryption.PreviousKeyPaths)
+	if err != nil {
+		return nil, fmt.Errorf("ncgo-cli: encryption: %w", err)
+	}
+	res, err := perUserResolver(db, current, previous)
+	if err != nil {
+		return nil, err
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	us.MemberKeys = &files.KeySharer{
+		Meta:    files.NewSQLStore(db),
+		Wrapper: res,
+		Shares:  sharing.NewSQLShareStore(db),
+		Users:   us,
+		Logger:  logger,
+	}
+	us.Logger = logger
+	return us, nil
 }
 
 func newGroupList() *cobra.Command {
@@ -143,7 +179,11 @@ func newGroupAddUser() *cobra.Command {
 				return err
 			}
 			defer func() { _ = db.Close() }()
-			if err := users.NewSQLStore(db).AddGroupMember(ctx, args[0], args[1]); err != nil {
+			us, err := groupStore(cfg, db)
+			if err != nil {
+				return err
+			}
+			if err := us.AddGroupMember(ctx, args[0], args[1]); err != nil {
 				if errors.Is(err, users.ErrNotFound) {
 					return fmt.Errorf("ncgo-cli: unknown group %q or user %q", args[0], args[1])
 				}
@@ -171,7 +211,11 @@ func newGroupRemoveUser() *cobra.Command {
 				return err
 			}
 			defer func() { _ = db.Close() }()
-			if err := users.NewSQLStore(db).RemoveGroupMember(ctx, args[0], args[1]); err != nil {
+			us, err := groupStore(cfg, db)
+			if err != nil {
+				return err
+			}
+			if err := us.RemoveGroupMember(ctx, args[0], args[1]); err != nil {
 				if errors.Is(err, users.ErrNotFound) {
 					return fmt.Errorf("ncgo-cli: unknown group %q or user %q", args[0], args[1])
 				}

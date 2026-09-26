@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
@@ -125,6 +126,74 @@ FROM shares WHERE accepted = 1 AND (` + strings.Join(parts, " OR ") + `) ORDER B
 	}
 	defer rows.Close()
 	return scanShares(rows)
+}
+
+// Covering returns the user and group shares owned by ownerUserID whose
+// target is filePath itself or an ancestor of it — exactly the shares whose
+// recipients gain access to a file written at filePath (ADR-0098). The
+// ancestor set is computed in Go and matched with an IN list (the repo's
+// dialect-neutral idiom; no SQL-side string concatenation exists anywhere).
+// Link and OCM-remote shares are excluded: no user key exists for their
+// recipients, so they never wrap.
+func (s *SQLShareStore) Covering(ctx context.Context, ownerUserID int64, filePath string) ([]*files.Share, error) {
+	if ownerUserID == 0 {
+		return nil, nil
+	}
+	np, err := files.NormalizePath(filePath)
+	if err != nil {
+		return nil, err
+	}
+	targets := []string{np}
+	if np != "/" {
+		for p := path.Dir(np); p != "/"; p = path.Dir(p) {
+			targets = append(targets, p)
+		}
+		targets = append(targets, "/")
+	}
+	ph := make([]string, len(targets))
+	args := []any{ownerUserID, files.ShareTypeUser, files.ShareTypeGroup}
+	for i, target := range targets {
+		ph[i] = "?"
+		args = append(args, target)
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT id, share_type, owner_user_id, file_path, item_type, token, password_hash, permissions, label, expire_ms, stime_ms, share_with, accepted
+FROM shares WHERE owner_user_id = ? AND share_type IN (?, ?) AND file_path IN (`+strings.Join(ph, ", ")+`) ORDER BY id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("sharing: list covering: %w", err)
+	}
+	defer rows.Close()
+	return scanSharePtrs(rows)
+}
+
+// ForGroup returns every share granted to group gid — the membership hooks
+// wrap/unwrap these per joining/leaving member (ADR-0098).
+func (s *SQLShareStore) ForGroup(ctx context.Context, gid string) ([]*files.Share, error) {
+	if gid == "" {
+		return nil, nil
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT id, share_type, owner_user_id, file_path, item_type, token, password_hash, permissions, label, expire_ms, stime_ms, share_with, accepted
+FROM shares WHERE share_type = ? AND share_with = ? ORDER BY id`, files.ShareTypeGroup, gid)
+	if err != nil {
+		return nil, fmt.Errorf("sharing: list group shares: %w", err)
+	}
+	defer rows.Close()
+	return scanSharePtrs(rows)
+}
+
+// ListExpired returns the rows DeleteExpired would reap, in the same
+// conditions. The expire job reads them first so it can unwrap recipient
+// keys for exactly the shares it then deletes (ADR-0098).
+func (s *SQLShareStore) ListExpired(ctx context.Context, nowMs int64) ([]*files.Share, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT id, share_type, owner_user_id, file_path, item_type, token, password_hash, permissions, label, expire_ms, stime_ms, share_with, accepted
+FROM shares WHERE expire_ms > 0 AND expire_ms <= ? ORDER BY id`, nowMs)
+	if err != nil {
+		return nil, fmt.Errorf("sharing: list expired: %w", err)
+	}
+	defer rows.Close()
+	return scanSharePtrs(rows)
 }
 
 func (s *SQLShareStore) Update(ctx context.Context, sh *files.Share) error {
@@ -271,6 +340,21 @@ func scanShares(rows database.Rows) ([]files.Share, error) {
 			return nil, err
 		}
 		out = append(out, *sh)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sharing: list: %w", err)
+	}
+	return out, nil
+}
+
+func scanSharePtrs(rows database.Rows) ([]*files.Share, error) {
+	var out []*files.Share
+	for rows.Next() {
+		sh, err := scanShare(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sh)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("sharing: list: %w", err)

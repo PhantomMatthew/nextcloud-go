@@ -410,3 +410,58 @@ func TestSearchAndSearchGroups(t *testing.T) {
 		t.Fatalf("no match = %v", got)
 	}
 }
+
+// recordMemberKeys is a MemberKeysHook stub recording every call.
+type recordMemberKeys struct {
+	added   [][2]string
+	removed [][2]string
+	err     error
+}
+
+func (r *recordMemberKeys) OnGroupMemberAdded(_ context.Context, gid, uid string) error {
+	r.added = append(r.added, [2]string{gid, uid})
+	return r.err
+}
+
+func (r *recordMemberKeys) OnGroupMemberRemoved(_ context.Context, gid, uid string) error {
+	r.removed = append(r.removed, [2]string{gid, uid})
+	return r.err
+}
+
+func TestSQLStoreMemberKeysHook(t *testing.T) {
+	ctx := context.Background()
+	store := NewSQLStore(testDB(t))
+	for _, uid := range []string{"alice", "bob"} {
+		if err := store.Create(ctx, &User{UID: uid, PasswordHash: "x", Enabled: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.CreateGroup(ctx, &Group{GID: "g1"}); err != nil {
+		t.Fatal(err)
+	}
+	rec := &recordMemberKeys{}
+	store.MemberKeys = rec
+
+	if err := store.AddGroupMember(ctx, "g1", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.added) != 1 || rec.added[0] != [2]string{"g1", "alice"} {
+		t.Fatalf("added = %v, want [[g1 alice]]", rec.added)
+	}
+	if err := store.RemoveGroupMember(ctx, "g1", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.removed) != 1 || rec.removed[0] != [2]string{"g1", "alice"} {
+		t.Fatalf("removed = %v, want [[g1 alice]]", rec.removed)
+	}
+
+	// A failing hook never fails the membership change (best-effort,
+	// ADR-0098); failures surface via the optional Logger only.
+	store.MemberKeys = &recordMemberKeys{err: errors.New("keys down")}
+	if err := store.AddGroupMember(ctx, "g1", "bob"); err != nil {
+		t.Fatalf("AddGroupMember with failing hook = %v, want nil", err)
+	}
+	if err := store.RemoveGroupMember(ctx, "g1", "bob"); err != nil {
+		t.Fatalf("RemoveGroupMember with failing hook = %v, want nil", err)
+	}
+}

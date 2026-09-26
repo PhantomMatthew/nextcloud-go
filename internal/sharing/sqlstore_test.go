@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
 	"github.com/PhantomMatthew/nextcloud-go/internal/files"
@@ -169,5 +170,138 @@ func TestSQLShareStoreDeleteExpired(t *testing.T) {
 	ids, err = store.DeleteExpired(ctx, now)
 	if err != nil || len(ids) != 0 {
 		t.Fatalf("second sweep = %v, %v; want empty", ids, err)
+	}
+}
+
+func TestSQLShareStoreCovering(t *testing.T) {
+	ctx := t.Context()
+	db := testDB(t)
+	uid := seedUser(t, db)
+	store := NewSQLShareStore(db)
+	mk := func(token string, shareType int, path, shareWith string) {
+		t.Helper()
+		sh := &files.Share{
+			OwnerUserID: uid, ShareType: shareType, Path: path,
+			ItemType: "folder", Token: token, Permissions: 1,
+			StimeMs: 1746100800000, ShareWith: shareWith,
+		}
+		if err := store.Insert(ctx, sh); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("cover0000000001", files.ShareTypeUser, "/docs", "bob")          // ancestor of the file
+	mk("cover0000000002", files.ShareTypeGroup, "/docs/sub", "g1")      // ancestor
+	mk("cover0000000003", files.ShareTypeUser, "/docs/sub/f.txt", "bo") // exact target
+	mk("cover0000000004", files.ShareTypeLink, "/docs", "")             // links never wrap
+	mk("cover0000000005", files.ShareTypeRemote, "/docs", "x@h")        // OCM never wraps
+	mk("cover0000000006", files.ShareTypeUser, "/elsewhere", "bob")     // not an ancestor
+	mk("cover0000000007", files.ShareTypeUser, "/docs/sub/f.txt2", "b") // prefix but not ancestor
+
+	got, err := store.Covering(ctx, uid, "/docs/sub/f.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens := make([]string, 0, len(got))
+	for _, sh := range got {
+		tokens = append(tokens, sh.Token)
+	}
+	want := []string{"cover0000000001", "cover0000000002", "cover0000000003"}
+	if len(tokens) != len(want) {
+		t.Fatalf("covering = %v, want %v", tokens, want)
+	}
+	for i := range want {
+		if tokens[i] != want[i] {
+			t.Fatalf("covering = %v, want %v", tokens, want)
+		}
+	}
+
+	// A root share covers everything below it.
+	mk("cover0000000008", files.ShareTypeUser, "/", "bob")
+	got, err = store.Covering(ctx, uid, "/new/deep/file.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Token != "cover0000000008" {
+		t.Fatalf("covering under root share = %v", got)
+	}
+
+	// Another owner's shares never match.
+	got, err = store.Covering(ctx, uid+999, "/docs/sub/f.txt")
+	if err != nil || len(got) != 0 {
+		t.Fatalf("covering for other owner = %v %v", got, err)
+	}
+}
+
+func TestSQLShareStoreForGroup(t *testing.T) {
+	ctx := t.Context()
+	db := testDB(t)
+	uid := seedUser(t, db)
+	store := NewSQLShareStore(db)
+	mk := func(token string, shareType int, shareWith string) {
+		t.Helper()
+		sh := &files.Share{
+			OwnerUserID: uid, ShareType: shareType, Path: "/x.txt",
+			ItemType: "file", Token: token, Permissions: 1,
+			StimeMs: 1746100800000, ShareWith: shareWith,
+		}
+		if err := store.Insert(ctx, sh); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("group0000000001", files.ShareTypeGroup, "g1")
+	mk("group0000000002", files.ShareTypeGroup, "g1")
+	mk("group0000000003", files.ShareTypeGroup, "g2")
+	mk("group0000000004", files.ShareTypeUser, "g1") // type filter: user sharee named g1
+
+	got, err := store.ForGroup(ctx, "g1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Token != "group0000000001" || got[1].Token != "group0000000002" {
+		t.Fatalf("for group = %v", got)
+	}
+	if got, err := store.ForGroup(ctx, ""); err != nil || got != nil {
+		t.Fatalf("empty gid = %v %v", got, err)
+	}
+}
+
+func TestSQLShareStoreListExpired(t *testing.T) {
+	ctx := t.Context()
+	db := testDB(t)
+	uid := seedUser(t, db)
+	store := NewSQLShareStore(db)
+	now := time.Date(2025, 5, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
+	mk := func(token string, expireMs int64) {
+		t.Helper()
+		sh := &files.Share{
+			OwnerUserID: uid, ShareType: files.ShareTypeUser, Path: "/x.txt",
+			ItemType: "file", Token: token, Permissions: 1,
+			ExpireMs: expireMs, StimeMs: 1746100800000, ShareWith: "bob",
+		}
+		if err := store.Insert(ctx, sh); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("expired00000001", now-1)
+	mk("expired00000002", now)     // boundary: <= now is expired
+	mk("expired00000003", now+100) // live
+	mk("expired00000004", 0)       // no expiry
+
+	got, err := store.ListExpired(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Token != "expired00000001" || got[1].Token != "expired00000002" {
+		t.Fatalf("list expired = %v", got)
+	}
+	ids, err := store.DeleteExpired(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("delete expired ids = %v", ids)
+	}
+	if got[0].ID != ids[0] || got[1].ID != ids[1] {
+		t.Fatalf("list/delete mismatch: %v vs %v", got, ids)
 	}
 }

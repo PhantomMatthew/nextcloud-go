@@ -27,7 +27,7 @@ func TestExpireSharesJob(t *testing.T) {
 	if err := store.Insert(ctx, sh); err != nil {
 		t.Fatal(err)
 	}
-	job := NewExpireJob(store, func() time.Time { return now }, nil, nil)
+	job := NewExpireJob(store, func() time.Time { return now }, nil, nil, nil)
 	if job.Name() != jobs.JobSharesExpire {
 		t.Fatalf("name = %s", job.Name())
 	}
@@ -65,7 +65,7 @@ func TestExpireSharesJobDismissesNotifications(t *testing.T) {
 		}
 	}
 	rec := &recordNotifier{}
-	job := NewExpireJob(store, func() time.Time { return now }, rec, nil)
+	job := NewExpireJob(store, func() time.Time { return now }, rec, nil, nil)
 	if err := job.Run(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestExpireSharesJobDismissesNotifications(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	job = NewExpireJob(store2, func() time.Time { return now }, failNotifier{}, nil)
+	job = NewExpireJob(store2, func() time.Time { return now }, failNotifier{}, nil, nil)
 	if err := job.Run(ctx, nil); err != nil {
 		t.Fatalf("Run with failing notifier = %v, want nil", err)
 	}

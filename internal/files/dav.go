@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"path"
 	"sort"
@@ -34,6 +35,13 @@ type DAV struct {
 	Incoming IncomingLookup
 	NewToken func() string
 	Remote   RemoteFile
+	// KeySharer, when set, keeps file_keys wrap rows in step with shares on
+	// the write path (ADR-0098): covering shares wrap the fresh key, and an
+	// overwrite carries recipient wraps across the key-UUID change. Nil
+	// disables the feature (per-user keys off) with zero overhead.
+	KeySharer *KeySharer
+	// Logger, when set, receives the best-effort key-share warnings.
+	Logger *slog.Logger
 	// LiveProps, when set, attaches plugin-provided custom properties to
 	// Stat/List/Read entries and gets first refusal on PROPPATCH ops.
 	LiveProps webdav.LivePropProvider
@@ -53,6 +61,12 @@ func (d *DAV) now() time.Time {
 		return d.Clock().UTC()
 	}
 	return time.Now().UTC()
+}
+
+func (d *DAV) warn(ctx context.Context, msg string, args ...any) {
+	if d.Logger != nil {
+		d.Logger.WarnContext(ctx, msg, args...)
+	}
 }
 
 func (d *DAV) resolveUser(ctx context.Context, uid string) (*users.User, error) {
@@ -606,6 +620,7 @@ func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *tim
 	}
 	checksum := "SHA256:" + hex.EncodeToString(sum.Sum(nil))
 	var f *File
+	var oldKeyUUID []byte
 	if created {
 		f = &File{
 			UserID:      u.ID,
@@ -622,6 +637,7 @@ func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *tim
 			return nil, false, d.compensateDelete(ctx, key, mapMeta(err))
 		}
 	} else {
+		oldKeyUUID = existing.KeyUUID
 		existing.Size = n
 		existing.Mtime = mt
 		existing.Checksum = checksum
@@ -640,6 +656,10 @@ func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *tim
 		}
 		f = existing
 	}
+	// The file row (with its key UUID) is persisted: keep share wrap rows in
+	// step (ADR-0098). Best-effort inside the stripe lock — a failure is
+	// Warn-logged and never fails the write.
+	d.shareFileKey(ctx, u.ID, np, oldKeyUUID, keyUUID)
 	if err := d.Meta.RecalcAncestors(ctx, u.ID, f.ParentID, mt); err != nil {
 		return nil, false, err
 	}
@@ -648,6 +668,39 @@ func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *tim
 		return nil, false, mapMeta(err)
 	}
 	return d.toEntry(ctx, u.ID, got), created, nil
+}
+
+// shareFileKey runs the ADR-0098 key-share hooks after a write persisted
+// its filecache row: an overwrite with a previous v3 key carries sharee
+// wraps from the superseded key UUID to the fresh one, then the recipients
+// of every share covering the path get a wrap of the new key. Best-effort:
+// failures are Warn-logged, never fail the write. Callers hold the write
+// stripe lock; WrapForWrite re-reads the covering set to stay consistent
+// with a concurrent unshare (which never takes this lock).
+func (d *DAV) shareFileKey(ctx context.Context, ownerUserID int64, np string, oldUUID, newUUID []byte) {
+	ks := d.KeySharer
+	if ks == nil {
+		return
+	}
+	var oldK, newK [16]byte
+	haveOld := len(oldUUID) == 16
+	haveNew := len(newUUID) == 16
+	if haveOld {
+		copy(oldK[:], oldUUID)
+	}
+	if haveNew {
+		copy(newK[:], newUUID)
+	}
+	if haveOld && haveNew {
+		if err := ks.ReWrapForOverwrite(ctx, oldK, newK); err != nil {
+			d.warn(ctx, "files: share key carry on overwrite failed", slog.String("path", np), slog.Any("err", err))
+		}
+	}
+	if haveNew {
+		if err := ks.WrapForWrite(ctx, ownerUserID, np, newK); err != nil {
+			d.warn(ctx, "files: share key wrap on write failed", slog.String("path", np), slog.Any("err", err))
+		}
+	}
 }
 
 func (d *DAV) Mkdir(ctx context.Context, user, p string) (*webdav.Entry, error) {

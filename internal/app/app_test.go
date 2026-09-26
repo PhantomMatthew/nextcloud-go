@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -22,6 +23,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/files"
 	"github.com/PhantomMatthew/nextcloud-go/internal/goldentest"
 	"github.com/PhantomMatthew/nextcloud-go/internal/notifications"
+	"github.com/PhantomMatthew/nextcloud-go/internal/storage/encrypt"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 )
 
@@ -321,7 +323,7 @@ func TestOpenStorageS3(t *testing.T) {
 			Region:          "us-east-1",
 		},
 	}
-	st, err := openStorage(cfg, nil)
+	st, _, err := openStorage(cfg, nil)
 	if err != nil || st == nil {
 		t.Fatalf("openStorage s3 = %v %v", st, err)
 	}
@@ -333,7 +335,7 @@ func TestOpenStorageUnknown(t *testing.T) {
 	cfg.Storage.Backends = map[string]config.BackendConfig{
 		"mystery": {Type: "mystery"},
 	}
-	if _, err := openStorage(cfg, nil); err == nil {
+	if _, _, err := openStorage(cfg, nil); err == nil {
 		t.Fatal("expected unsupported type")
 	}
 }
@@ -417,4 +419,92 @@ func TestUseHTTPClientNil(t *testing.T) {
 	var a *App
 	a.UseHTTPClient(&http.Client{})
 	(&App{}).UseHTTPClient(&http.Client{})
+}
+
+func writeTestMasterKey(t *testing.T) string {
+	t.Helper()
+	keyPath := filepath.Join(t.TempDir(), "master.key")
+	key := make([]byte, encrypt.MasterKeySize)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	if err := os.WriteFile(keyPath, []byte(base64.StdEncoding.EncodeToString(key)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return keyPath
+}
+
+// TestOpenStorageEncryptionNoResolver pins the ADR-0098 wiring hazard:
+// encryption enabled with per_user_keys off must pass a NIL KeyResolver to
+// the encrypt FS — a typed nil *SQLResolver would become a non-nil
+// interface value and the FS would dispatch per-user allocation to a nil
+// receiver on the first write.
+func TestOpenStorageEncryptionNoResolver(t *testing.T) {
+	cfg := DevConfig()
+	cfg.Storage.Backends = map[string]config.BackendConfig{
+		"local": {Type: "localfs", Root: t.TempDir()},
+	}
+	cfg.Encryption.Enabled = true
+	cfg.Encryption.MasterKeyPath = writeTestMasterKey(t)
+	st, res, err := openStorage(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res != nil {
+		t.Fatalf("resolver = %v, want nil with per_user_keys off", res)
+	}
+	ctx := context.Background()
+	wc, err := st.Create(ctx, "alice/a.txt", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wc.Write([]byte("sealed but not per-user")); err != nil {
+		t.Fatal(err)
+	}
+	if err := wc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rc, err := st.Open(ctx, "alice/a.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "sealed but not per-user" {
+		t.Fatalf("round trip = %q", body)
+	}
+}
+
+// TestNewAppPerUserKeysWiresKeySharer pins the ADR-0098 app wiring: with
+// per-user keys on, one KeySharer reaches the DAV write path, the sharing
+// service, and the group-membership hook.
+func TestNewAppPerUserKeysWiresKeySharer(t *testing.T) {
+	ctx := context.Background()
+	cfg := DevConfig()
+	cfg.Database.DSN = "file:ncgo-keysharer-wiring?mode=memory&cache=shared"
+	cfg.Storage.Backends = map[string]config.BackendConfig{
+		"local": {Type: "localfs", Root: t.TempDir()},
+	}
+	cfg.Encryption.Enabled = true
+	cfg.Encryption.MasterKeyPath = writeTestMasterKey(t)
+	cfg.Encryption.PerUserKeys = true
+	a, err := New(ctx, cfg, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Close(ctx) })
+	dav, ok := a.davFS.(*files.DAV)
+	if !ok || dav.KeySharer == nil {
+		t.Error("DAV.KeySharer not wired in per-user mode")
+	}
+	if a.shares.Keys == nil {
+		t.Error("sharing service Keys not wired in per-user mode")
+	}
+	us, ok := a.Users.(*users.SQLStore)
+	if !ok || us.MemberKeys == nil {
+		t.Error("users MemberKeys hook not wired in per-user mode")
+	}
 }

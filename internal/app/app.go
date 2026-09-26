@@ -157,7 +157,8 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		Iterations:  cfg.Auth.Argon2id.Iterations,
 		Parallelism: cfg.Auth.Argon2id.Parallelism,
 	})
-	a.Users = users.NewSQLStore(db)
+	userStore := users.NewSQLStore(db)
+	a.Users = userStore
 	a.authStore = auth.NewSQLStore(db)
 	a.loginStore = login.NewSQLStore(db)
 	a.sessions = session.NewSQLStore(db)
@@ -194,7 +195,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	} else {
 		a.Cache = mem
 	}
-	st, err := openStorage(cfg, db)
+	st, keyResolver, err := openStorage(cfg, db)
 	if err != nil {
 		mem.Close()
 		if a.redisCache != nil {
@@ -210,8 +211,26 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	dav.Events = bus
 	dav.Props = files.NewSQLPropertyStore(db)
 	dav.Locks = files.NewSQLLockStore(db)
-	dav.Shares = sharing.NewSQLShareStore(db)
+	shareStore := sharing.NewSQLShareStore(db)
+	dav.Shares = shareStore
 	a.davFS = dav
+	// Per-user key mode: one KeySharer feeds every ADR-0098 hook — the DAV
+	// write path, share create/delete, the expire sweep, and group
+	// membership changes. Nil when the mode is off (hooks nil-checked).
+	var keySharer *files.KeySharer
+	if keyResolver != nil {
+		keySharer = &files.KeySharer{
+			Meta:    meta,
+			Wrapper: keyResolver,
+			Shares:  shareStore,
+			Users:   a.Users,
+			Logger:  logger,
+		}
+		dav.KeySharer = keySharer
+		dav.Logger = logger
+		userStore.MemberKeys = keySharer
+		userStore.Logger = logger
+	}
 	a.notifStore = notifications.NewSQLStore(db)
 	a.shares = &sharing.Service{
 		Store:  dav.Shares,
@@ -221,6 +240,9 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		OCM:    ocm.NewClient(),
 		Notifs: a.notifStore,
 		Logger: logger,
+	}
+	if keySharer != nil {
+		a.shares.Keys = keySharer
 	}
 	a.ocmStore = ocm.NewSQLStore(db)
 	a.lookup = &sharing.LookupClient{BaseURL: cfg.Sharing.LookupServer}
@@ -238,7 +260,11 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	a.jobsStore = jobsStore
 	jr := jobs.NewRunner(jobsStore, time.Now, cfg.Jobs.Workers, cfg.Jobs.PollInterval)
 	jr.Logger = logger
-	if err := jr.Register(sharing.NewExpireJob(dav.Shares, dav.Clock, a.notifStore, logger)); err != nil {
+	var shareKeys sharing.ShareKeys
+	if keySharer != nil {
+		shareKeys = keySharer
+	}
+	if err := jr.Register(sharing.NewExpireJob(dav.Shares, dav.Clock, a.notifStore, logger, shareKeys)); err != nil {
 		if cerr := a.closeResources(ctx); cerr != nil {
 			return nil, errors.Join(err, cerr)
 		}
@@ -505,14 +531,18 @@ func joinErr(a, b error) error {
 	return errors.Join(a, b)
 }
 
-func openStorage(cfg *config.Config, db database.DB) (storage.Storage, error) {
+// openStorage builds the configured storage backend, wrapping it with the
+// encryption decorator when enabled. The returned resolver is non-nil
+// exactly when encryption.per_user_keys is on (ADR-0097); the caller reuses
+// it as the ADR-0098 KeyWrapper for the share key hooks.
+func openStorage(cfg *config.Config, db database.DB) (storage.Storage, *encrypt.SQLResolver, error) {
 	name := cfg.Storage.DefaultBackend
 	if name == "" {
 		name = "local"
 	}
 	b, ok := cfg.Storage.Backends[name]
 	if !ok {
-		return nil, fmt.Errorf("app: storage backend %q not configured", name)
+		return nil, nil, fmt.Errorf("app: storage backend %q not configured", name)
 	}
 	var st storage.Storage
 	var err error
@@ -522,17 +552,17 @@ func openStorage(cfg *config.Config, db database.DB) (storage.Storage, error) {
 	case "s3":
 		st, err = s3store.New(b)
 	default:
-		return nil, fmt.Errorf("app: storage backend %q type %q unsupported", name, b.Type)
+		return nil, nil, fmt.Errorf("app: storage backend %q type %q unsupported", name, b.Type)
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if cfg.Encryption.Enabled {
 		current, previous, err := encrypt.LoadKeyring(cfg.Encryption.MasterKeyPath, cfg.Encryption.PreviousKeyPaths)
 		if err != nil {
-			return nil, fmt.Errorf("app: encryption: %w", err)
+			return nil, nil, fmt.Errorf("app: encryption: %w", err)
 		}
-		var resolver encrypt.KeyResolver
+		var resolver *encrypt.SQLResolver
 		if cfg.Encryption.PerUserKeys {
 			// Ring order: previous keys first, current last — positions
 			// are the key IDs UK rows reference (ADR-0097).
@@ -541,13 +571,21 @@ func openStorage(cfg *config.Config, db database.DB) (storage.Storage, error) {
 			ring = append(ring, current)
 			resolver, err = encrypt.NewSQLResolver(db, ring)
 			if err != nil {
-				return nil, fmt.Errorf("app: encryption: %w", err)
+				return nil, nil, fmt.Errorf("app: encryption: %w", err)
 			}
 		}
-		st, err = encrypt.NewWithResolver(current, previous, st, resolver)
-		if err != nil {
-			return nil, fmt.Errorf("app: encryption: %w", err)
+		// Widen only a non-nil resolver: a typed nil *SQLResolver would
+		// otherwise become a non-nil KeyResolver interface and the FS
+		// would dispatch per-user allocation to a nil receiver.
+		var keyResolver encrypt.KeyResolver
+		if resolver != nil {
+			keyResolver = resolver
 		}
+		st, err = encrypt.NewWithResolver(current, previous, st, keyResolver)
+		if err != nil {
+			return nil, nil, fmt.Errorf("app: encryption: %w", err)
+		}
+		return st, resolver, nil
 	}
-	return st, nil
+	return st, nil, nil
 }

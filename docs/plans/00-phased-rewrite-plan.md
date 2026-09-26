@@ -191,6 +191,26 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-26** — Phase 5w-2: SSE per-user keys **share wrap/revoke**
+  (ADR-0098), delivering ADR-0096's phase 2. Resolver wrap API
+  (`WrapKeyFor`/`UnwrapKeyFor`/`ReWrapSharees` — idempotent wraps, the
+  owner guard that never orphans a file from its owner, overwrite carry
+  that aborts before deleting old rows on failure), the `files.KeySharer`
+  service over narrow structural seams (no new import edges) with hooks on
+  share create/delete, lazy + background expiry (`ListExpired` + unwrap of
+  exactly the reaped shares), the DAV write path (`WrapForWrite` for
+  covering shares — target-is-path-or-ancestor via a dialect-neutral
+  ancestor `IN` list — plus `ReWrapForOverwrite`), and group membership
+  add/remove (`users.SQLStore.MemberKeys`, wired in app and
+  `ncgo-cli group`). Wrap rows belong to the live file: overwrites carry
+  recipients to the fresh key and delete all superseded rows (version
+  snapshots re-seal under their own UUIDs and keep resolving — amends
+  ADR-0097's persist note). Every hook is best-effort Warn-logged (recipient
+  rows are the phase-4 substrate, never a read-path dependency); link/OCM
+  shares and import/bootstrap membership are documented skips; the
+  write/unshare race invariant (recipient row iff share exists) is closed
+  by a reconciliation re-read and pinned under `-race`. Zero new
+  dependencies.
 - **2026-09-26** — Phase 5w-1: SSE per-user keys **envelope + resolver**
   (ADR-0097), delivering ADR-0096's phase 1. v3 header
   (`"NCGOENC3" || keyUUID(16) || salt(32)`, 56B; chunk layer verbatim,

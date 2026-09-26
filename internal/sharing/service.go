@@ -40,6 +40,13 @@ type ShareNotifier interface {
 	DeleteByObject(ctx context.Context, objectType, objectID string) error
 }
 
+// ShareKeys is the per-user file-key wrap hook (ADR-0098):
+// *files.KeySharer satisfies it. Nil disables key wrapping.
+type ShareKeys interface {
+	WrapForShare(ctx context.Context, sh *files.Share) error
+	UnwrapForShare(ctx context.Context, sh *files.Share) error
+}
+
 // Service creates and serves public-link shares.
 type Service struct {
 	Store    files.ShareStore
@@ -50,6 +57,7 @@ type Service struct {
 	NewToken func() string
 	OCM      *ocm.Client
 	Notifs   ShareNotifier
+	Keys     ShareKeys
 	Logger   *slog.Logger
 }
 
@@ -87,6 +95,7 @@ func (s *Service) expireIfNeeded(ctx context.Context, sh *files.Share) (bool, er
 		return false, err
 	}
 	s.dismissShareNotifications(ctx, sh.ID)
+	s.unwrapShareKeys(ctx, sh)
 	return true, nil
 }
 
@@ -216,6 +225,7 @@ func (s *Service) Create(ctx context.Context, uid, pathName string, shareType, p
 	}
 	if shareType == files.ShareTypeUser || shareType == files.ShareTypeGroup {
 		s.notifyShareCreated(ctx, u, sh)
+		s.wrapShareKeys(ctx, sh)
 	}
 	return sh, nil
 }
@@ -354,6 +364,31 @@ func (s *Service) dismissShareNotifications(ctx context.Context, id int64) {
 	}
 }
 
+// wrapShareKeys wraps the share's file keys for its recipients after a
+// grant (ADR-0098). Best-effort like the notification hooks: recipient rows
+// are the phase-4 substrate, not a read-path dependency, so a wrap failure
+// is Warn-logged and never fails the share.
+func (s *Service) wrapShareKeys(ctx context.Context, sh *files.Share) {
+	if s.Keys == nil {
+		return
+	}
+	if err := s.Keys.WrapForShare(ctx, sh); err != nil {
+		s.warn("sharing: share key wrap failed", slog.Int64("share", sh.ID), slog.Any("err", err))
+	}
+}
+
+// unwrapShareKeys deletes the recipients' wrap rows after a revoke (owner
+// unshare, lazy expiry, or the expire sweep — ADR-0098); best-effort like
+// wrapShareKeys.
+func (s *Service) unwrapShareKeys(ctx context.Context, sh *files.Share) {
+	if s.Keys == nil {
+		return
+	}
+	if err := s.Keys.UnwrapForShare(ctx, sh); err != nil {
+		s.warn("sharing: share key unwrap failed", slog.Int64("share", sh.ID), slog.Any("err", err))
+	}
+}
+
 func sameHTTPHost(a, b string) bool {
 	ua, errA := url.Parse(a)
 	ub, errB := url.Parse(b)
@@ -465,6 +500,7 @@ func (s *Service) Delete(ctx context.Context, uid string, id int64) error {
 		return err
 	}
 	s.dismissShareNotifications(ctx, sh.ID)
+	s.unwrapShareKeys(ctx, sh)
 	return nil
 }
 

@@ -257,3 +257,65 @@ func TestInsertRequiresParent(t *testing.T) {
 		t.Errorf("insert = %v", err)
 	}
 }
+
+func TestSQLStoreListSealedSubtree(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+	store := NewSQLStore(db)
+	uid := seedUser(t, db)
+	if _, err := store.EnsureRoot(ctx, uid); err != nil {
+		t.Fatal(err)
+	}
+	uuidA := []byte("0123456789abcdef")
+	uuidB := []byte("fedcba9876543210")
+	for _, dir := range []string{"/docs", "/docs/sub", "/other"} {
+		if err := store.Insert(ctx, &File{UserID: uid, Path: dir, IsDir: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := []struct {
+		path string
+		uuid []byte
+	}{
+		{"/docs/a.txt", uuidA},
+		{"/docs/sub/b.txt", uuidB},
+		{"/docs/plain.txt", nil}, // v1/v2 or plaintext: NULL key_uuid
+		{"/other/c.txt", uuidA},
+	}
+	for _, f := range files {
+		if err := store.Insert(ctx, &File{UserID: uid, Path: f.path, Size: 1, KeyUUID: f.uuid}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := store.ListSealedSubtree(ctx, uid, "/docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := make([]string, 0, len(got))
+	for _, f := range got {
+		paths = append(paths, f.Path)
+		if len(f.KeyUUID) != 16 {
+			t.Errorf("%s: key_uuid = %d bytes, want 16", f.Path, len(f.KeyUUID))
+		}
+	}
+	want := []string{"/docs/a.txt", "/docs/sub/b.txt"}
+	if len(paths) != len(want) {
+		t.Fatalf("sealed subtree = %v, want %v", paths, want)
+	}
+	for i := range want {
+		if paths[i] != want[i] {
+			t.Fatalf("sealed subtree = %v, want %v", paths, want)
+		}
+	}
+
+	// A file path lists just itself when sealed, nothing when not.
+	one, err := store.ListSealedSubtree(ctx, uid, "/docs/a.txt")
+	if err != nil || len(one) != 1 || one[0].Path != "/docs/a.txt" {
+		t.Fatalf("file target = %v %v", one, err)
+	}
+	none, err := store.ListSealedSubtree(ctx, uid, "/docs/plain.txt")
+	if err != nil || len(none) != 0 {
+		t.Fatalf("unsealed target = %v %v", none, err)
+	}
+}
