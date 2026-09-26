@@ -330,7 +330,7 @@ func pluginInstaller(cmd *cobra.Command) (*plugins.Installer, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	st, err := openStorage(cfg)
+	st, err := openStorage(cfg, db)
 	if err != nil {
 		_ = db.Close()
 		return nil, nil, err

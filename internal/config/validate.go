@@ -104,6 +104,11 @@ func (c *Config) Validate() error {
 	if c.Encryption.Enabled && strings.TrimSpace(c.Encryption.MasterKeyPath) == "" {
 		errs = append(errs, &ValidationError{Field: "encryption.master_key_path", Reason: "required when encryption is enabled"})
 	}
+	if c.Encryption.PerUserKeys && !c.Encryption.Enabled {
+		// Same dead-key rule as metrics_listen (ADR-0076): per-user keys
+		// without encryption would be a defined-but-dead key.
+		errs = append(errs, &ValidationError{Field: "encryption.per_user_keys", Reason: "requires encryption.enabled (per-user keys without encryption would be a dead key)"})
+	}
 	errs = append(errs, validatePreviousKeyPaths(c.Encryption)...)
 
 	if c.Previews.MaxDimension < 32 || c.Previews.MaxDimension > 4096 {

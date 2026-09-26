@@ -125,7 +125,7 @@ func openTargetDAV(t *testing.T, cfgPath string) *files.DAV {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	st, err := openStorage(cfg)
+	st, err := openStorage(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,13 +4,17 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/config"
+	"github.com/PhantomMatthew/nextcloud-go/internal/database"
+	"github.com/PhantomMatthew/nextcloud-go/internal/migrations"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage/encrypt"
+	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 )
 
 // encConfig writes a minimal valid config file with the given encryption
@@ -226,7 +230,7 @@ func writeSealed(t *testing.T, cfgPath, rel, content string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, err := openStorage(cfg)
+	st, err := openStorage(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +420,7 @@ func readSealed(t *testing.T, cfgPath, rel string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, err := openStorage(cfg)
+	st, err := openStorage(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,6 +540,192 @@ func TestEncryptionRotateKeysGuards(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "previous_key_paths") ||
 		!strings.Contains(err.Error(), "Rotation procedure") {
 		t.Fatalf("no-previous-keys err = %v", err)
+	}
+}
+
+// rekeyEnv writes a config pointing at dir's storage root, file-backed
+// sqlite database, and master key path, with the given per-user-keys flag.
+func rekeyEnv(t *testing.T, dir string, perUser bool) (cfgPath, storageRoot, dbPath string) {
+	t.Helper()
+	storageRoot = filepath.Join(dir, "storage")
+	dbPath = filepath.Join(dir, "ncgo.db")
+	keyPath := filepath.Join(dir, "master.key")
+	cfgPath = filepath.Join(t.TempDir(), "config.yaml")
+	cfg := fmt.Sprintf(`
+database:
+  driver: sqlite
+  dsn: %q
+storage:
+  default_backend: local
+  backends:
+    local:
+      type: localfs
+      root: %q
+encryption:
+  enabled: true
+  master_key_path: %q
+  per_user_keys: %v
+`, dbPath, storageRoot, keyPath, perUser)
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return cfgPath, storageRoot, dbPath
+}
+
+// openRekeyDB opens the rekey test's file-backed database, migrates it, and
+// seeds the users the storage tree belongs to.
+func openRekeyDB(t *testing.T, dbPath string, uids ...string) database.DB {
+	t.Helper()
+	ctx := context.Background()
+	db, err := database.Open(ctx, database.Config{Driver: database.DialectSQLite, DSN: dbPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	std, ok := database.Unwrap(db)
+	if !ok {
+		t.Fatal("unwrap")
+	}
+	if _, err := migrations.Up(ctx, std, database.DialectSQLite, slog.New(slog.DiscardHandler)); err != nil {
+		t.Fatal(err)
+	}
+	us := users.NewSQLStore(db)
+	for _, uid := range uids {
+		u := &users.User{UID: uid, DisplayName: uid, PasswordHash: "x", Enabled: true}
+		if err := us.Create(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return db
+}
+
+func rawHasV3Magic(t *testing.T, root, rel string) bool {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.HasPrefix(string(raw), "NCGOENC3")
+}
+
+func mustLoadConfig(t *testing.T, cfgPath string) *config.Config {
+	t.Helper()
+	cfg, err := config.Load(config.LoadOptions{Path: cfgPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+func TestEncryptionRekeyV3(t *testing.T) {
+	dir := t.TempDir()
+	cfgOff, root, dbPath := rekeyEnv(t, dir, false)
+	if _, err := runCLI(t, "", "--config", cfgOff, "encryption", "init"); err != nil {
+		t.Fatal(err)
+	}
+
+	// v1-sealed files (single-key ring) plus one legacy plaintext file.
+	writeSealed(t, cfgOff, "alice/old1.txt", "sealed one")
+	writeSealed(t, cfgOff, "alice/old2.txt", "sealed two!")
+	writeSealed(t, cfgOff, "bob/old.txt", "bob sealed!!")
+	writeRaw(t, root, "alice/plain.txt", "legacy plain")
+	if !rawHasMagic(t, root, "alice/old1.txt") || rawHasV3Magic(t, root, "alice/old1.txt") {
+		t.Fatal("pre-migration files must carry v1 headers")
+	}
+
+	// Guard: rekey-v3 requires per-user keys.
+	if _, err := runCLI(t, "", "--config", cfgOff, "encryption", "rekey-v3"); err == nil ||
+		!strings.Contains(err.Error(), "per_user_keys") ||
+		!strings.Contains(err.Error(), "Migration procedure") {
+		t.Fatalf("guard err = %v", err)
+	}
+
+	// Enable per-user keys (config flip + restart) and seed the users the
+	// sweep's storage tree belongs to.
+	cfgOn, _, _ := rekeyEnv(t, dir, true)
+	db := openRekeyDB(t, dbPath, "alice", "bob")
+
+	// Dry-run counts the three sealed files and writes nothing.
+	out, err := runCLI(t, "", "--config", cfgOn, "encryption", "rekey-v3", "--dry-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "dry-run rekey-v3: scanned=4 changed=3 skipped=1 failed=0 bytes=33") {
+		t.Fatalf("dry-run output = %q", out)
+	}
+	if rawHasV3Magic(t, root, "alice/old1.txt") {
+		t.Fatal("dry-run must not write")
+	}
+
+	// The real sweep re-seals v1 files into the v3 envelope; plaintext is
+	// skipped; contents are unchanged.
+	out, err = runCLI(t, "", "--config", cfgOn, "encryption", "rekey-v3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "rekey-v3: scanned=4 rekeyed=3 skipped=1 failed=0 bytes=33") {
+		t.Fatalf("rekey-v3 output = %q", out)
+	}
+	for _, rel := range []string{"alice/old1.txt", "alice/old2.txt", "bob/old.txt"} {
+		if !rawHasV3Magic(t, root, rel) {
+			t.Errorf("%s must carry the v3 magic after rekey", rel)
+		}
+	}
+	if rawHasMagic(t, root, "alice/plain.txt") {
+		t.Error("plaintext file must stay plaintext (rekey-v3 is not encrypt-all)")
+	}
+	st, err := openStorage(mustLoadConfig(t, cfgOn), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rel, want := range map[string]string{
+		"alice/old1.txt":  "sealed one",
+		"alice/old2.txt":  "sealed two!",
+		"bob/old.txt":     "bob sealed!!",
+		"alice/plain.txt": "legacy plain",
+	} {
+		rc, err := st.Open(context.Background(), rel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(rc)
+		_ = rc.Close()
+		if err != nil || string(data) != want {
+			t.Errorf("%s = %q %v, want %q", rel, data, err, want)
+		}
+	}
+
+	// Every rekeyed file got a wrap row; each user holds exactly one UK.
+	var wraps, uks int64
+	if err := db.QueryRow(context.Background(), `SELECT COUNT(*) FROM file_keys`).Scan(&wraps); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(context.Background(), `SELECT COUNT(*) FROM user_keys`).Scan(&uks); err != nil {
+		t.Fatal(err)
+	}
+	if wraps != 3 || uks != 2 {
+		t.Errorf("file_keys=%d user_keys=%d, want 3 and 2", wraps, uks)
+	}
+
+	// Idempotent: a second run skips everything.
+	out, err = runCLI(t, "", "--config", cfgOn, "encryption", "rekey-v3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "rekeyed=0 skipped=4") {
+		t.Fatalf("idempotent output = %q", out)
+	}
+
+	// encrypt-all in per-user mode seals plaintext straight to v3.
+	out, err = runCLI(t, "", "--config", cfgOn, "encryption", "encrypt-all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "encrypt-all: scanned=4 sealed=1 skipped=3 failed=0") {
+		t.Fatalf("encrypt-all output = %q", out)
+	}
+	if !rawHasV3Magic(t, root, "alice/plain.txt") {
+		t.Error("encrypt-all in per-user mode must seal straight to v3")
 	}
 }
 

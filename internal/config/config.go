@@ -75,11 +75,16 @@ type BackendConfig struct {
 // retired master keys for rotation (ADR-0074): their positions are their
 // key IDs, the key at MasterKeyPath seals new writes at the highest ID.
 // The list is append-only forever — reordering or removing entries orphans
-// the files sealed under those IDs.
+// the files sealed under those IDs. PerUserKeys (ADR-0097, opt-in) seals
+// new writes with the v3 per-user-key envelope: a random per-file key
+// wrapped under the owner's user key. It requires Enabled; deployments that
+// never turn it on stay bit-identical to v1/v2 builds (rollback-safe), but
+// once v3 files exist a rollback strands them, same as v2.
 type EncryptionConfig struct {
 	Enabled          bool     `koanf:"enabled"`
 	MasterKeyPath    string   `koanf:"master_key_path"`
 	PreviousKeyPaths []string `koanf:"previous_key_paths"`
+	PerUserKeys      bool     `koanf:"per_user_keys"`
 }
 
 // PreviewsConfig controls server-side image preview generation (ADR-0053).

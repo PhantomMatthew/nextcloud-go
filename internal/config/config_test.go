@@ -100,6 +100,9 @@ func TestLoadFullFile(t *testing.T) {
 		cfg.Encryption.PreviousKeyPaths[1] != "/var/lib/ncgo/master-2025.key" {
 		t.Errorf("previous key paths = %v", cfg.Encryption.PreviousKeyPaths)
 	}
+	if cfg.Encryption.PerUserKeys {
+		t.Error("full.yaml per_user_keys = true, want false")
+	}
 	if cfg.Auth.BootstrapAdmin.UID != "admin" {
 		t.Errorf("bootstrap uid = %q", cfg.Auth.BootstrapAdmin.UID)
 	}
@@ -280,6 +283,43 @@ func TestLoadEncryptionPreviousKeyPaths(t *testing.T) {
 	}
 }
 
+func TestLoadEncryptionPerUserKeys(t *testing.T) {
+	// Default: off.
+	cfg, err := Load(LoadOptions{EnvPrefix: unusedEnvPrefix})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Encryption.PerUserKeys {
+		t.Error("default per_user_keys = true, want false")
+	}
+
+	// Overrides parse a native bool (encryption must be enabled for a true
+	// value to validate).
+	cfg, err = Load(LoadOptions{
+		EnvPrefix: unusedEnvPrefix,
+		Overrides: map[string]any{
+			"encryption.enabled":         true,
+			"encryption.master_key_path": "/keys/current.key",
+			"encryption.per_user_keys":   true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Encryption.PerUserKeys {
+		t.Error("override per_user_keys = false, want true")
+	}
+
+	// Valid alongside an enabled encryption section.
+	c := Default()
+	c.Encryption.Enabled = true
+	c.Encryption.MasterKeyPath = "/keys/current.key"
+	c.Encryption.PerUserKeys = true
+	if err := c.Validate(); err != nil {
+		t.Errorf("per-user keys with encryption enabled Validate() = %v", err)
+	}
+}
+
 func TestLoadEmptySecretIsValid(t *testing.T) {
 	cfg, err := Load(LoadOptions{EnvPrefix: unusedEnvPrefix})
 	if err != nil {
@@ -327,6 +367,9 @@ func TestValidateRules(t *testing.T) {
 		{"plugin_refresh_interval_negative", func(c *Config) { c.Plugin.RefreshInterval = -time.Second }, "plugin.refresh_interval"},
 		{"storage_backend", func(c *Config) { c.Storage.DefaultBackend = "s3" }, "storage.default_backend"},
 		{"encryption_no_key", func(c *Config) { c.Encryption.Enabled = true }, "encryption.master_key_path"},
+		{"encryption_per_user_keys_without_enabled", func(c *Config) {
+			c.Encryption.PerUserKeys = true
+		}, "encryption.per_user_keys"},
 		{"encryption_previous_empty", func(c *Config) {
 			c.Encryption.PreviousKeyPaths = []string{"/var/lib/ncgo/old.key", "  "}
 		}, "encryption.previous_key_paths"},

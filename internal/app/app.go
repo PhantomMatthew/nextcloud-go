@@ -194,7 +194,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	} else {
 		a.Cache = mem
 	}
-	st, err := openStorage(cfg)
+	st, err := openStorage(cfg, db)
 	if err != nil {
 		mem.Close()
 		if a.redisCache != nil {
@@ -505,7 +505,7 @@ func joinErr(a, b error) error {
 	return errors.Join(a, b)
 }
 
-func openStorage(cfg *config.Config) (storage.Storage, error) {
+func openStorage(cfg *config.Config, db database.DB) (storage.Storage, error) {
 	name := cfg.Storage.DefaultBackend
 	if name == "" {
 		name = "local"
@@ -532,7 +532,19 @@ func openStorage(cfg *config.Config) (storage.Storage, error) {
 		if err != nil {
 			return nil, fmt.Errorf("app: encryption: %w", err)
 		}
-		st, err = encrypt.NewWithPrevious(current, previous, st)
+		var resolver encrypt.KeyResolver
+		if cfg.Encryption.PerUserKeys {
+			// Ring order: previous keys first, current last — positions
+			// are the key IDs UK rows reference (ADR-0097).
+			ring := make([][]byte, 0, len(previous)+1)
+			ring = append(ring, previous...)
+			ring = append(ring, current)
+			resolver, err = encrypt.NewSQLResolver(db, ring)
+			if err != nil {
+				return nil, fmt.Errorf("app: encryption: %w", err)
+			}
+		}
+		st, err = encrypt.NewWithResolver(current, previous, st, resolver)
 		if err != nil {
 			return nil, fmt.Errorf("app: encryption: %w", err)
 		}

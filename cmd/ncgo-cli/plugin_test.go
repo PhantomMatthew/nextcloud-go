@@ -57,7 +57,7 @@ func TestInstallHostConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	st, err := openStorage(cfg)
+	st, err := openStorage(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

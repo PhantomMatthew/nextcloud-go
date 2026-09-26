@@ -93,8 +93,10 @@ func openRawBackend(cfg *config.Config) (storage.Storage, error) {
 // server does: when encryption is enabled the raw backend is wrapped as in
 // app.openStorage (keyring included, so CLI writes during a rotation seal
 // under the current key), so CLI writes (import-nextcloud files) are sealed
-// too.
-func openStorage(cfg *config.Config) (storage.Storage, error) {
+// too. With encryption.per_user_keys the wrapper carries the ADR-0097 key
+// resolver over db, so CLI writes land in the same v3 per-user-key envelope
+// the server produces; db may be nil only when per-user keys are off.
+func openStorage(cfg *config.Config, db database.DB) (storage.Storage, error) {
 	st, err := openRawBackend(cfg)
 	if err != nil {
 		return nil, err
@@ -104,10 +106,31 @@ func openStorage(cfg *config.Config) (storage.Storage, error) {
 		if err != nil {
 			return nil, fmt.Errorf("ncgo-cli: encryption: %w", err)
 		}
-		st, err = encrypt.NewWithPrevious(current, previous, st)
+		var resolver encrypt.KeyResolver
+		if cfg.Encryption.PerUserKeys {
+			resolver, err = perUserResolver(db, current, previous)
+			if err != nil {
+				return nil, err
+			}
+		}
+		st, err = encrypt.NewWithResolver(current, previous, st, resolver)
 		if err != nil {
 			return nil, fmt.Errorf("ncgo-cli: encryption: %w", err)
 		}
 	}
 	return st, nil
+}
+
+// perUserResolver builds the ADR-0097 key resolver over the full keyring:
+// previous keys first, the current key last, so ring positions are the key
+// IDs user_keys rows reference.
+func perUserResolver(db database.DB, current []byte, previous [][]byte) (*encrypt.SQLResolver, error) {
+	ring := make([][]byte, 0, len(previous)+1)
+	ring = append(ring, previous...)
+	ring = append(ring, current)
+	res, err := encrypt.NewSQLResolver(db, ring)
+	if err != nil {
+		return nil, fmt.Errorf("ncgo-cli: encryption: %w", err)
+	}
+	return res, nil
 }

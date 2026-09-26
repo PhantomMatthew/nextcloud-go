@@ -73,7 +73,7 @@ func (s *SQLStore) GetByPath(ctx context.Context, userID int64, p string) (*File
 		return nil, err
 	}
 	return s.scanOne(s.db.QueryRow(ctx, `
-SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions
+SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid
 FROM files WHERE user_id = ? AND path = ?`, userID, np))
 }
 
@@ -82,7 +82,7 @@ func (s *SQLStore) GetByID(ctx context.Context, id int64) (*File, error) {
 		return nil, ErrNotFound
 	}
 	return s.scanOne(s.db.QueryRow(ctx, `
-SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions
+SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid
 FROM files WHERE id = ?`, id))
 }
 
@@ -92,7 +92,7 @@ func (s *SQLStore) getByID(ctx context.Context, id int64) (*File, error) {
 
 func (s *SQLStore) ListChildren(ctx context.Context, userID, parentID int64) ([]File, error) {
 	rows, err := s.db.Query(ctx, `
-SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions
+SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid
 FROM files WHERE user_id = ? AND parent_id = ? ORDER BY path`, userID, parentID)
 	if err != nil {
 		return nil, fmt.Errorf("files: list: %w", err)
@@ -168,6 +168,10 @@ func (s *SQLStore) Insert(ctx context.Context, f *File) error {
 	if f.Checksum != "" {
 		checksum = f.Checksum
 	}
+	var keyUUID any
+	if len(f.KeyUUID) > 0 {
+		keyUUID = f.KeyUUID
+	}
 	if f.ETag == "" {
 		if f.IsDir {
 			f.ETag = ComputeDirETag(nil)
@@ -176,9 +180,9 @@ func (s *SQLStore) Insert(ctx context.Context, f *File) error {
 		}
 	}
 	_, err = s.db.Exec(ctx, `
-INSERT INTO files (user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		f.UserID, parent, f.Name, f.Path, isDir, f.Size, f.Mtime.UTC().UnixMilli(), f.ETag, checksum, f.MIME, f.Permissions)
+INSERT INTO files (user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		f.UserID, parent, f.Name, f.Path, isDir, f.Size, f.Mtime.UTC().UnixMilli(), f.ETag, checksum, f.MIME, f.Permissions, keyUUID)
 	if err != nil {
 		if database.IsUniqueViolation(s.db.Dialect(), err) {
 			return ErrExists
@@ -246,9 +250,13 @@ func updateMetaStmt(f *File) (string, []any) {
 	if f.Checksum != "" {
 		checksum = f.Checksum
 	}
+	var keyUUID any
+	if len(f.KeyUUID) > 0 {
+		keyUUID = f.KeyUUID
+	}
 	return `
-UPDATE files SET name = ?, path = ?, is_dir = ?, size = ?, mtime_ms = ?, etag = ?, checksum = ?, mime = ?, permissions = ?, parent_id = ?`,
-		[]any{f.Name, f.Path, isDir, f.Size, f.Mtime.UTC().UnixMilli(), f.ETag, checksum, f.MIME, f.Permissions, nullInt(f.ParentID)}
+UPDATE files SET name = ?, path = ?, is_dir = ?, size = ?, mtime_ms = ?, etag = ?, checksum = ?, mime = ?, permissions = ?, parent_id = ?, key_uuid = ?`,
+		[]any{f.Name, f.Path, isDir, f.Size, f.Mtime.UTC().UnixMilli(), f.ETag, checksum, f.MIME, f.Permissions, nullInt(f.ParentID), keyUUID}
 }
 
 func (s *SQLStore) DeleteSubtree(ctx context.Context, userID int64, p string) error {
@@ -307,7 +315,7 @@ func (s *SQLStore) RenameSubtree(ctx context.Context, userID int64, srcPath, dst
 	}
 
 	rows, err := s.db.Query(ctx, `
-SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions
+SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid
 FROM files WHERE user_id = ? AND (path = ? OR path LIKE ?)`, userID, src, src+"/%")
 	if err != nil {
 		return fmt.Errorf("files: rename list: %w", err)
@@ -372,7 +380,7 @@ func (s *SQLStore) SearchByName(ctx context.Context, userID int64, term string, 
 		op = "ILIKE"
 	}
 	q := fmt.Sprintf(`
-SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions
+SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid
 FROM files
 WHERE user_id = ? AND path <> '/' AND name %s ? ESCAPE '\'
 ORDER BY name, id
@@ -479,7 +487,7 @@ func scanFile(row rowScanner) (*File, error) {
 	var checksum sql.NullString
 	var isDir int
 	var mtimeMs int64
-	if err := row.Scan(&f.ID, &f.UserID, &parent, &f.Name, &f.Path, &isDir, &f.Size, &mtimeMs, &f.ETag, &checksum, &f.MIME, &f.Permissions); err != nil {
+	if err := row.Scan(&f.ID, &f.UserID, &parent, &f.Name, &f.Path, &isDir, &f.Size, &mtimeMs, &f.ETag, &checksum, &f.MIME, &f.Permissions, &f.KeyUUID); err != nil {
 		return nil, err
 	}
 	if parent.Valid {

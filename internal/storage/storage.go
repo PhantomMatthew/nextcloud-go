@@ -25,3 +25,15 @@ type Storage interface {
 	Rename(ctx context.Context, src, dst string) error
 	Mkdir(ctx context.Context, p string) error
 }
+
+// KeyUUIDWriter is an optional interface a WriteCloser returned by Create
+// may implement when the storage layer seals content under a per-file key
+// (the v3 envelope of internal/storage/encrypt, ADR-0097). SealedKeyUUID
+// reports the 16-byte key UUID written into the sealed file's header; ok is
+// false when the writer does not seal under a per-file key (legacy v1/v2
+// writers simply do not implement this interface). Callers that persist
+// file metadata assert on it after a successful Close and record the UUID
+// so the key can be resolved without parsing sealed headers.
+type KeyUUIDWriter interface {
+	SealedKeyUUID() (keyUUID [16]byte, ok bool)
+}

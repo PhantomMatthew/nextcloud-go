@@ -1,11 +1,14 @@
 // Package encrypt implements transparent at-rest encryption as a
 // storage.Storage decorator: AES-256-GCM with 64 KiB chunked framing,
 // a per-file random salt, and per-chunk nonces derived from a per-file
-// data key (HMAC-SHA256 of the master key over the salt). Files written
-// through the decorator are sealed; reads auto-detect the magic header,
-// so encrypted files decrypt transparently while legacy plaintext files
-// pass through untouched. See ADR-0052 for the threat model and the v1
-// format, ADR-0074 for the v2 key-ID header and master-key rotation.
+// data key (HMAC-SHA256 of the file key over the salt; for v1/v2 files the
+// file key is a ring key, for v3 files a resolver-unwrapped per-user file
+// key). Files written through the decorator are sealed; reads auto-detect
+// the magic header, so encrypted files decrypt transparently while legacy
+// plaintext files pass through untouched. See ADR-0052 for the threat
+// model and the v1 format, ADR-0074 for the v2 key-ID header and master-key
+// rotation, ADR-0097 for the v3 per-user-key envelope and the KeyResolver
+// seam.
 package encrypt
 
 import (
@@ -18,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -39,18 +43,22 @@ const (
 	tagSize      = 16 // AES-GCM authentication tag
 	nonceSize    = 12 // AES-GCM nonce
 	saltSize     = 32
-	headerSize   = len(magic) + saltSize       // v1 header
-	headerSizeV2 = len(magicV2) + 1 + saltSize // v2 header: magic + key-ID byte + salt
-	maxHeader    = headerSizeV2                // read budget for header sniffing
+	keyUUIDSize  = 16
+	headerSize   = len(magic) + saltSize                 // v1 header
+	headerSizeV2 = len(magicV2) + 1 + saltSize           // v2 header: magic + key-ID byte + salt
+	headerSizeV3 = len(magicV3) + keyUUIDSize + saltSize // v3 header: magic + key UUID + salt
+	maxHeader    = headerSizeV3                          // read budget for header sniffing
 )
 
 // magic marks sealed files; reads auto-detect it to distinguish encrypted
 // files from legacy plaintext. The last character is the format version:
 // v1 headers are magic + salt with implicit key ID 0, v2 headers insert a
-// key-ID byte between magic and salt (ADR-0074).
+// key-ID byte between magic and salt (ADR-0074), v3 headers insert a 16-byte
+// key UUID naming a per-user wrapped file key (ADR-0097).
 const (
 	magic   = "NCGOENC1"
 	magicV2 = "NCGOENC2"
+	magicV3 = "NCGOENC3"
 )
 
 // ErrIntegrity reports a failed GCM authentication (tampered ciphertext,
@@ -65,10 +73,13 @@ var ErrUnknownKeyID = errors.New("encrypt: unknown key id")
 
 // FS is a storage.Storage decorator sealing file contents at rest. keys is
 // the keyring: positional key IDs 0..n-1 are previous (read-only) keys and
-// the last entry is the current key, which seals all new writes.
+// the last entry is the current key, which seals all new writes. resolver,
+// when non-nil, switches writes to the v3 per-user-key envelope (ADR-0097);
+// a nil resolver keeps the FS v1/v2-only and bit-identical.
 type FS struct {
-	inner storage.Storage
-	keys  [][]byte
+	inner    storage.Storage
+	keys     [][]byte
+	resolver KeyResolver
 }
 
 // New wraps inner with transparent encryption under a single master key.
@@ -87,6 +98,15 @@ func New(masterKey []byte, inner storage.Storage) (*FS, error) {
 // entries may be byte-identical (ambiguous IDs are a misconfiguration).
 // All keys are copied.
 func NewWithPrevious(current []byte, previous [][]byte, inner storage.Storage) (*FS, error) {
+	return NewWithResolver(current, previous, inner, nil)
+}
+
+// NewWithResolver is NewWithPrevious plus a per-user KeyResolver
+// (ADR-0097): with a non-nil resolver, Create seals new files with the v3
+// envelope (a random per-file key wrapped for the storage key's owner) and
+// Open resolves v3 headers through it. A nil resolver keeps the v1/v2
+// behavior bit-identical.
+func NewWithResolver(current []byte, previous [][]byte, inner storage.Storage, res KeyResolver) (*FS, error) {
 	if inner == nil {
 		return nil, fmt.Errorf("encrypt: inner storage is nil")
 	}
@@ -111,7 +131,7 @@ func NewWithPrevious(current []byte, previous [][]byte, inner storage.Storage) (
 			}
 		}
 	}
-	return &FS{inner: inner, keys: keys}, nil
+	return &FS{inner: inner, keys: keys, resolver: res}, nil
 }
 
 // currentKeyID is the key-ID byte written into v2 headers and the ring
@@ -186,26 +206,47 @@ func nonce(buf []byte, chunk uint64) {
 	binary.BigEndian.PutUint64(buf[4:], chunk)
 }
 
+// headerVersion identifies the sealed-file format generation.
+type headerVersion int
+
+const (
+	versionV1 headerVersion = 1
+	versionV2 headerVersion = 2
+	versionV3 headerVersion = 3
+)
+
+// layout describes a sealed file's header: its format version, the ring key
+// ID (v2 only; v1 implies ID 0 and v3 is not ring-addressed — it names a
+// wrapped file key by UUID instead), and the header size in bytes.
+type layout struct {
+	version headerVersion
+	keyID   int
+	size    int
+}
+
 // headerLayout identifies the sealed-file format from a file's leading
 // bytes: the v1 magic means key ID 0 and the v1 header size; the v2 magic
-// means the key-ID byte at offset len(magicV2) and the v2 header size.
-// ok is false when the bytes do not carry either magic (legacy plaintext).
-// A head shorter than magic+1 reports key ID 0 for v2; callers validate
-// the full header length before trusting the ID.
-func headerLayout(head []byte) (keyID, hdr int, ok bool) {
+// means the key-ID byte at offset len(magicV2); the v3 magic means the key
+// UUID at offset len(magicV3). ok is false when the bytes do not carry any
+// magic (legacy plaintext). A head shorter than magic+1 reports key ID 0
+// for v2; callers validate the full header length before trusting the ID.
+func headerLayout(head []byte) (layout, bool) {
 	if len(head) < len(magic) {
-		return 0, 0, false
+		return layout{}, false
 	}
 	switch string(head[:len(magic)]) {
 	case magic:
-		return 0, headerSize, true
+		return layout{version: versionV1, size: headerSize}, true
 	case magicV2:
+		l := layout{version: versionV2, size: headerSizeV2}
 		if len(head) > len(magicV2) {
-			return int(head[len(magicV2)]), headerSizeV2, true
+			l.keyID = int(head[len(magicV2)])
 		}
-		return 0, headerSizeV2, true
+		return l, true
+	case magicV3:
+		return layout{version: versionV3, size: headerSizeV3}, true
 	}
-	return 0, 0, false
+	return layout{}, false
 }
 
 // ringKey resolves a header key ID to its ring key, failing with
@@ -229,7 +270,9 @@ func (f *FS) Stat(ctx context.Context, p string) (*storage.FileInfo, error) {
 // plainInfo rewrites info.Size to the plaintext size when the file carries
 // the encryption magic; plaintext files (and directories) pass through.
 // The magic plus the v2 key-ID byte (9 bytes) are read to pick the right
-// header size; the size math is otherwise unchanged.
+// header layout; the size math is otherwise unchanged. Stat stays DB-free:
+// v3 headers contribute only their size — the key UUID is never resolved
+// here, and the ring-key existence check applies to v1/v2 only.
 func (f *FS) plainInfo(ctx context.Context, info *storage.FileInfo) (*storage.FileInfo, error) {
 	if info.IsDir || info.Size < int64(len(magic)) {
 		return info, nil
@@ -244,17 +287,19 @@ func (f *FS) plainInfo(ctx context.Context, info *storage.FileInfo) (*storage.Fi
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("encrypt: read header of %s: %w", info.Path, err)
 	}
-	keyID, hdr, ok := headerLayout(head[:n])
+	l, ok := headerLayout(head[:n])
 	if !ok {
 		return info, nil
 	}
-	if info.Size < int64(hdr) {
+	if info.Size < int64(l.size) {
 		return nil, fmt.Errorf("encrypt: %s: truncated encryption header: %w", info.Path, ErrIntegrity)
 	}
-	if _, err := f.ringKey(keyID, info.Path); err != nil {
-		return nil, err
+	if l.version != versionV3 {
+		if _, err := f.ringKey(l.keyID, info.Path); err != nil {
+			return nil, err
+		}
 	}
-	payload := info.Size - int64(hdr)
+	payload := info.Size - int64(l.size)
 	chunks := (payload + ChunkSize + tagSize - 1) / (ChunkSize + tagSize)
 	info.Size = payload - chunks*tagSize
 	return info, nil
@@ -262,7 +307,10 @@ func (f *FS) plainInfo(ctx context.Context, info *storage.FileInfo) (*storage.Fi
 
 // Open decrypts encrypted files chunk-by-chunk and passes legacy plaintext
 // files through untouched. v1 headers read with ring key 0; v2 headers name
-// their key by ID and fail with ErrUnknownKeyID when the ring lacks it.
+// their key by ID and fail with ErrUnknownKeyID when the ring lacks it; v3
+// headers name a wrapped file key by UUID and resolve it through the FS's
+// KeyResolver, failing with ErrUnresolvableKey when the key cannot be
+// unwrapped (or no resolver is configured).
 func (f *FS) Open(ctx context.Context, p string) (io.ReadSeekCloser, error) {
 	rc, err := f.inner.Open(ctx, p)
 	if err != nil {
@@ -274,7 +322,7 @@ func (f *FS) Open(ctx context.Context, p string) (io.ReadSeekCloser, error) {
 		_ = rc.Close()
 		return nil, fmt.Errorf("encrypt: read header of %s: %w", p, readErr)
 	}
-	keyID, hdr, ok := headerLayout(head[:n])
+	l, ok := headerLayout(head[:n])
 	if !ok {
 		// Legacy plaintext: rewind and hand the raw handle to the caller.
 		if _, err := rc.Seek(0, io.SeekStart); err != nil {
@@ -283,24 +331,43 @@ func (f *FS) Open(ctx context.Context, p string) (io.ReadSeekCloser, error) {
 		}
 		return rc, nil
 	}
-	if n < hdr {
+	if n < l.size {
 		_ = rc.Close()
 		return nil, fmt.Errorf("encrypt: %s: truncated encryption header: %w", p, ErrIntegrity)
 	}
-	key, err := f.ringKey(keyID, p)
+	salt := head[l.size-saltSize : l.size]
+	if l.version == versionV3 {
+		var keyUUID [keyUUIDSize]byte
+		copy(keyUUID[:], head[len(magicV3):len(magicV3)+keyUUIDSize])
+		if f.resolver == nil {
+			_ = rc.Close()
+			return nil, fmt.Errorf("encrypt: %s: key uuid %s but no key resolver configured: %w", p, hex.EncodeToString(keyUUID[:]), ErrUnresolvableKey)
+		}
+		fk, err := f.resolver.Resolve(ctx, keyUUID)
+		if err != nil {
+			_ = rc.Close()
+			return nil, fmt.Errorf("encrypt: %s: %w", p, err)
+		}
+		return newReader(rc, dataKey(fk, salt), l.size)
+	}
+	key, err := f.ringKey(l.keyID, p)
 	if err != nil {
 		_ = rc.Close()
 		return nil, err
 	}
-	return newReader(rc, dataKey(key, head[hdr-saltSize:hdr]), hdr)
+	return newReader(rc, dataKey(key, salt), l.size)
 }
 
 // Create seals all content written through the returned WriteCloser. The
 // size hint is dropped: the stored size differs from the plaintext size by
 // the header plus one GCM tag per chunk, and backends treat it as a
-// preallocation hint only. Single-key rings write the v1 header
-// bit-identically to pre-keyring deployments (rollback-safe); multi-key
-// rings write the v2 header with the current key's ID byte (ADR-0074).
+// preallocation hint only. With a KeyResolver configured, Create seals with
+// the v3 envelope: Allocate supplies a fresh wrapped file key whose UUID
+// goes into the header, and the writer exposes it via
+// storage.KeyUUIDWriter (ADR-0097). Without a resolver, single-key rings
+// write the v1 header bit-identically to pre-keyring deployments
+// (rollback-safe) and multi-key rings write the v2 header with the current
+// key's ID byte (ADR-0074).
 func (f *FS) Create(ctx context.Context, p string, _ int64) (io.WriteCloser, error) {
 	wc, err := f.inner.Create(ctx, p, 0)
 	if err != nil {
@@ -311,12 +378,28 @@ func (f *FS) Create(ctx context.Context, p string, _ int64) (io.WriteCloser, err
 		_ = wc.Close()
 		return nil, fmt.Errorf("encrypt: generate salt: %w", err)
 	}
-	header := append(append([]byte{}, []byte(magic)...), salt...)
-	key := f.keys[0]
-	if !f.singleKey() {
-		//nolint:gosec // G115: the constructor caps the ring at MaxKeys, so the current ID always fits a byte
-		header = append(append(append([]byte{}, []byte(magicV2)...), byte(f.currentKeyID())), salt...)
-		key = f.keys[f.currentKeyID()]
+	var header []byte
+	var key []byte
+	var keyUUID [keyUUIDSize]byte
+	v3 := f.resolver != nil
+	if v3 {
+		uuid, fk, err := f.resolver.Allocate(ctx, p)
+		if err != nil {
+			_ = wc.Close()
+			return nil, fmt.Errorf("encrypt: %s: %w", p, err)
+		}
+		keyUUID = uuid
+		header = append(append([]byte{}, []byte(magicV3)...), keyUUID[:]...)
+		header = append(header, salt...)
+		key = fk
+	} else {
+		header = append(append([]byte{}, []byte(magic)...), salt...)
+		key = f.keys[0]
+		if !f.singleKey() {
+			//nolint:gosec // G115: the constructor caps the ring at MaxKeys, so the current ID always fits a byte
+			header = append(append(append([]byte{}, []byte(magicV2)...), byte(f.currentKeyID())), salt...)
+			key = f.keys[f.currentKeyID()]
+		}
 	}
 	if _, err := wc.Write(header); err != nil {
 		_ = wc.Close()
@@ -326,6 +409,9 @@ func (f *FS) Create(ctx context.Context, p string, _ int64) (io.WriteCloser, err
 	if err != nil {
 		_ = wc.Close()
 		return nil, err
+	}
+	if v3 {
+		return &keyedWriter{writer: w, keyUUID: keyUUID}, nil
 	}
 	return w, nil
 }
@@ -538,4 +624,17 @@ func (w *writer) Close() error {
 		err = w.flush()
 	}
 	return errors.Join(err, w.inner.Close())
+}
+
+// keyedWriter wraps a v3 writer with the key UUID its header carries, so
+// callers persisting file metadata can record it (storage.KeyUUIDWriter).
+// v1/v2 writers do not implement the interface.
+type keyedWriter struct {
+	*writer
+	keyUUID [keyUUIDSize]byte
+}
+
+// SealedKeyUUID implements storage.KeyUUIDWriter.
+func (w *keyedWriter) SealedKeyUUID() ([16]byte, bool) {
+	return w.keyUUID, true
 }

@@ -588,6 +588,18 @@ func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *tim
 		}
 		return nil, false, d.compensateDelete(ctx, key, cause)
 	}
+	// A v3-sealing storage layer (per-user keys, ADR-0097) names the file
+	// key it wrapped in the sealed header; record the UUID on the filecache
+	// row so the key resolver finds the owner without parsing headers.
+	// v1/v2-sealing layers do not implement the interface and keyUUID stays
+	// nil — which also correctly clears the column when a rewrite seals a
+	// former v3 file back to v1/v2.
+	var keyUUID []byte
+	if kw, ok := wc.(storage.KeyUUIDWriter); ok {
+		if uuid, reported := kw.SealedKeyUUID(); reported {
+			keyUUID = uuid[:]
+		}
+	}
 	mt := d.now()
 	if mtime != nil {
 		mt = mtime.UTC()
@@ -604,6 +616,7 @@ func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *tim
 			Checksum:    checksum,
 			MIME:        "application/octet-stream",
 			Permissions: webdav.PermAll,
+			KeyUUID:     keyUUID,
 		}
 		if err := d.Meta.Insert(ctx, f); err != nil {
 			return nil, false, d.compensateDelete(ctx, key, mapMeta(err))
@@ -613,6 +626,7 @@ func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *tim
 		existing.Mtime = mt
 		existing.Checksum = checksum
 		existing.ETag = ComputeFileETag(existing.ID, mt, n)
+		existing.KeyUUID = keyUUID
 		// Conditional writes CAS the filecache row against the etag read
 		// during evaluation; unconditional writes keep the plain update.
 		var uerr error

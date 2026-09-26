@@ -82,7 +82,7 @@ func newImportNCFiles(f *importNCFlags) *cobra.Command {
 				return err
 			}
 			defer func() { _ = db.Close() }()
-			st, err := openStorage(cfg)
+			st, err := openStorage(cfg, db)
 			if err != nil {
 				return err
 			}

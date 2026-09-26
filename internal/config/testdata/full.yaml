@@ -36,6 +36,10 @@ encryption:
   previous_key_paths:
     - /var/lib/ncgo/master-2024.key
     - /var/lib/ncgo/master-2025.key
+  # Opt-in (ADR-0097): seal new writes with the v3 per-user-key envelope.
+  # Requires enabled: true. Once v3 files exist, rolling back to a pre-v3
+  # binary strands them — same rule as v2 key-rotation headers.
+  per_user_keys: false
 
 auth:
   argon2id:

@@ -36,9 +36,19 @@ func newEncryption() *cobra.Command {
 			"  4. ncgo-cli encryption rotate-keys\n" +
 			"  5. previous_key_paths is APPEND-ONLY FOREVER — never reorder or\n" +
 			"     remove entries: key IDs are positional, and removing or\n" +
-			"     reordering orphans files with \"unknown key id\" read errors.",
+			"     reordering orphans files with \"unknown key id\" read errors.\n\n" +
+			"Per-user keys migration (ADR-0097):\n" +
+			"  1. Set encryption.per_user_keys: true and restart — new writes seal\n" +
+			"     with the v3 per-user-key envelope; existing v1/v2/plaintext files\n" +
+			"     keep reading.\n" +
+			"  2. ncgo-cli encryption encrypt-all to seal any legacy plaintext\n" +
+			"     (lands on v3 directly in per-user mode).\n" +
+			"  3. ncgo-cli encryption rekey-v3 to re-seal every v1/v2 file into\n" +
+			"     the v3 envelope. Idempotent; safe to re-run after an\n" +
+			"     interruption. Once v3 files exist, rolling back to a pre-v3\n" +
+			"     binary strands them (same rule as v2).",
 	}
-	cmd.AddCommand(newEncryptionInit(), newEncryptionStatus(), newEncryptionEncryptAll(), newEncryptionDecryptAll(), newEncryptionRotateKeys())
+	cmd.AddCommand(newEncryptionInit(), newEncryptionStatus(), newEncryptionEncryptAll(), newEncryptionDecryptAll(), newEncryptionRotateKeys(), newEncryptionRekeyV3())
 	return cmd
 }
 
@@ -54,11 +64,16 @@ func newEncryptionRotateKeys() *cobra.Command {
 	return newEncryptionSweep(encrypt.SweepRotate)
 }
 
-// newEncryptionSweep builds `encryption encrypt-all|decrypt-all|rotate-keys`:
+func newEncryptionRekeyV3() *cobra.Command {
+	return newEncryptionSweep(encrypt.SweepRekeyV3)
+}
+
+// newEncryptionSweep builds `encryption encrypt-all|decrypt-all|rotate-keys|rekey-v3`:
 // an in-place re-encoding sweep over the whole storage tree (or one user's
 // subtree), sealing legacy plaintext files, writing sealed files back as
-// plaintext for decommissioning, or re-sealing retired-key files under the
-// keyring's current key.
+// plaintext for decommissioning, re-sealing retired-key files under the
+// keyring's current key, or re-sealing v1/v2 files into the v3 per-user-key
+// envelope.
 func newEncryptionSweep(direction encrypt.SweepDirection) *cobra.Command {
 	var user string
 	var dryRun bool
@@ -76,6 +91,12 @@ func newEncryptionSweep(direction encrypt.SweepDirection) *cobra.Command {
 		action = "re-seal"
 		past = "rotated"
 		requires = "Plaintext files are skipped (sealing them is encrypt-all's job; files\nit seals land on the current key for free). Requires encryption.enabled,\na loadable master key, and at least one entry in\nencryption.previous_key_paths; the sweep aborts at the first file whose\nkey ID is not in the keyring or whose ring key does not match."
+	}
+	if direction == encrypt.SweepRekeyV3 {
+		verb = "rekey-v3"
+		action = "re-seal"
+		past = "rekeyed"
+		requires = "Plaintext files are skipped (sealing them is encrypt-all's job — in\nper-user mode it seals straight to v3), and files already v3 are skipped.\nRequires encryption.enabled and encryption.per_user_keys; the sweep aborts\nat the first file whose key ID is not in the keyring, whose ring key does\nnot match, or whose per-user key chain cannot unwrap it."
 	}
 	cmd := &cobra.Command{
 		Use:   verb,
@@ -111,6 +132,13 @@ func newEncryptionSweep(direction encrypt.SweepDirection) *cobra.Command {
 					"  3. Restart the server\n" +
 					"  4. ncgo-cli encryption rotate-keys")
 			}
+			if direction == encrypt.SweepRekeyV3 && !cfg.Encryption.PerUserKeys {
+				return fmt.Errorf("ncgo-cli: encryption rekey-v3: encryption.per_user_keys is false; the v3 envelope requires per-user keys.\n" +
+					"Migration procedure:\n" +
+					"  1. Set encryption.per_user_keys: true in the server config and restart (new writes seal as v3; old files keep reading)\n" +
+					"  2. ncgo-cli encryption encrypt-all to seal any legacy plaintext (lands on v3)\n" +
+					"  3. ncgo-cli encryption rekey-v3 to re-seal v1/v2 files into the v3 envelope")
+			}
 			current, previous, err := encrypt.LoadKeyring(cfg.Encryption.MasterKeyPath, cfg.Encryption.PreviousKeyPaths)
 			if err != nil {
 				return fmt.Errorf("ncgo-cli: encryption: %w", err)
@@ -119,7 +147,22 @@ func newEncryptionSweep(direction encrypt.SweepDirection) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			enc, err := encrypt.NewWithPrevious(current, previous, raw)
+			var resolver encrypt.KeyResolver
+			if cfg.Encryption.PerUserKeys {
+				// Per-user mode: every sweep subcommand resolves through the
+				// per-user key chain — encrypt-all seals straight to v3, and
+				// decrypt-all/rotate-keys must read v3 files.
+				db, err := openDB(cmd.Context(), cfg)
+				if err != nil {
+					return err
+				}
+				defer func() { _ = db.Close() }()
+				resolver, err = perUserResolver(db, current, previous)
+				if err != nil {
+					return err
+				}
+			}
+			enc, err := encrypt.NewWithResolver(current, previous, raw, resolver)
 			if err != nil {
 				return fmt.Errorf("ncgo-cli: encryption: %w", err)
 			}

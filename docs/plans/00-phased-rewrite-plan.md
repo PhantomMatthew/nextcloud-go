@@ -191,6 +191,22 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-26** — Phase 5w-1: SSE per-user keys **envelope + resolver**
+  (ADR-0097), delivering ADR-0096's phase 1. v3 header
+  (`"NCGOENC3" || keyUUID(16) || salt(32)`, 56B; chunk layer verbatim,
+  data key `HMAC-SHA256(FK, salt)`), the `KeyResolver` seam with a SQL
+  implementation (lazy per-user UK sealed under the current ring position
+  with `"NCGOUK1"||be64(user_id)` AD; per-file FK wrapped with
+  `"NCGOFK1"||keyUUID||be64(user_id)` AD; owner-first then wrap-row
+  fallback resolution; `ErrUnresolvableKey` never `ErrIntegrity`), schema
+  migration 0020 (`user_keys`, `file_keys`, nullable `files.key_uuid`) in
+  all three dialects, the `storage.KeyUUIDWriter` seam feeding
+  `files.key_uuid` on DAV writes, opt-in `encryption.per_user_keys` config
+  (validated against `enabled`), `openStorage` gaining the DB handle in app
+  and CLI, sweep direction four (`SweepRekeyV3` + `ncgo-cli encryption
+  rekey-v3`) for eager migration, and `SweepRotate` skipping v3. Nil
+  resolver ⇒ bit-identical v1/v2 behavior (rollback carve-out preserved);
+  zero new dependencies.
 - **2026-09-26** — Phase 5w: SSE per-user keys **design** (ADR-0096),
   closing ADR-0074's deferral with the missing per-recipient wrapping +
   admin-recovery design. Key hierarchy: random per-file key (v3 envelope

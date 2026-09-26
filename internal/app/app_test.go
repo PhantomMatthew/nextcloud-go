@@ -321,7 +321,7 @@ func TestOpenStorageS3(t *testing.T) {
 			Region:          "us-east-1",
 		},
 	}
-	st, err := openStorage(cfg)
+	st, err := openStorage(cfg, nil)
 	if err != nil || st == nil {
 		t.Fatalf("openStorage s3 = %v %v", st, err)
 	}
@@ -333,7 +333,7 @@ func TestOpenStorageUnknown(t *testing.T) {
 	cfg.Storage.Backends = map[string]config.BackendConfig{
 		"mystery": {Type: "mystery"},
 	}
-	if _, err := openStorage(cfg); err == nil {
+	if _, err := openStorage(cfg, nil); err == nil {
 		t.Fatal("expected unsupported type")
 	}
 }
