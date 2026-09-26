@@ -216,7 +216,11 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	a.davFS = dav
 	// Per-user key mode: one KeySharer feeds every ADR-0098 hook — the DAV
 	// write path, share create/delete, the expire sweep, and group
-	// membership changes. Nil when the mode is off (hooks nil-checked).
+	// membership changes — and the resolver itself is the ADR-0099 user
+	// lifecycle hook (eager UK mint at creation, key-row purge at deletion).
+	// Nil when the mode is off (hooks nil-checked). The bootstrap admin runs
+	// before this block, so its UK is minted lazily on its first sealed
+	// write or by `ncgo-cli encryption reconcile` (ADR-0099 known gap).
 	var keySharer *files.KeySharer
 	if keyResolver != nil {
 		keySharer = &files.KeySharer{
@@ -229,6 +233,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		dav.KeySharer = keySharer
 		dav.Logger = logger
 		userStore.MemberKeys = keySharer
+		userStore.UserKeys = keyResolver
 		userStore.Logger = logger
 	}
 	a.notifStore = notifications.NewSQLStore(db)

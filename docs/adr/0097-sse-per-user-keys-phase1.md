@@ -16,7 +16,8 @@ integration, the opt-in config, and the fourth sweep direction. Phase 1
 scope per the design: v3 header, KeyResolver, schema, config flag,
 owner-only wraps on write, reads/Resolve, and `SweepRekeyV3` for eager
 migration (lazy re-seal on write otherwise). Sharing integration (phase 2),
-lifecycle/tooling (phase 3), and password-wrapped UKs (phase 4) remain
+~~lifecycle/tooling (phase 3)~~ (**resolved by ADR-0099**), and
+password-wrapped UKs (phase 4) remain
 future increments; the threat model is unchanged from ADR-0096's statement
 (phases 1–3 keep every UK sealed under the server-held master key).
 
@@ -163,8 +164,9 @@ CREATE INDEX files_key_uuid_idx ON files(key_uuid);
 
 Types follow each dialect's idiom (sqlite `INTEGER`/`BLOB`, postgres
 `BIGINT`/`BYTEA`, mysql `BIGINT`/`VARBINARY(16)` for the indexed UUID
-column). No FK clauses: lifecycle cleanup is phase 3's explicit job, not a
-cascade side effect.
+column). No FK clauses: lifecycle cleanup is ~~phase 3's explicit job~~
+(**resolved by ADR-0099**) an explicit tooling job, not a cascade side
+effect.
 
 ### 5. Filecache integration
 
@@ -209,10 +211,11 @@ per-user mode.
 
 **Rotation and UK rows:** UK rows reference ring positions forever via the
 append-only ring, so a master-key rotation needs no UK re-seal for
-correctness — old-position keys stay readable by construction. Phase 3 adds
-the hygiene re-seal (rewriting UK rows to the current position, a small
-direct re-seal, not a sweep) so retired keys can eventually leave the ring
-on the far-future compaction path.
+correctness — old-position keys stay readable by construction. ~~Phase 3
+adds the hygiene re-seal (rewriting UK rows to the current position, a
+small direct re-seal, not a sweep)~~ (**resolved by ADR-0099**: `rotate-keys`
+re-seals UK rows) so retired keys can eventually leave the ring on the
+far-future compaction path.
 
 ### Alternatives considered
 
@@ -255,7 +258,8 @@ on the far-future compaction path.
   DB is valid exactly when the mode is off.
 - Overwrites in per-user mode mint a fresh FK + UUID per write; the
   superseded wrap rows persist (versions/trash of the old object still
-  resolve through them) and are phase-3 lifecycle cleanup.
+  resolve through them) and are ~~phase-3 lifecycle cleanup~~ (**resolved by
+  ADR-0099**).
 - Known limitation: system trees (`appdata_<instance>`, e.g. the preview
   cache) are not v3-eligible — writes there fail while the mode is on, so
   previews and per-user keys are not yet composable. Operators enable one

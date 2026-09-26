@@ -165,8 +165,8 @@ func (r *SQLResolver) WrapKeyFor(ctx context.Context, keyUUID [keyUUIDSize]byte,
 // user owning the files.key_uuid row for keyUUID is never unwrapped — a
 // revoke must never orphan a file from its owner (the owner can be a member
 // of a group the file is shared to) — and an unknown uid is a no-op (no live
-// user means no addressable row; stale rows of deleted users are phase-3
-// lifecycle cleanup).
+// user means no addressable row; stale rows of deleted users are purged by
+// OnUserDeleted at user deletion and by PruneStaleKeys, ADR-0099).
 func (r *SQLResolver) UnwrapKeyFor(ctx context.Context, keyUUID [keyUUIDSize]byte, uid string) error {
 	userID, found, err := r.lookupUserID(ctx, uid)
 	if err != nil {

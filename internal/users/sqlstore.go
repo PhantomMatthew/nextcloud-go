@@ -23,13 +23,27 @@ type MemberKeysHook interface {
 	OnGroupMemberRemoved(ctx context.Context, gid, uid string) error
 }
 
+// UserKeysHook is notified on user lifecycle changes so per-user key state
+// can follow the account (ADR-0099): a user key is minted eagerly at
+// creation, and the user's key rows are purged at deletion. *encrypt.
+// SQLResolver satisfies it structurally — users must not import encrypt —
+// and nil disables the hook. The invocation is best-effort: a hook failure
+// is Warn-logged (when Logger is set) and never fails Create/Delete.
+type UserKeysHook interface {
+	OnUserCreated(ctx context.Context, uid string) error
+	OnUserDeleted(ctx context.Context, uid string) error
+}
+
 // SQLStore persists users.
 type SQLStore struct {
 	db database.DB
 	// MemberKeys, when non-nil, is invoked after AddGroupMember /
 	// RemoveGroupMember succeed (ADR-0098 share key wrapping).
 	MemberKeys MemberKeysHook
-	// Logger, when set, receives MemberKeys hook failures.
+	// UserKeys, when non-nil, is invoked from Create / Delete (ADR-0099
+	// per-user key lifecycle).
+	UserKeys UserKeysHook
+	// Logger, when set, receives MemberKeys and UserKeys hook failures.
 	Logger *slog.Logger
 }
 
@@ -71,6 +85,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		return err
 	}
 	*u = *got
+	s.userKeysCreated(ctx, u.UID)
 	return nil
 }
 
@@ -123,7 +138,10 @@ func (s *SQLStore) SetEnabled(ctx context.Context, uid string, enabled bool) err
 
 // Delete removes the user row and their group memberships. Files, shares, and
 // other owned data are NOT cascaded; reassigning or purging them is the
-// operator's responsibility (mirroring occ user:delete warnings).
+// operator's responsibility (mirroring occ user:delete warnings). The
+// UserKeys hook (ADR-0099) fires between the membership cleanup and the row
+// delete — the uid must still resolve for the hook to address the user's key
+// rows — and a hook failure never fails the Delete.
 func (s *SQLStore) Delete(ctx context.Context, uid string) error {
 	u, err := s.GetByUID(ctx, uid)
 	if err != nil {
@@ -132,6 +150,7 @@ func (s *SQLStore) Delete(ctx context.Context, uid string) error {
 	if _, err := s.db.Exec(ctx, `DELETE FROM group_members WHERE user_id = ?`, u.ID); err != nil {
 		return fmt.Errorf("users: delete memberships: %w", err)
 	}
+	s.userKeysDeleted(ctx, uid)
 	if _, err := s.db.Exec(ctx, `DELETE FROM users WHERE id = ?`, u.ID); err != nil {
 		return fmt.Errorf("users: delete: %w", err)
 	}
@@ -294,6 +313,30 @@ func (s *SQLStore) memberKeysRemoved(ctx context.Context, gid, uid string) {
 	if err := s.MemberKeys.OnGroupMemberRemoved(ctx, gid, uid); err != nil && s.Logger != nil {
 		s.Logger.WarnContext(ctx, "users: member keys hook failed",
 			slog.String("gid", gid), slog.String("uid", uid), slog.Any("err", err))
+	}
+}
+
+// userKeysCreated notifies the ADR-0099 key-lifecycle hook of a new user;
+// failures are Warn-logged (Logger permitting) and never returned.
+func (s *SQLStore) userKeysCreated(ctx context.Context, uid string) {
+	if s.UserKeys == nil {
+		return
+	}
+	if err := s.UserKeys.OnUserCreated(ctx, uid); err != nil && s.Logger != nil {
+		s.Logger.WarnContext(ctx, "users: user keys hook failed",
+			slog.String("uid", uid), slog.Any("err", err))
+	}
+}
+
+// userKeysDeleted notifies the ADR-0099 key-lifecycle hook of a user
+// deletion; failures are Warn-logged (Logger permitting) and never returned.
+func (s *SQLStore) userKeysDeleted(ctx context.Context, uid string) {
+	if s.UserKeys == nil {
+		return
+	}
+	if err := s.UserKeys.OnUserDeleted(ctx, uid); err != nil && s.Logger != nil {
+		s.Logger.WarnContext(ctx, "users: user keys hook failed",
+			slog.String("uid", uid), slog.Any("err", err))
 	}
 }
 

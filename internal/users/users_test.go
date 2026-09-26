@@ -1,9 +1,11 @@
 package users
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
@@ -463,5 +465,57 @@ func TestSQLStoreMemberKeysHook(t *testing.T) {
 	}
 	if err := store.RemoveGroupMember(ctx, "g1", "bob"); err != nil {
 		t.Fatalf("RemoveGroupMember with failing hook = %v, want nil", err)
+	}
+}
+
+// recordUserKeys is a UserKeysHook stub recording every call.
+type recordUserKeys struct {
+	created []string
+	deleted []string
+	err     error
+}
+
+func (r *recordUserKeys) OnUserCreated(_ context.Context, uid string) error {
+	r.created = append(r.created, uid)
+	return r.err
+}
+
+func (r *recordUserKeys) OnUserDeleted(_ context.Context, uid string) error {
+	r.deleted = append(r.deleted, uid)
+	return r.err
+}
+
+func TestSQLStoreUserKeysHook(t *testing.T) {
+	ctx := context.Background()
+	store := NewSQLStore(testDB(t))
+	rec := &recordUserKeys{}
+	store.UserKeys = rec
+
+	if err := store.Create(ctx, &User{UID: "alice", PasswordHash: "x", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.created) != 1 || rec.created[0] != "alice" {
+		t.Fatalf("created = %v, want [alice]", rec.created)
+	}
+	if err := store.Delete(ctx, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.deleted) != 1 || rec.deleted[0] != "alice" {
+		t.Fatalf("deleted = %v, want [alice]", rec.deleted)
+	}
+
+	// A failing hook never fails Create/Delete (best-effort, ADR-0099);
+	// failures surface via the optional Logger only.
+	var logBuf bytes.Buffer
+	store.Logger = slog.New(slog.NewTextHandler(&logBuf, nil))
+	store.UserKeys = &recordUserKeys{err: errors.New("keys down")}
+	if err := store.Create(ctx, &User{UID: "bob", PasswordHash: "x", Enabled: true}); err != nil {
+		t.Fatalf("Create with failing hook = %v, want nil", err)
+	}
+	if err := store.Delete(ctx, "bob"); err != nil {
+		t.Fatalf("Delete with failing hook = %v, want nil", err)
+	}
+	if got := logBuf.String(); !strings.Contains(got, "user keys hook failed") {
+		t.Errorf("hook failures must be Warn-logged, got %q", got)
 	}
 }

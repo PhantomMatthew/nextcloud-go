@@ -210,7 +210,16 @@ func newImportNCUsers(f *importNCFlags) *cobra.Command {
 			}
 			defer func() { _ = src.Close() }()
 			r := newImportReport()
-			if err := importNCUsers(ctx, src, users.NewSQLStore(dst), f.tablePrefix, f.dryRun, r); err != nil {
+			userStore := users.NewSQLStore(dst)
+			// ADR-0099: with per-user keys on, imported users get their UK
+			// minted eagerly via the lifecycle hook, exactly as locally
+			// created accounts do.
+			hook, err := userKeysHook(cfg, dst)
+			if err != nil {
+				return err
+			}
+			userStore.UserKeys = hook
+			if err := importNCUsers(ctx, src, userStore, f.tablePrefix, f.dryRun, r); err != nil {
 				return err
 			}
 			return r.print(cmd.OutOrStdout(), f.dryRun)

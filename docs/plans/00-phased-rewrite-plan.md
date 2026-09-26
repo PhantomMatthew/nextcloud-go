@@ -191,6 +191,29 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-26** — Phase 5w-3: SSE per-user keys **lifecycle + tooling**
+  (ADR-0099), delivering ADR-0096's phase 3 and resolving the phase-3
+  deferrals in ADR-0097/0098. The `users.SQLStore.UserKeys` hook (structural,
+  mirroring ADR-0098's `MemberKeys`) mints user keys eagerly at account
+  creation and purges a deleted user's key rows (fires between membership
+  cleanup and the row delete — the uid must still resolve; best-effort
+  Warn-logged, wired in app, `ncgo-cli user add/delete`, and
+  `import-nextcloud users`; the bootstrap admin stays lazy-minted, a
+  documented gap reconcile backfills). New concrete-only resolver methods:
+  `OnUserCreated`/`OnUserDeleted` (the user's own rows only — files of a
+  deleted owner become unresolvable, spelled out in the delete help),
+  `ResealUserKeys` (rotation hygiene, aborts `ErrUnresolvableKey` naming the
+  user on an out-of-ring key id), `PruneStaleKeys`, `MintMissingUserKeys`,
+  and the `KeyInventory` health read model (nine dialect-agnostic counts —
+  no schema changes). `encryption status` prints the per-user inventory and
+  fails non-zero on broken v3 files (owner wrap missing = UNREADABLE);
+  `rotate-keys` re-seals UKs under the current key id after a successful
+  rotation; new `encryption reconcile [--dry-run]` mints missing UKs, wraps
+  every existing share's recipients, and prunes stale rows — all idempotent,
+  non-zero exit on wrap errors. Hooks stay best-effort because key rows are
+  the phase-4 substrate, never a read-path dependency; FK constraints stay
+  omitted (explicit, tested purges over connection-dependent cascades). Zero
+  new dependencies.
 - **2026-09-26** — Phase 5w-2: SSE per-user keys **share wrap/revoke**
   (ADR-0098), delivering ADR-0096's phase 2. Resolver wrap API
   (`WrapKeyFor`/`UnwrapKeyFor`/`ReWrapSharees` — idempotent wraps, the

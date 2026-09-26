@@ -11,7 +11,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/PhantomMatthew/nextcloud-go/internal/files"
+	"github.com/PhantomMatthew/nextcloud-go/internal/sharing"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage/encrypt"
+	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 )
 
 func newEncryption() *cobra.Command {
@@ -46,9 +49,14 @@ func newEncryption() *cobra.Command {
 			"  3. ncgo-cli encryption rekey-v3 to re-seal every v1/v2 file into\n" +
 			"     the v3 envelope. Idempotent; safe to re-run after an\n" +
 			"     interruption. Once v3 files exist, rolling back to a pre-v3\n" +
-			"     binary strands them (same rule as v2).",
+			"     binary strands them (same rule as v2).\n" +
+			"  4. ncgo-cli encryption reconcile — mints user keys for pre-existing\n" +
+			"     users, wraps existing shares' file keys for their recipients,\n" +
+			"     and prunes stale key rows.\n\n" +
+			"rotate-keys also re-seals user keys under the current key id\n" +
+			"(ADR-0099), so retired master keys can eventually leave the ring.",
 	}
-	cmd.AddCommand(newEncryptionInit(), newEncryptionStatus(), newEncryptionEncryptAll(), newEncryptionDecryptAll(), newEncryptionRotateKeys(), newEncryptionRekeyV3())
+	cmd.AddCommand(newEncryptionInit(), newEncryptionStatus(), newEncryptionEncryptAll(), newEncryptionDecryptAll(), newEncryptionRotateKeys(), newEncryptionRekeyV3(), newEncryptionReconcile())
 	return cmd
 }
 
@@ -148,6 +156,7 @@ func newEncryptionSweep(direction encrypt.SweepDirection) *cobra.Command {
 				return err
 			}
 			var resolver encrypt.KeyResolver
+			var sqlResolver *encrypt.SQLResolver
 			if cfg.Encryption.PerUserKeys {
 				// Per-user mode: every sweep subcommand resolves through the
 				// per-user key chain — encrypt-all seals straight to v3, and
@@ -157,10 +166,11 @@ func newEncryptionSweep(direction encrypt.SweepDirection) *cobra.Command {
 					return err
 				}
 				defer func() { _ = db.Close() }()
-				resolver, err = perUserResolver(db, current, previous)
+				sqlResolver, err = perUserResolver(db, current, previous)
 				if err != nil {
 					return err
 				}
+				resolver = sqlResolver
 			}
 			enc, err := encrypt.NewWithResolver(current, previous, raw, resolver)
 			if err != nil {
@@ -200,6 +210,16 @@ func newEncryptionSweep(direction encrypt.SweepDirection) *cobra.Command {
 			}
 			if stats.Failed > 0 {
 				return fmt.Errorf("ncgo-cli: encryption %s: %d file(s) failed", verb, stats.Failed)
+			}
+			// ADR-0099: a successful rotation also re-seals user keys left
+			// under retired ring positions, so old master keys can
+			// eventually leave the ring.
+			if !dryRun && direction == encrypt.SweepRotate && sqlResolver != nil {
+				resealed, err := sqlResolver.ResealUserKeys(cmd.Context())
+				if err != nil {
+					return fmt.Errorf("ncgo-cli: encryption %s: %w", verb, err)
+				}
+				fmt.Fprintf(out, "re-sealed %d user key(s) under key id %d\n", resealed, len(previous))
 			}
 			return nil
 		},
@@ -308,7 +328,155 @@ func newEncryptionStatus() *cobra.Command {
 				fmt.Fprintf(out, "previous key %d (%s): OK\n", i, p)
 			}
 			fmt.Fprintf(out, "current key id: %d\n", len(previous))
+			if !cfg.Encryption.Enabled || !cfg.Encryption.PerUserKeys {
+				return nil
+			}
+			// ADR-0099: with per-user keys on, report the key hierarchy's
+			// health alongside the key files.
+			ctx := cmd.Context()
+			db, err := openDB(ctx, cfg)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = db.Close() }()
+			current, ring, err := encrypt.LoadKeyring(cfg.Encryption.MasterKeyPath, cfg.Encryption.PreviousKeyPaths)
+			if err != nil {
+				return fmt.Errorf("ncgo-cli: encryption: %w", err)
+			}
+			resolver, err := perUserResolver(db, current, ring)
+			if err != nil {
+				return err
+			}
+			inv, err := resolver.Inventory(ctx)
+			if err != nil {
+				return fmt.Errorf("ncgo-cli: encryption status: %w", err)
+			}
+			fmt.Fprintln(out, "per-user keys: on")
+			fmt.Fprintf(out, "users: %d total, %d with user key\n", inv.UsersTotal, inv.UsersWithUK)
+			if inv.UKsRetiredKeyID > 0 {
+				fmt.Fprintf(out, "user keys sealed under retired key ids: %d (rotate-keys re-seals them)\n", inv.UKsRetiredKeyID)
+			}
+			fmt.Fprintf(out, "file key wraps: %d rows across %d key uuids\n", inv.WrapRows, inv.DistinctKeyUUIDs)
+			fmt.Fprintf(out, "v3-sealed files: %d\n", inv.V3Files)
+			if inv.StaleUKs > 0 || inv.StaleWraps > 0 {
+				fmt.Fprintf(out, "stale key rows (deleted users): %d uks, %d wraps (ncgo-cli encryption reconcile prunes)\n",
+					inv.StaleUKs, inv.StaleWraps)
+			}
+			fmt.Fprintf(out, "broken v3 files (owner wrap missing, file UNREADABLE): %d\n", inv.BrokenV3Files)
+			if inv.BrokenV3Files > 0 {
+				return fmt.Errorf("ncgo-cli: encryption status: %d v3 file(s) have no owner wrap row and are unreadable (run: ncgo-cli encryption reconcile)", inv.BrokenV3Files)
+			}
 			return nil
 		},
 	}
+}
+
+// newEncryptionReconcile builds `encryption reconcile`: the ADR-0099 repair
+// tool for the per-user key hierarchy. It mints user keys for accounts that
+// have none (pre-existing users, imports, the bootstrap admin), wraps file
+// keys for the recipients of every existing user/group share (share grant
+// hooks only fire for shares created after per-user keys were enabled), and
+// prunes key rows whose owning user is gone. Every step is idempotent, so
+// the command is safe to re-run after an interruption.
+func newEncryptionReconcile() *cobra.Command {
+	var dryRun bool
+	cmd := &cobra.Command{
+		Use:   "reconcile",
+		Short: "Repair per-user key state (mint missing user keys, wrap share recipients, prune stale rows)",
+		Long: "Repair the per-user key hierarchy (ADR-0099), in three idempotent steps:\n\n" +
+			"  1. Mint a user key for every user who has none (accounts created\n" +
+			"     before per-user keys or the creation hook existed).\n" +
+			"  2. Wrap file keys for the recipients of every existing user and\n" +
+			"     group share — grant hooks only wrap shares created after the\n" +
+			"     mode was enabled; link and OCM-remote shares have no wrappable\n" +
+			"     recipient and are skipped.\n" +
+			"  3. Prune key rows whose owning user no longer exists (deletions\n" +
+			"     that ran without the lifecycle hook).\n\n" +
+			"Safe to re-run at any time; --dry-run reports what would change\n" +
+			"without writing anything. Requires encryption.enabled and\n" +
+			"encryption.per_user_keys.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			if !cfg.Encryption.Enabled || !cfg.Encryption.PerUserKeys {
+				return fmt.Errorf("ncgo-cli: encryption reconcile: encryption.per_user_keys is false; reconcile repairs the per-user key hierarchy.\n" +
+					"Migration procedure:\n" +
+					"  1. Set encryption.per_user_keys: true in the server config and restart (new writes seal as v3; old files keep reading)\n" +
+					"  2. ncgo-cli encryption encrypt-all to seal any legacy plaintext (lands on v3)\n" +
+					"  3. ncgo-cli encryption rekey-v3 to re-seal v1/v2 files into the v3 envelope\n" +
+					"  4. ncgo-cli encryption reconcile to mint user keys, wrap shares, and prune stale rows")
+			}
+			ctx := cmd.Context()
+			current, previous, err := encrypt.LoadKeyring(cfg.Encryption.MasterKeyPath, cfg.Encryption.PreviousKeyPaths)
+			if err != nil {
+				return fmt.Errorf("ncgo-cli: encryption: %w", err)
+			}
+			db, err := openDB(ctx, cfg)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = db.Close() }()
+			resolver, err := perUserResolver(db, current, previous)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			userStore := users.NewSQLStore(db)
+			shareStore := sharing.NewSQLShareStore(db)
+			keySharer := &files.KeySharer{
+				Meta:    files.NewSQLStore(db),
+				Wrapper: resolver,
+				Shares:  shareStore,
+				Users:   userStore,
+			}
+			allUsers, err := userStore.List(ctx, 0, 0)
+			if err != nil {
+				return fmt.Errorf("ncgo-cli: encryption reconcile: list users: %w", err)
+			}
+			var allShares []files.Share
+			for _, u := range allUsers {
+				shares, err := shareStore.ListByOwner(ctx, u.ID, "")
+				if err != nil {
+					return fmt.Errorf("ncgo-cli: encryption reconcile: list shares of %s: %w", u.UID, err)
+				}
+				allShares = append(allShares, shares...)
+			}
+			if dryRun {
+				inv, err := resolver.Inventory(ctx)
+				if err != nil {
+					return fmt.Errorf("ncgo-cli: encryption reconcile: %w", err)
+				}
+				fmt.Fprintf(out, "dry-run reconcile: %d user(s) missing a user key, %d stale user key(s), %d stale wrap(s), %d share(s) to process\n",
+					inv.UsersTotal-inv.UsersWithUK, inv.StaleUKs, inv.StaleWraps, len(allShares))
+				return nil
+			}
+			minted, err := resolver.MintMissingUserKeys(ctx)
+			if err != nil {
+				return fmt.Errorf("ncgo-cli: encryption reconcile: %w", err)
+			}
+			var wrapErrs []error
+			for i := range allShares {
+				if err := keySharer.WrapForShare(ctx, &allShares[i]); err != nil {
+					wrapErrs = append(wrapErrs, fmt.Errorf("share %d: %w", allShares[i].ID, err))
+				}
+			}
+			prunedUKs, prunedWraps, err := resolver.PruneStaleKeys(ctx)
+			if err != nil {
+				return fmt.Errorf("ncgo-cli: encryption reconcile: %w", err)
+			}
+			fmt.Fprintf(out, "minted %d user key(s)\n", minted)
+			fmt.Fprintf(out, "processed %d share(s) (%d error(s))\n", len(allShares), len(wrapErrs))
+			fmt.Fprintf(out, "pruned %d user key(s), %d wrap(s)\n", prunedUKs, prunedWraps)
+			if len(wrapErrs) > 0 {
+				return fmt.Errorf("ncgo-cli: encryption reconcile: %d share(s) failed to wrap: %w",
+					len(wrapErrs), errors.Join(wrapErrs...))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "report what reconcile would do without writing anything")
+	return cmd
 }

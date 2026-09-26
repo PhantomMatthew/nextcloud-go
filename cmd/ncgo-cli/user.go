@@ -59,6 +59,11 @@ func newUserAdd() *cobra.Command {
 			}
 			defer func() { _ = db.Close() }()
 			store := users.NewSQLStore(db)
+			hook, err := userKeysHook(cfg, db)
+			if err != nil {
+				return err
+			}
+			store.UserKeys = hook
 			hash, err := passwordHasher(cfg).Hash(pw)
 			if err != nil {
 				return err
@@ -145,7 +150,10 @@ func newUserDelete() *cobra.Command {
 		Short: "Delete a user",
 		Long: "Delete a user and their group memberships.\n\n" +
 			"Files, shares, and other data owned by the user are NOT removed;\n" +
-			"reassign or purge them first (mirroring occ user:delete warnings).",
+			"reassign or purge them first (mirroring occ user:delete warnings).\n\n" +
+			"When per-user encryption is on, deleting a user also deletes their\n" +
+			"per-user key rows: any sealed files they still own become\n" +
+			"UNREADABLE — reassign or purge those files first.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !yes {
@@ -161,7 +169,13 @@ func newUserDelete() *cobra.Command {
 				return err
 			}
 			defer func() { _ = db.Close() }()
-			if err := users.NewSQLStore(db).Delete(ctx, args[0]); err != nil {
+			store := users.NewSQLStore(db)
+			hook, err := userKeysHook(cfg, db)
+			if err != nil {
+				return err
+			}
+			store.UserKeys = hook
+			if err := store.Delete(ctx, args[0]); err != nil {
 				if errors.Is(err, users.ErrNotFound) {
 					return unknownUserErr(args[0])
 				}

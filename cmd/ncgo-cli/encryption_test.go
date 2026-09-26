@@ -12,7 +12,10 @@ import (
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/config"
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
+	"github.com/PhantomMatthew/nextcloud-go/internal/files"
 	"github.com/PhantomMatthew/nextcloud-go/internal/migrations"
+	"github.com/PhantomMatthew/nextcloud-go/internal/sharing"
+	"github.com/PhantomMatthew/nextcloud-go/internal/storage"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage/encrypt"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 )
@@ -784,5 +787,347 @@ encryption:
 	}
 	if !strings.Contains(out, "previous keys: 0 configured") || !strings.Contains(out, "current key id: 0") {
 		t.Fatalf("single-key status = %q", out)
+	}
+}
+
+func TestEncryptionStatusPerUser(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath, _, dbPath := rekeyEnv(t, dir, true)
+	if _, err := runCLI(t, "", "--config", cfgPath, "encryption", "init"); err != nil {
+		t.Fatal(err)
+	}
+	db := openRekeyDB(t, dbPath, "alice")
+	ctx := context.Background()
+
+	out, err := runCLI(t, "", "--config", cfgPath, "encryption", "status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"per-user keys: on",
+		"users: 1 total, 0 with user key",
+		"file key wraps: 0 rows across 0 key uuids",
+		"v3-sealed files: 0",
+		"broken v3 files (owner wrap missing, file UNREADABLE): 0",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("status missing %q: %q", want, out)
+		}
+	}
+	// A clean state prints no retired/stale hint lines.
+	if strings.Contains(out, "retired key ids") || strings.Contains(out, "stale key rows") {
+		t.Errorf("clean status must not print retired/stale hints: %q", out)
+	}
+
+	// A v3 file whose owner wrap is missing is UNREADABLE: status reports
+	// it and fails closed, matching its key-file health behavior.
+	var aliceID int64
+	if err := db.QueryRow(ctx, `SELECT id FROM users WHERE uid = 'alice'`).Scan(&aliceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `
+INSERT INTO files (user_id, name, path, is_dir, size, mtime_ms, etag, mime, permissions, key_uuid)
+VALUES (?, 'gone.txt', '/gone.txt', 0, 4, 0, 'x', 'application/octet-stream', 31, ?)`, aliceID, []byte("0123456789abcdef")); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runCLI(t, "", "--config", cfgPath, "encryption", "status")
+	if err == nil ||
+		!strings.Contains(out, "broken v3 files (owner wrap missing, file UNREADABLE): 1") {
+		t.Fatalf("broken status = %q %v", out, err)
+	}
+}
+
+func TestEncryptionRotateKeysResealsUserKeys(t *testing.T) {
+	dir := t.TempDir()
+	storageRoot := filepath.Join(dir, "storage")
+	dbPath := filepath.Join(dir, "ncgo.db")
+	keyAPath := filepath.Join(dir, "master-a.key")
+	keyBPath := filepath.Join(dir, "master-b.key")
+	rotationEnv := func(master string, previous ...string) string {
+		var sb strings.Builder
+		fmt.Fprintf(&sb, `
+database:
+  driver: sqlite
+  dsn: %q
+storage:
+  default_backend: local
+  backends:
+    local:
+      type: localfs
+      root: %q
+encryption:
+  enabled: true
+  master_key_path: %q
+  per_user_keys: true
+`, dbPath, storageRoot, master)
+		if len(previous) > 0 {
+			sb.WriteString("  previous_key_paths:\n")
+			for _, p := range previous {
+				fmt.Fprintf(&sb, "    - %q\n", p)
+			}
+		}
+		cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(cfgPath, []byte(sb.String()), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return cfgPath
+	}
+
+	// Key A is the original master; alice's UK is minted under it and so
+	// sits at ring position 0.
+	cfgA := rotationEnv(keyAPath)
+	if _, err := runCLI(t, "", "--config", cfgA, "encryption", "init"); err != nil {
+		t.Fatal(err)
+	}
+	db := openRekeyDB(t, dbPath, "alice")
+	ctx := context.Background()
+	keyA, err := encrypt.LoadMasterKey(keyAPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resA, err := encrypt.NewSQLResolver(db, [][]byte{keyA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resA.OnUserCreated(ctx, "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Rotate: key B becomes master, key A joins previous_key_paths. The
+	// sweep has no files to rotate, but the ADR-0099 re-seal still moves
+	// the UK to the current key id.
+	if _, err := runCLI(t, "", "--config", cfgA, "encryption", "init", "--key-path", keyBPath); err != nil {
+		t.Fatal(err)
+	}
+	cfgB := rotationEnv(keyBPath, keyAPath)
+	out, err := runCLI(t, "", "--config", cfgB, "encryption", "rotate-keys")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "re-sealed 1 user key(s) under key id 1") {
+		t.Fatalf("rotate-keys output = %q", out)
+	}
+	var keyID int64
+	if err := db.QueryRow(ctx, `SELECT key_id FROM user_keys`).Scan(&keyID); err != nil {
+		t.Fatal(err)
+	}
+	if keyID != 1 {
+		t.Errorf("user_keys.key_id = %d, want 1 after the rotation re-seal", keyID)
+	}
+
+	// Idempotent: a second rotation re-seals nothing.
+	out, err = runCLI(t, "", "--config", cfgB, "encryption", "rotate-keys")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "re-sealed 0 user key(s) under key id 1") {
+		t.Fatalf("idempotent rotate-keys output = %q", out)
+	}
+}
+
+func TestEncryptionReconcile(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath, _, dbPath := rekeyEnv(t, dir, true)
+	if _, err := runCLI(t, "", "--config", cfgPath, "encryption", "init"); err != nil {
+		t.Fatal(err)
+	}
+	// Users created without the lifecycle hook (a plain store) hold no user
+	// keys — the pre-migration state reconcile repairs.
+	db := openRekeyDB(t, dbPath, "alice", "bob", "carol")
+	ctx := context.Background()
+
+	// alice owns a v3-sealed file (the write mints her UK + owner wrap
+	// lazily) shared with bob.
+	st, err := openStorage(mustLoadConfig(t, cfgPath), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := "shared v3 content"
+	wc, err := st.Create(ctx, "alice/a.txt", int64(len(content)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wc.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	if err := wc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	kw, ok := wc.(storage.KeyUUIDWriter)
+	if !ok {
+		t.Fatal("v3 writer does not implement storage.KeyUUIDWriter")
+	}
+	uuid, ok := kw.SealedKeyUUID()
+	if !ok {
+		t.Fatal("v3 writer reported no key uuid")
+	}
+	var aliceID, bobID, carolID int64
+	for uid, dst := range map[string]*int64{"alice": &aliceID, "bob": &bobID, "carol": &carolID} {
+		if err := db.QueryRow(ctx, `SELECT id FROM users WHERE uid = ?`, uid).Scan(dst); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(ctx, `
+INSERT INTO files (user_id, name, path, is_dir, size, mtime_ms, etag, mime, permissions, key_uuid)
+VALUES (?, 'a.txt', '/a.txt', 0, ?, 0, 'x', 'application/octet-stream', 31, ?)`, aliceID, len(content), uuid[:]); err != nil {
+		t.Fatal(err)
+	}
+	shares := sharing.NewSQLShareStore(db)
+	if err := shares.Insert(ctx, &files.Share{
+		OwnerUserID: aliceID, ShareType: files.ShareTypeUser, Path: "/a.txt",
+		ItemType: "file", Token: "reconcile-token", Permissions: 1, ShareWith: "bob",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Dry-run reports the missing user keys and the share to process, and
+	// writes nothing.
+	out, err := runCLI(t, "", "--config", cfgPath, "encryption", "reconcile", "--dry-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "dry-run reconcile: 2 user(s) missing a user key, 0 stale user key(s), 0 stale wrap(s), 1 share(s) to process") {
+		t.Fatalf("dry-run output = %q", out)
+	}
+	var n int64
+	if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM user_keys WHERE user_id = ?`, bobID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatal("dry-run must not mint user keys")
+	}
+
+	// carol's UK goes stale: minted, then her users row is deleted raw (no
+	// lifecycle hook ran).
+	masterKey, err := encrypt.LoadMasterKey(mustLoadConfig(t, cfgPath).Encryption.MasterKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := encrypt.NewSQLResolver(db, [][]byte{masterKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := res.OnUserCreated(ctx, "carol"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `DELETE FROM users WHERE id = ?`, carolID); err != nil {
+		t.Fatal(err)
+	}
+
+	// The real run mints bob's UK, wraps the shared file's key for bob, and
+	// prunes carol's stale row.
+	out, err = runCLI(t, "", "--config", cfgPath, "encryption", "reconcile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"minted 1 user key(s)",
+		"processed 1 share(s) (0 error(s))",
+		"pruned 1 user key(s), 0 wrap(s)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("reconcile output missing %q: %q", want, out)
+		}
+	}
+	if err := db.QueryRow(ctx, `
+SELECT COUNT(*) FROM file_keys WHERE key_uuid = ? AND user_id = ?`, uuid[:], bobID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("recipient wrap rows after reconcile = %d, want 1", n)
+	}
+	if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM user_keys WHERE user_id = ?`, carolID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("stale UK rows after reconcile = %d, want 0", n)
+	}
+
+	// Idempotent re-run: nothing minted or pruned; the share re-wrap is a
+	// no-op.
+	out, err = runCLI(t, "", "--config", cfgPath, "encryption", "reconcile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "minted 0 user key(s)") ||
+		!strings.Contains(out, "pruned 0 user key(s), 0 wrap(s)") {
+		t.Fatalf("idempotent reconcile output = %q", out)
+	}
+}
+
+func TestEncryptionReconcileRequiresPerUserKeys(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath, _, _ := rekeyEnv(t, dir, false)
+	if _, err := runCLI(t, "", "--config", cfgPath, "encryption", "init"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCLI(t, "", "--config", cfgPath, "encryption", "reconcile"); err == nil ||
+		!strings.Contains(err.Error(), "per_user_keys") ||
+		!strings.Contains(err.Error(), "Migration procedure") {
+		t.Fatalf("guard err = %v", err)
+	}
+}
+
+func TestUserAddDeletePerUserKeys(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "ncgo.db")
+	keyPath := filepath.Join(dir, "master.key")
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfg := fmt.Sprintf(`
+database:
+  driver: sqlite
+  dsn: %q
+auth:
+  argon2id:
+    memory_kb: 8
+    iterations: 1
+    parallelism: 1
+encryption:
+  enabled: true
+  master_key_path: %q
+  per_user_keys: true
+`, dbPath, keyPath)
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runCLI(t, "", "--config", cfgPath, "encryption", "init"); err != nil {
+		t.Fatal(err)
+	}
+	db := openRekeyDB(t, dbPath)
+	ctx := context.Background()
+
+	// user add fires the lifecycle hook: the UK is minted eagerly.
+	if _, err := runCLI(t, "pw\n", "--config", cfgPath, "user", "add", "alice", "--password-stdin"); err != nil {
+		t.Fatal(err)
+	}
+	var aliceID int64
+	if err := db.QueryRow(ctx, `SELECT id FROM users WHERE uid = 'alice'`).Scan(&aliceID); err != nil {
+		t.Fatal(err)
+	}
+	var n int64
+	if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM user_keys WHERE user_id = ?`, aliceID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("user_keys rows after user add = %d, want 1 (eager mint)", n)
+	}
+	// A wrap row of alice's must go with her too.
+	if _, err := db.Exec(ctx, `
+INSERT INTO file_keys (key_uuid, user_id, wrapped_fk, created_ms) VALUES (?, ?, ?, 0)`,
+		[]byte("0123456789abcdef"), aliceID, []byte("wrap")); err != nil {
+		t.Fatal(err)
+	}
+
+	// user delete fires the hook: both key tables are purged for her.
+	if _, err := runCLI(t, "", "--config", cfgPath, "user", "delete", "alice", "--yes"); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"user_keys", "file_keys"} {
+		if err := db.QueryRow(ctx, `SELECT COUNT(*) FROM `+table+` WHERE user_id = ?`, aliceID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Errorf("%s rows after user delete = %d, want 0 (purged)", table, n)
+		}
 	}
 }

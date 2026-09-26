@@ -62,8 +62,9 @@ FK-wrap internals (factored into `wrapFKForUser`):
   guards: the user owning the `files.key_uuid` row for keyUUID is **never
   unwrapped** (a revoke must never orphan a file from its owner — the owner
   can be a member of a group the file is shared to), and an unknown uid is
-  a no-op (no live user means no addressable row; stale rows of deleted
-  users are phase-3 lifecycle cleanup).
+  a no-op (no live user means no addressable row; ~~stale rows of deleted
+  users are phase-3 lifecycle cleanup~~ (**resolved by ADR-0099**: purged by
+  `OnUserDeleted` / `PruneStaleKeys`)).
 - `ReWrapSharees(ctx, oldUUID, newUUID)` — overwrite continuity: FK =
   `Resolve(newUUID)` (the owner row exists from `Allocate`); every
   `user_id` in `file_keys(oldUUID)` that is not the new key's owner gets a
@@ -110,7 +111,8 @@ bootstrap/import), where hook failures surface as stderr warnings.
 (phase 1); continuity for sharees means following the current key, so
 `ReWrapSharees` carries non-owner recipients to the new UUID and deletes
 ALL old-UUID rows — including the old owner row. ADR-0097's "superseded
-wrap rows persist … phase-3 lifecycle cleanup" is revised: they persist
+wrap rows persist … ~~phase-3 lifecycle cleanup~~" (**resolved by ADR-0099**)
+is revised: they persist
 only until the next overwrite's carry. Deletion is safe because nothing
 addressable references the old UUID afterwards (see Context): version
 snapshots taken during the overwrite were re-sealed under their own fresh
@@ -140,7 +142,8 @@ Therefore no user-visible operation — share, unshare, write, membership
 change, expiry — may fail on a wrap error. Every hook is nil-checked,
 Warn-logs failures (service `warn`, expire job, DAV `Logger`, users
 `Logger`, CLI stderr), and continues. Skew that escapes the hooks (a crashed
-hook, a lost race remnant) is phase-3 repair/status tooling territory, not
+hook, a lost race remnant) is ~~phase-3~~ repair/status tooling territory
+(**resolved by ADR-0099**), not
 a runtime failure mode.
 
 ### 6. Concurrency invariant (ADR-0096's phase-2 requirement)
@@ -162,12 +165,12 @@ something — the common no-share case short-circuits after the first
 - **Link and OCM-remote shares**: no user key exists for the recipient;
   debug-logged no-ops.
 - **Import and bootstrap membership changes**: not wired — import ordering
-  (shares may not exist yet) makes wrapping premature; phase-3 repair
-  reconciles.
+  (shares may not exist yet) makes wrapping premature; ~~phase-3 repair
+  reconciles~~ (**resolved by ADR-0099**: `ncgo-cli encryption reconcile`).
 - **`appdata_*` system trees**: unchanged from phase 1 (no owner; writes
   there fail loudly in per-user mode).
-- **Stale wrap rows of deleted users / crashed hooks**: phase-3 lifecycle
-  and repair tooling.
+- **Stale wrap rows of deleted users / crashed hooks**: ~~phase-3 lifecycle
+  and repair tooling~~ (**resolved by ADR-0099**).
 
 ## Alternatives considered
 

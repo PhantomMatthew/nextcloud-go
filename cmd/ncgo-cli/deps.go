@@ -134,3 +134,18 @@ func perUserResolver(db database.DB, current []byte, previous [][]byte) (*encryp
 	}
 	return res, nil
 }
+
+// userKeysHook builds the ADR-0099 per-user key lifecycle hook when
+// encryption.per_user_keys is on, so CLI user administration (user
+// add/delete, import-nextcloud users) mints and purges key rows exactly as
+// the server does; nil when the mode is off.
+func userKeysHook(cfg *config.Config, db database.DB) (users.UserKeysHook, error) {
+	if !cfg.Encryption.Enabled || !cfg.Encryption.PerUserKeys {
+		return nil, nil
+	}
+	current, previous, err := encrypt.LoadKeyring(cfg.Encryption.MasterKeyPath, cfg.Encryption.PreviousKeyPaths)
+	if err != nil {
+		return nil, fmt.Errorf("ncgo-cli: encryption: %w", err)
+	}
+	return perUserResolver(db, current, previous)
+}
