@@ -191,6 +191,28 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-26** — Phase 5w-4 **design**: password-wrapped user keys
+  (ADR-0100), supplying the phase-4 design ADR-0096 deferred (its two
+  forward references annotated). The threat-model pivot: an enrolled
+  user's master-sealed UK is DELETED after re-wrapping every wrap row, so
+  an at-rest server compromise exposes nothing for users without an
+  active session. ADR-0096's symmetric-only decision is revisited under
+  new evidence — the lock problem (share grants, incoming-share writes,
+  and group adds must wrap FOR offline users) makes per-user X25519
+  keypairs necessary: the public key wraps for locked users, the private
+  key lives only password-sealed (`argon2id` KEK, already in-tree — zero
+  new dependencies), master-sealed on live session rows, and (phase 4-b)
+  HKDF-sealed under app-password tokens. Enrollment is lazy at password
+  login behind `encryption.password_wrapped_keys`; unenrollment mirrors
+  at password login with the flag off. Reads resolve through the READING
+  user's own wrap row (the ADR-0098 recipient rows assume their pinned
+  phase-4 role) with a new `ErrKeyLocked` sentinel → 403; public links,
+  background readers, and CLI sweeps skip/fail loudly on enrolled users'
+  files; `reset-password` refuses enrolled users without `--force`
+  (documented data loss). Migration 0021 (three dialects): `user_key_pw`,
+  `file_keys.scheme`, `sessions.sealed_uk` (+ `app_token_keys` in 4-b).
+  Implementation phased 4-a (enrollment + identity read/write path) and
+  4-b (token wraps); trade-off table in the ADR.
 - **2026-09-26** — Phase 5w-3: SSE per-user keys **lifecycle + tooling**
   (ADR-0099), delivering ADR-0096's phase 3 and resolving the phase-3
   deferrals in ADR-0097/0098. The `users.SQLStore.UserKeys` hook (structural,

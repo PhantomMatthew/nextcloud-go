@@ -138,8 +138,11 @@ new crypto.
    its own ADR); unlocked into the session at password login;
    app-password/token sessions carry no password and cannot unlock — those
    clients must use a session that had a password login first, or the
-   deployment stays on master-wrapped UKs. This constraint and the
-   trade-off table belong to that phase's ADR, not this one.
+   deployment stays on master-wrapped UKs. ~~This constraint and the
+   trade-off table belong to that phase's ADR, not this one.~~
+   (**design landed in ADR-0100** — enrollment model, X25519 keypairs for
+   the lock problem, session/token unlock, schema, and the trade-off
+   table; code per phase)
 
 ### Alternatives considered
 
@@ -164,7 +167,8 @@ new crypto.
   `user_keys`, `file_keys`; new nullable `files.key_uuid`.
 - Phase 4 is the only phase that changes the security posture, and the
   only one that constrains token-authenticated clients; it is gated behind
-  its own ADR and flag.
+  its own ADR and flag. ~~(its ADR pending)~~ (**ADR-0100** supplies the
+  phase-4 design)
 - This ADR closes ADR-0074's per-user-keys deferral **as a design**; code
   lands per phase with the standard gates (full suite, race, lint, tidy).
 
