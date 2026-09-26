@@ -131,6 +131,15 @@ func testHandler() (*Handler, *fakeUserStore, *fakeJobsStore, *fakeNotifsStore) 
 	hd(0.01, "cache_get")
 	hd(0.03, "cache_get")
 	hd(0.5, "cache_set")
+	// alpha: memory high-water and two limit breaches on top of host traffic.
+	reg.SetGaugeMax(observability.MetricPluginMemoryHighWaterBytes, 3<<20,
+		observability.Label{Name: "plugin", Value: "alpha"})
+	reg.SetGaugeMax(observability.MetricPluginMemoryHighWaterBytes, 1<<20, // lower: ignored
+		observability.Label{Name: "plugin", Value: "alpha"})
+	for i := 0; i < 2; i++ {
+		reg.IncCounter(observability.MetricPluginMemoryLimitExceededTotal,
+			observability.Label{Name: "plugin", Value: "alpha"})
+	}
 	// beta: entry-point traffic only (no host families at all).
 	ec := func(entry, result string) {
 		reg.IncCounter(observability.MetricPluginEntryCallsTotal,
@@ -158,6 +167,10 @@ func testHandler() (*Handler, *fakeUserStore, *fakeJobsStore, *fakeNotifsStore) 
 		observability.Label{Name: "plugin", Value: "gamma"},
 		observability.Label{Name: "op", Value: "read"},
 		observability.Label{Name: "scope", Value: "system"})
+	// delta: memory gauge only — a plugin appearing in just one of the new
+	// families still gets a row, with every other family zero.
+	reg.SetGaugeMax(observability.MetricPluginMemoryHighWaterBytes, 768<<10,
+		observability.Label{Name: "plugin", Value: "delta"})
 	h := &Handler{
 		Users:  fu,
 		Jobs:   fj,
@@ -553,6 +566,8 @@ type pluginRow struct {
 	EntryCallP99Seconds  float64 `json:"entry_call_p99_seconds"`
 	StorageBytes         int64   `json:"storage_bytes"`
 	CapabilityDenials    int64   `json:"capability_denials"`
+	MemoryHighWaterBytes int64   `json:"memory_high_water_bytes"`
+	MemoryLimitExceeded  int64   `json:"memory_limit_exceeded"`
 }
 
 func TestConsolePluginsPayload(t *testing.T) {
@@ -567,18 +582,19 @@ func TestConsolePluginsPayload(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &p); err != nil {
 		t.Fatal(err)
 	}
-	if len(p.Plugins) != 3 {
+	if len(p.Plugins) != 4 {
 		t.Fatalf("plugins = %+v", p.Plugins)
 	}
-	// Rows are id-sorted: alpha, beta, gamma.
-	alpha, beta, gamma := p.Plugins[0], p.Plugins[1], p.Plugins[2]
-	if alpha.Plugin != "alpha" || beta.Plugin != "beta" || gamma.Plugin != "gamma" {
-		t.Fatalf("plugin order = %q, %q, %q", alpha.Plugin, beta.Plugin, gamma.Plugin)
+	// Rows are id-sorted: alpha, beta, delta, gamma.
+	alpha, beta, delta, gamma := p.Plugins[0], p.Plugins[1], p.Plugins[2], p.Plugins[3]
+	if alpha.Plugin != "alpha" || beta.Plugin != "beta" || delta.Plugin != "delta" || gamma.Plugin != "gamma" {
+		t.Fatalf("plugin order = %q, %q, %q, %q", alpha.Plugin, beta.Plugin, delta.Plugin, gamma.Plugin)
 	}
 
 	// alpha: 3 host calls summed over function (2 ok + 1 internal), 2
 	// denials, latency merged from the per-function series (count 3,
-	// sum 0.54).
+	// sum 0.54), a 3 MiB memory high-water (the 1 MiB set-max lost), and 2
+	// limit breaches.
 	if alpha.HostCalls != 3 || alpha.HostErrors != 1 {
 		t.Errorf("alpha host calls/errors = %d/%d, want 3/1", alpha.HostCalls, alpha.HostErrors)
 	}
@@ -587,6 +603,12 @@ func TestConsolePluginsPayload(t *testing.T) {
 	}
 	if alpha.CapabilityDenials != 2 {
 		t.Errorf("alpha denials = %d, want 2", alpha.CapabilityDenials)
+	}
+	if alpha.MemoryHighWaterBytes != 3<<20 {
+		t.Errorf("alpha memory high-water = %d, want %d", alpha.MemoryHighWaterBytes, 3<<20)
+	}
+	if alpha.MemoryLimitExceeded != 2 {
+		t.Errorf("alpha memory limit exceeded = %d, want 2", alpha.MemoryLimitExceeded)
 	}
 	approx := func(got, want float64) bool { return math.Abs(got-want) < 1e-9 }
 	if !approx(alpha.HostCallMeanSeconds, 0.18) {
@@ -603,11 +625,12 @@ func TestConsolePluginsPayload(t *testing.T) {
 		t.Errorf("alpha host p99 = %v, want within (0.25, 0.5]", alpha.HostCallP99Seconds)
 	}
 
-	// beta: entry-only plugin; host families contribute zeros.
+	// beta: entry-only plugin; host and memory families contribute zeros.
 	if beta.EntryCalls != 4 || beta.EntryErrors != 1 {
 		t.Errorf("beta entry calls/errors = %d/%d, want 4/1", beta.EntryCalls, beta.EntryErrors)
 	}
-	if beta.HostCalls != 0 || beta.HostErrors != 0 || beta.CapabilityDenials != 0 || beta.StorageBytes != 0 {
+	if beta.HostCalls != 0 || beta.HostErrors != 0 || beta.CapabilityDenials != 0 || beta.StorageBytes != 0 ||
+		beta.MemoryHighWaterBytes != 0 || beta.MemoryLimitExceeded != 0 {
 		t.Errorf("beta zero families = %+v", beta)
 	}
 	if !approx(beta.EntryCallMeanSeconds, 0.101) {
@@ -617,12 +640,23 @@ func TestConsolePluginsPayload(t *testing.T) {
 		t.Errorf("beta entry p95 = %v, want 0.235", beta.EntryCallP95Seconds)
 	}
 
-	// gamma: storage-only plugin — 150 bytes summed over op/scope.
+	// delta: memory-gauge-only plugin — a row with zeros everywhere else.
+	if delta.MemoryHighWaterBytes != 768<<10 {
+		t.Errorf("delta memory high-water = %d, want %d", delta.MemoryHighWaterBytes, 768<<10)
+	}
+	if delta.HostCalls != 0 || delta.EntryCalls != 0 || delta.CapabilityDenials != 0 ||
+		delta.StorageBytes != 0 || delta.MemoryLimitExceeded != 0 {
+		t.Errorf("delta zero families = %+v", delta)
+	}
+
+	// gamma: storage-only plugin — 150 bytes summed over op/scope; memory
+	// gauge absent for this plugin.
 	if gamma.StorageBytes != 150 {
 		t.Errorf("gamma storage bytes = %d, want 150", gamma.StorageBytes)
 	}
 	if gamma.HostCalls != 0 || gamma.EntryCalls != 0 || gamma.CapabilityDenials != 0 ||
-		gamma.HostCallMeanSeconds != 0 || gamma.EntryCallP95Seconds != 0 {
+		gamma.HostCallMeanSeconds != 0 || gamma.EntryCallP95Seconds != 0 ||
+		gamma.MemoryHighWaterBytes != 0 || gamma.MemoryLimitExceeded != 0 {
 		t.Errorf("gamma zero families = %+v", gamma)
 	}
 }

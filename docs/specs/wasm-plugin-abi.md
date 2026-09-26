@@ -670,7 +670,9 @@ Storage transfers additionally emit (ADR-0067):
 Per-plugin admin dashboard (Phase 4 UI):
 
 - Request count, error rate, p50/p95/p99 latency
-- Memory high-water mark
+- Memory high-water mark — delivered as gauge
+  `ncgo_plugin_memory_high_water_bytes{plugin}` (ADR-0095), set-max'd from
+  the instance's linear-memory size at every release/close
 - Capability denial events (security signal)
 
 ## 13. Security Review Checklist
@@ -719,6 +721,18 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-26** — Phase 5v (ADR-0095): per-plugin memory introspection. The
+  registry gains a gauge kind and
+  `ncgo_plugin_memory_high_water_bytes{plugin}` tracks each plugin's
+  linear-memory high-water (`api.Memory().Size()`, set-max'd at every
+  instance release/close); `runtime.memory_limit_mb` is now soft-enforced —
+  retrospectively, not mid-call: an instance over the limit after a
+  completed call is destroyed (pool replenished / singleton dropped /
+  per_request closed), counted in
+  `ncgo_plugin_memory_limit_exceeded_total{plugin}` and logged at Warn; the
+  call's result is untouched and the in-call ceiling stays the host-global
+  `WithMemoryLimitPages` clamp (max 256 MiB). §12's planned memory
+  high-water mark is delivered; the console plugins panel shows both.
 - **2026-09-25** — Phase 5t (ADR-0093): plugin stdout/stderr (`fd_write`) is
   no longer discarded — each instance's stdio fds are line-buffered into the
   host log stream: stdout→INFO, stderr→WARN, `plugin.id`/`plugin.version`/
@@ -989,8 +1003,11 @@ Full ABI implementation is the bulk of Phase 4.
   existed. **Newly confirmed deviations (from review):**
   `runtime.fuel_per_call` is parsed but unenforced (wazero v1 has no
   fuel-metering API; CPU budget remains wall-clock timeout only);
-  per-plugin `runtime.memory_limit_mb` is validated but not applied (memory
-  is capped host-wide via `DefaultMemoryLimitMB`); §8 trap-during-request
+  per-plugin `runtime.memory_limit_mb` was then validated but not applied —
+  since Phase 5v (ADR-0095) it is soft-enforced, retrospectively: an
+  instance over the limit after a completed call is destroyed, counted in
+  `ncgo_plugin_memory_limit_exceeded_total`, while the in-call ceiling stays
+  the host-global 256 MiB clamp (`DefaultMemoryLimitMB`); §8 trap-during-request
   returns **502**, not 500 (deliberate — 502 marks plugin failure vs core
   failure; §8 text corrected); the §13 private-IP egress check remains
   pending (follow-up). **Remaining limitation:** cache keys under

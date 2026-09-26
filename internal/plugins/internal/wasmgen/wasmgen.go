@@ -1534,6 +1534,43 @@ func WASIFdWriteModule(fd int32, chunks ...[]byte) []byte {
 	return out
 }
 
+// MemGrowModule builds a module whose ncgo_on_install grows linear memory by
+// deltaPages (memory.grow opcode 0x40; the result is dropped) and returns 0.
+// The memory section declares min 1 page and no max — the runtime's memory
+// limit governs growth. It carries the required
+// ncgo_abi_version/ncgo_alloc/ncgo_free stubs so it passes Load.
+func MemGrowModule(deltaPages int32) []byte {
+	types := vec(
+		ft(nil, []byte{i32}),         // 0: ()->i32
+		ft([]byte{i32}, []byte{i32}), // 1: ncgo_alloc
+		ft([]byte{i32, i32}, nil),    // 2: ncgo_free
+	)
+	// No imports; declared functions occupy indices 0..3.
+	exports := vec(
+		export("memory", 0x02, 0),
+		export("ncgo_on_install", 0x00, 0),
+		export("ncgo_abi_version", 0x00, 1),
+		export("ncgo_alloc", 0x00, 2),
+		export("ncgo_free", 0x00, 3),
+	)
+	expr := i32c(deltaPages)
+	expr = append(expr, opMemoryGrow, 0x00, opDrop) // 0x00 is the memory index immediate
+	expr = append(expr, i32c(0)...)
+	out := make([]byte, 0, 128)
+	out = append(out, 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00)
+	out = append(out, section(1, types)...)
+	out = append(out, section(3, vec(u32(0), u32(0), u32(1), u32(2)))...)
+	out = append(out, section(5, vec([]byte{0x00, 0x01}))...) // memory: min 1 page, no max
+	out = append(out, section(7, exports)...)
+	out = append(out, section(10, vec(
+		code(0, expr),
+		code(0, i32c(1)),  // ncgo_abi_version
+		code(0, i32c(64)), // ncgo_alloc: static stub, never called here
+		code(0, nil),      // ncgo_free
+	))...)
+	return out
+}
+
 // NoExportsModule is a valid empty wasm module.
 func NoExportsModule() []byte {
 	return []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}

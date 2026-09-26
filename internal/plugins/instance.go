@@ -10,6 +10,8 @@ import (
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
+
+	"github.com/PhantomMatthew/nextcloud-go/internal/observability"
 )
 
 // ErrHandleLimit is returned when an instance exceeds its open-handle budget.
@@ -178,6 +180,35 @@ func (in *instance) close(h *Host) {
 	}
 }
 
+// observeMemory records the instance's current linear-memory size into the
+// per-plugin high-water gauge and soft-enforces the manifest's
+// runtime.memory_limit_mb (ADR-0095): over the limit it reports true so the
+// caller destroys the instance — enforcement is retrospective, the completed
+// call's result is not failed. A nil metrics registry disables measurement
+// entirely (zero overhead).
+func (im *instanceManager) observeMemory(in *instance) (overLimit bool) {
+	reg := im.host.cfg.Metrics
+	if reg == nil {
+		return false
+	}
+	size := int64(in.mod.Memory().Size())
+	id := im.manifest.Plugin.ID
+	reg.SetGaugeMax(observability.MetricPluginMemoryHighWaterBytes, size,
+		observability.Label{Name: "plugin", Value: id})
+	if limit := im.manifest.Runtime.MemoryLimitMB; limit > 0 && size > int64(limit)<<20 {
+		reg.IncCounter(observability.MetricPluginMemoryLimitExceededTotal,
+			observability.Label{Name: "plugin", Value: id})
+		if im.host.logger != nil {
+			im.host.logger.WarnContext(context.Background(), "plugins: memory limit exceeded — destroying instance",
+				slog.String("plugin.id", id),
+				slog.Int64("memory.bytes", size),
+				slog.Int("memory_limit_mb", limit))
+		}
+		return true
+	}
+	return false
+}
+
 // instanceManager owns the instance lifecycle for one plugin according to its
 // manifest's instance_model.
 type instanceManager struct {
@@ -266,7 +297,9 @@ func (im *instanceManager) acquire(ctx context.Context) (inst *instance, release
 		}
 		inst := im.single
 		return inst, func(broken bool) {
-			if broken {
+			// A clean release over the memory limit destroys the singleton
+			// exactly like a trap does (ADR-0095).
+			if broken || im.observeMemory(inst) {
 				inst.close(im.host)
 				im.single = nil
 			} else if err := inst.handles.closeAll(); err != nil {
@@ -280,13 +313,16 @@ func (im *instanceManager) acquire(ctx context.Context) (inst *instance, release
 			return nil, nil, err
 		}
 		return inst, func(bool) {
+			im.observeMemory(inst)
 			inst.close(im.host)
 		}, nil
 	}
 }
 
 func (im *instanceManager) releasePooled(_ context.Context, inst *instance, broken bool) {
-	if !broken {
+	// Measure on every release: a clean release under the memory limit keeps
+	// the instance for reuse; a trap or a breach destroys it (ADR-0095).
+	if !broken && !im.observeMemory(inst) {
 		// Clean release: close leftover handles (plugin forgot to), keep the
 		// instance alive for reuse.
 		if err := inst.handles.closeAll(); err != nil {
@@ -312,10 +348,12 @@ func (im *instanceManager) closeAll() {
 	if im.pool != nil {
 		close(im.pool)
 		for inst := range im.pool {
+			im.observeMemory(inst)
 			inst.close(im.host)
 		}
 	}
 	if im.single != nil {
+		im.observeMemory(im.single)
 		im.single.close(im.host)
 		im.single = nil
 	}

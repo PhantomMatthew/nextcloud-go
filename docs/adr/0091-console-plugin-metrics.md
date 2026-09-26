@@ -28,9 +28,12 @@ Constraints carried over:
 - All histogram families share one fixed le bucket grid
   (`{.0005, …, 2.5}` seconds, metrics.go), so per-function series for one
   plugin can be merged bucket-by-bucket.
-- **Memory high-water stays out of scope**: per-plugin memory high-water
+- ~~**Memory high-water stays out of scope**: per-plugin memory high-water
   marks require wazero memory introspection that is still not wired
-  (carried verbatim from ADR-0055's deferral). The panel ships without it.
+  (carried verbatim from ADR-0055's deferral). The panel ships without
+  it.~~ (**resolved by ADR-0095**: the premise was false — wazero's
+  `Memory().Size()` always reported the size; the panel now carries memory
+  high-water and limit breaches)
 
 ## Decision
 
@@ -95,8 +98,10 @@ Constraints carried over:
 
 ## Consequences
 
-- ADR-0055's dashboard deferral is closed except memory high-water, which
-  remains blocked on wazero memory introspection and stays deferred there.
+- ~~ADR-0055's dashboard deferral is closed except memory high-water, which
+  remains blocked on wazero memory introspection and stays deferred
+  there.~~ (**resolved by ADR-0095**: memory high-water landed as the
+  `ncgo_plugin_memory_high_water_bytes` gauge)
 - The registry gains a stable in-process read surface (snapshots +
   `Quantile`) usable by future consumers (CLI, diagnostics) without touching
   the exposition path; Render's output is unchanged.

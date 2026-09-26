@@ -191,6 +191,23 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-26** — Phase 5v: per-plugin memory introspection (ADR-0095). The
+  two long-deferred memory items (ADR-0055's high-water carve-out, ADR-0091's
+  out-of-scope note, the spec's "validated but not applied"
+  `runtime.memory_limit_mb`) rested on a false premise — wazero's
+  `api.Module.Memory().Size()` always reported live linear-memory bytes; only
+  mid-call grow hooks and per-module limits are absent. The observability
+  registry gains a gauge kind (`RegisterGauge`/`SetGauge`/`SetGaugeMax`,
+  `# TYPE gauge` render, `GaugeSeries` read model) with two new families:
+  `ncgo_plugin_memory_high_water_bytes{plugin}` and
+  `ncgo_plugin_memory_limit_exceeded_total{plugin}`. The plugin instance
+  manager measures memory at every release/close and soft-enforces
+  `memory_limit_mb` retrospectively — an over-limit instance is destroyed
+  like a trapped one (pool replenished, singleton dropped), the completed
+  call's result untouched; the in-call ceiling stays the host-global 256 MiB
+  clamp. Per-plugin wazero runtimes for mid-call enforcement recorded as
+  considered/rejected. The console plugins panel shows memory high-water and
+  limit breaches; wasmgen gains `MemGrowModule`.
 - **2026-09-26** — Phase 5u: atomic conditional DAV writes (ADR-0094). PUT
   evaluated If-Match/If-None-Match after a Stat and plain PUT ignored the
   `If:` etag state list NC desktop sends — both TOCTOU lost-update windows;

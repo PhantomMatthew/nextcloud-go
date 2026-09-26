@@ -18,6 +18,7 @@ func TestModulesCompile(t *testing.T) {
 		{"hello", HelloModule("hello from wasm")},
 		{"wasi", WASIModule()},
 		{"wasi-fd-write", WASIFdWriteModule(1, []byte("a\n"), []byte("b"))},
+		{"memgrow", MemGrowModule(32)},
 		{"noexports", NoExportsModule()},
 		{"loop", LoopModule()},
 		{"oob", OOBLogModule()},

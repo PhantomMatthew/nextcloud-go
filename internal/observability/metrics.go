@@ -43,6 +43,13 @@ const (
 	// MetricPluginEntryCallDurationSeconds observes guest entry-point
 	// latency by plugin and entry name.
 	MetricPluginEntryCallDurationSeconds = "ncgo_plugin_entry_call_duration_seconds"
+	// MetricPluginMemoryHighWaterBytes tracks each plugin's linear-memory
+	// high-water mark in bytes, set-max'd from api.Memory().Size() at
+	// instance release/close (ADR-0095).
+	MetricPluginMemoryHighWaterBytes = "ncgo_plugin_memory_high_water_bytes"
+	// MetricPluginMemoryLimitExceededTotal counts instances destroyed for
+	// exceeding the manifest's runtime.memory_limit_mb (ADR-0095).
+	MetricPluginMemoryLimitExceededTotal = "ncgo_plugin_memory_limit_exceeded_total"
 )
 
 // histogramBuckets are the fixed latency bucket upper bounds (seconds) used
@@ -57,9 +64,10 @@ type Label struct {
 }
 
 // Registry is a minimal, stdlib-only Prometheus text-exposition registry
-// (format v0.0.4). It supports counters and fixed-bucket histograms keyed by
-// label set. Families must be registered up front with their canonical label
-// names; series are created on first use. It is safe for concurrent use.
+// (format v0.0.4). It supports counters, gauges, and fixed-bucket histograms
+// keyed by label set. Families must be registered up front with their
+// canonical label names; series are created on first use. It is safe for
+// concurrent use.
 //
 // ncgo deliberately does not depend on github.com/prometheus/client_golang:
 // the exposition format is simple text, the metric surface is small and
@@ -70,18 +78,33 @@ type Registry struct {
 	order    []string // family names in registration order, for stable render
 }
 
+// familyKind identifies the three metric kinds the registry supports.
+type familyKind int
+
+const (
+	kindCounter familyKind = iota
+	kindHistogram
+	kindGauge
+)
+
 type family struct {
 	name       string
 	help       string
-	isHist     bool
+	kind       familyKind
 	labelNames map[string]struct{}
 	counters   map[string]*counterSeries
 	histograms map[string]*histogramSeries
+	gauges     map[string]*gaugeSeries
 }
 
 type counterSeries struct {
 	labels []Label // canonical order
 	value  uint64
+}
+
+type gaugeSeries struct {
+	labels []Label // canonical order
+	value  int64
 }
 
 type histogramSeries struct {
@@ -108,22 +131,32 @@ func NewRegistry() *Registry {
 		"Per-plugin guest entry-point invocations by result class.", "plugin", "entry", "result")
 	r.RegisterHistogram(MetricPluginEntryCallDurationSeconds,
 		"Per-plugin guest entry-point latency in seconds.", "plugin", "entry")
+	r.RegisterGauge(MetricPluginMemoryHighWaterBytes,
+		"Per-plugin linear-memory high-water mark in bytes.", "plugin")
+	r.RegisterCounter(MetricPluginMemoryLimitExceededTotal,
+		"Per-plugin instances destroyed for exceeding runtime.memory_limit_mb.", "plugin")
 	return r
 }
 
 // RegisterCounter declares a counter family with its canonical label names.
 // It panics on a duplicate or conflicting registration (programmer error).
 func (r *Registry) RegisterCounter(name, help string, labelNames ...string) {
-	r.register(name, help, false, labelNames)
+	r.register(name, help, kindCounter, labelNames)
 }
 
 // RegisterHistogram declares a histogram family (fixed buckets) with its
 // canonical label names. It panics on a duplicate or conflicting registration.
 func (r *Registry) RegisterHistogram(name, help string, labelNames ...string) {
-	r.register(name, help, true, labelNames)
+	r.register(name, help, kindHistogram, labelNames)
 }
 
-func (r *Registry) register(name, help string, isHist bool, labelNames []string) {
+// RegisterGauge declares a gauge family with its canonical label names. It
+// panics on a duplicate or conflicting registration (programmer error).
+func (r *Registry) RegisterGauge(name, help string, labelNames ...string) {
+	r.register(name, help, kindGauge, labelNames)
+}
+
+func (r *Registry) register(name, help string, kind familyKind, labelNames []string) {
 	if name == "" {
 		panic("observability: empty metric name")
 	}
@@ -142,10 +175,13 @@ func (r *Registry) register(name, help string, isHist bool, labelNames []string)
 	if _, exists := r.families[name]; exists {
 		panic("observability: duplicate metric family " + name)
 	}
-	f := &family{name: name, help: help, isHist: isHist, labelNames: names}
-	if isHist {
+	f := &family{name: name, help: help, kind: kind, labelNames: names}
+	switch kind {
+	case kindHistogram:
 		f.histograms = make(map[string]*histogramSeries)
-	} else {
+	case kindGauge:
+		f.gauges = make(map[string]*gaugeSeries)
+	default:
 		f.counters = make(map[string]*counterSeries)
 	}
 	r.families[name] = f
@@ -193,7 +229,7 @@ func (r *Registry) AddCounter(name string, delta int64, labels ...Label) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	f := r.families[name]
-	if f == nil || f.isHist {
+	if f == nil || f.kind != kindCounter {
 		panic("observability: unregistered counter " + name)
 	}
 	canonical, key := f.canonical(labels)
@@ -211,7 +247,7 @@ func (r *Registry) ObserveHistogram(name string, seconds float64, labels ...Labe
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	f := r.families[name]
-	if f == nil || !f.isHist {
+	if f == nil || f.kind != kindHistogram {
 		panic("observability: unregistered histogram " + name)
 	}
 	canonical, key := f.canonical(labels)
@@ -226,20 +262,54 @@ func (r *Registry) ObserveHistogram(name string, seconds float64, labels ...Labe
 	s.sum += seconds
 }
 
+// SetGauge sets a gauge series to value, creating it on first use.
+func (r *Registry) SetGauge(name string, value int64, labels ...Label) {
+	r.setGauge(name, value, false, labels)
+}
+
+// SetGaugeMax sets a gauge series to value only when value exceeds the
+// series' current value — the high-water primitive. The comparison happens
+// under the registry lock, so concurrent callers can never lower the mark.
+func (r *Registry) SetGaugeMax(name string, value int64, labels ...Label) {
+	r.setGauge(name, value, true, labels)
+}
+
+func (r *Registry) setGauge(name string, value int64, maxOnly bool, labels []Label) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	f := r.families[name]
+	if f == nil || f.kind != kindGauge {
+		panic("observability: unregistered gauge " + name)
+	}
+	canonical, key := f.canonical(labels)
+	s, ok := f.gauges[key]
+	if !ok {
+		s = &gaugeSeries{labels: canonical}
+		f.gauges[key] = s
+	}
+	if !maxOnly || value > s.value {
+		s.value = value
+	}
+}
+
 // Render writes the full exposition in Prometheus text format v0.0.4:
-// HELP/TYPE lines per family (even with zero series), counters as integer
-// values, histograms as cumulative *_bucket{le="..."} lines plus *_sum and
-// *_count.
+// HELP/TYPE lines per family (even with zero series), counters and gauges as
+// integer values, histograms as cumulative *_bucket{le="..."} lines plus
+// *_sum and *_count.
 func (r *Registry) Render(w io.Writer) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, name := range r.order {
 		f := r.families[name]
 		fmt.Fprintf(w, "# HELP %s %s\n", f.name, escapeHelp(f.help))
-		if f.isHist {
+		switch f.kind {
+		case kindHistogram:
 			fmt.Fprintf(w, "# TYPE %s histogram\n", f.name)
 			r.renderHistogramFamily(w, f)
-		} else {
+		case kindGauge:
+			fmt.Fprintf(w, "# TYPE %s gauge\n", f.name)
+			r.renderGaugeFamily(w, f)
+		default:
 			fmt.Fprintf(w, "# TYPE %s counter\n", f.name)
 			r.renderCounterFamily(w, f)
 		}
@@ -250,6 +320,14 @@ func (r *Registry) renderCounterFamily(w io.Writer, f *family) {
 	keys := sortedKeys(f.counters)
 	for _, k := range keys {
 		s := f.counters[k]
+		fmt.Fprintf(w, "%s%s %d\n", f.name, renderLabels(s.labels), s.value)
+	}
+}
+
+func (r *Registry) renderGaugeFamily(w io.Writer, f *family) {
+	keys := sortedKeys(f.gauges)
+	for _, k := range keys {
+		s := f.gauges[k]
 		fmt.Fprintf(w, "%s%s %d\n", f.name, renderLabels(s.labels), s.value)
 	}
 }

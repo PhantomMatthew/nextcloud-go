@@ -370,6 +370,8 @@ type pluginInfo struct {
 	EntryCallP99Seconds  float64 `json:"entry_call_p99_seconds"`
 	StorageBytes         int64   `json:"storage_bytes"`
 	CapabilityDenials    int64   `json:"capability_denials"`
+	MemoryHighWaterBytes int64   `json:"memory_high_water_bytes"`
+	MemoryLimitExceeded  int64   `json:"memory_limit_exceeded"`
 }
 
 // histogramMerge accumulates histogram series that share the registry's
@@ -422,10 +424,11 @@ func labelValue(labels []observability.Label, name string) string {
 	return ""
 }
 
-// servePlugins aggregates the six per-plugin metric families (ADR-0055,
-// ADR-0088) into one row per plugin: call and error counts summed over the
-// function/entry/result/op/scope labels, and latency stats (mean, p50, p95,
-// p99) from the per-function / per-entry histogram series merged
+// servePlugins aggregates the eight per-plugin metric families (ADR-0055,
+// ADR-0088, ADR-0095) into one row per plugin: call and error counts summed
+// over the function/entry/result/op/scope labels, memory high-water read
+// from the gauge, the limit-exceeded tally, and latency stats (mean, p50,
+// p95, p99) from the per-function / per-entry histogram series merged
 // bucket-by-bucket before estimating. A plugin appearing in any family gets
 // a row; missing families contribute zeros. Rows are sorted by plugin id
 // for stable output. A nil registry means metrics are disabled
@@ -477,6 +480,12 @@ func (h *Handler) servePlugins(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, s := range reg.CounterSeries(observability.MetricPluginCapabilityDenialsTotal) {
 		row(s.Labels).CapabilityDenials += s.Value
+	}
+	for _, s := range reg.GaugeSeries(observability.MetricPluginMemoryHighWaterBytes) {
+		row(s.Labels).MemoryHighWaterBytes = s.Value
+	}
+	for _, s := range reg.CounterSeries(observability.MetricPluginMemoryLimitExceededTotal) {
+		row(s.Labels).MemoryLimitExceeded += s.Value
 	}
 	for _, s := range reg.HistogramSeries(observability.MetricPluginHostCallDurationSeconds) {
 		merge(hostHist, s.Labels).add(s)

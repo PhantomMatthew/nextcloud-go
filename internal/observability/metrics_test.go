@@ -185,6 +185,59 @@ func TestRegistryEntryFamiliesRender(t *testing.T) {
 	}
 }
 
+func TestRegistryGaugeRender(t *testing.T) {
+	r := NewRegistry()
+	r.SetGauge(MetricPluginMemoryHighWaterBytes, 65536,
+		Label{Name: "plugin", Value: "com.example.probe"})
+	// A plain set overwrites, including downwards.
+	r.SetGauge(MetricPluginMemoryHighWaterBytes, 4096,
+		Label{Name: "plugin", Value: "com.example.probe"})
+	out := render(t, r)
+	want := "# HELP ncgo_plugin_memory_high_water_bytes Per-plugin linear-memory high-water mark in bytes.\n" +
+		"# TYPE ncgo_plugin_memory_high_water_bytes gauge\n" +
+		`ncgo_plugin_memory_high_water_bytes{plugin="com.example.probe"} 4096` + "\n"
+	if !strings.Contains(out, want) {
+		t.Fatalf("render missing gauge series:\nwant %q\ngot:\n%s", want, out)
+	}
+}
+
+func TestRegistrySetGaugeMaxMonotonic(t *testing.T) {
+	r := NewRegistry()
+	labels := []Label{{Name: "plugin", Value: "com.example.probe"}}
+	r.SetGaugeMax(MetricPluginMemoryHighWaterBytes, 1024, labels...)
+	r.SetGaugeMax(MetricPluginMemoryHighWaterBytes, 512, labels...)  // lower: ignored
+	r.SetGaugeMax(MetricPluginMemoryHighWaterBytes, 2048, labels...) // higher: wins
+	r.SetGaugeMax(MetricPluginMemoryHighWaterBytes, 2048, labels...) // equal: no-op
+	out := render(t, r)
+	want := `ncgo_plugin_memory_high_water_bytes{plugin="com.example.probe"} 2048`
+	if !strings.Contains(out, want) {
+		t.Fatalf("render missing maxed gauge %q:\n%s", want, out)
+	}
+}
+
+func TestRegistrySetGaugeMaxConcurrent(t *testing.T) {
+	r := NewRegistry()
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				r.SetGaugeMax(MetricPluginMemoryHighWaterBytes, int64(g*500+i),
+					Label{Name: "plugin", Value: "p"})
+			}
+		}(g)
+	}
+	wg.Wait()
+	// However the writes interleave, the mark must land on the maximum
+	// offered: 7*500+499.
+	out := render(t, r)
+	want := `ncgo_plugin_memory_high_water_bytes{plugin="p"} 3999`
+	if !strings.Contains(out, want) {
+		t.Fatalf("missing %q:\n%s", want, out)
+	}
+}
+
 func TestRegistryZeroSeriesRender(t *testing.T) {
 	r := NewRegistry()
 	out := render(t, r)
@@ -195,6 +248,8 @@ func TestRegistryZeroSeriesRender(t *testing.T) {
 		{MetricPluginStorageBytesTotal, "counter"},
 		{MetricPluginEntryCallsTotal, "counter"},
 		{MetricPluginEntryCallDurationSeconds, "histogram"},
+		{MetricPluginMemoryHighWaterBytes, "gauge"},
+		{MetricPluginMemoryLimitExceededTotal, "counter"},
 	} {
 		if !strings.Contains(out, "# HELP "+fam.name+" ") {
 			t.Errorf("zero-series render missing HELP for %s:\n%s", fam.name, out)
@@ -265,6 +320,21 @@ func TestRegistryPanicsOnMisuse(t *testing.T) {
 				Label{Name: "plugin", Value: "p"},
 				Label{Name: "function", Value: "f"},
 				Label{Name: "result", Value: "ok"})
+		},
+		"unregistered gauge": func() {
+			r.SetGauge("nope_bytes", 1, Label{Name: "plugin", Value: "p"})
+		},
+		"gauge on counter family": func() {
+			r.SetGauge(MetricPluginHostCallsTotal, 1,
+				Label{Name: "plugin", Value: "p"},
+				Label{Name: "function", Value: "f"},
+				Label{Name: "result", Value: "ok"})
+		},
+		"counter on gauge family": func() {
+			r.IncCounter(MetricPluginMemoryHighWaterBytes, Label{Name: "plugin", Value: "p"})
+		},
+		"gauge missing label": func() {
+			r.SetGaugeMax(MetricPluginMemoryHighWaterBytes, 1)
 		},
 		"duplicate family": func() {
 			r.RegisterCounter(MetricPluginHostCallsTotal, "dup", "plugin")

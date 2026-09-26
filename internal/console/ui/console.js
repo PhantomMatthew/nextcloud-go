@@ -187,13 +187,13 @@
       throw new Error("auth " + res.status);
     }
     if (res.status === 503) {
-      emptyRow(tbody.insertRow(), 11, "metrics disabled");
+      emptyRow(tbody.insertRow(), 13, "metrics disabled");
       return;
     }
     if (!res.ok) throw new Error("/console/api/plugins: HTTP " + res.status);
     const data = await res.json();
     const list = data.plugins || [];
-    if (list.length === 0) emptyRow(tbody.insertRow(), 11, "no plugin metrics yet");
+    if (list.length === 0) emptyRow(tbody.insertRow(), 13, "no plugin metrics yet");
     for (const p of list) {
       const tr = tbody.insertRow();
       cell(tr, p.plugin);
@@ -207,6 +207,8 @@
       cell(tr, fmtSecs(p.entry_call_p95_seconds));
       cell(tr, fmtBytes(p.storage_bytes));
       cell(tr, p.capability_denials);
+      cell(tr, fmtBytes(p.memory_high_water_bytes));
+      cell(tr, p.memory_limit_exceeded);
     }
   }
 

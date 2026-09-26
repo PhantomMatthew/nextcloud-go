@@ -12,6 +12,13 @@ type CounterSeries struct {
 	Value  int64
 }
 
+// GaugeSeries is a read-model snapshot of one gauge series: its canonical
+// (name-sorted) label set and current value.
+type GaugeSeries struct {
+	Labels []Label
+	Value  int64
+}
+
 // HistogramBucket is one cumulative bucket count in a histogram snapshot.
 // The final bucket always has Le = +Inf and Count equal to the series' total
 // observation count.
@@ -31,14 +38,14 @@ type HistogramSeries struct {
 }
 
 // CounterSeries returns a snapshot of every series in the named counter
-// family, ordered by series key like Render. An unknown (or histogram)
+// family, ordered by series key like Render. An unknown (or non-counter)
 // family yields nil. Labels and slices are defensive copies; callers may
 // mutate them freely.
 func (r *Registry) CounterSeries(name string) []CounterSeries {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	f := r.families[name]
-	if f == nil || f.isHist || len(f.counters) == 0 {
+	if f == nil || f.kind != kindCounter || len(f.counters) == 0 {
 		return nil
 	}
 	out := make([]CounterSeries, 0, len(f.counters))
@@ -47,6 +54,27 @@ func (r *Registry) CounterSeries(name string) []CounterSeries {
 		labels := make([]Label, len(s.labels))
 		copy(labels, s.labels)
 		out = append(out, CounterSeries{Labels: labels, Value: int64(s.value)}) //nolint:gosec // G115: process-local call tally, 2^63 calls unreachable
+	}
+	return out
+}
+
+// GaugeSeries returns a snapshot of every series in the named gauge family,
+// ordered by series key like Render. An unknown (or non-gauge) family yields
+// nil. Labels and slices are defensive copies; callers may mutate them
+// freely.
+func (r *Registry) GaugeSeries(name string) []GaugeSeries {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	f := r.families[name]
+	if f == nil || f.kind != kindGauge || len(f.gauges) == 0 {
+		return nil
+	}
+	out := make([]GaugeSeries, 0, len(f.gauges))
+	for _, k := range sortedKeys(f.gauges) {
+		s := f.gauges[k]
+		labels := make([]Label, len(s.labels))
+		copy(labels, s.labels)
+		out = append(out, GaugeSeries{Labels: labels, Value: s.value})
 	}
 	return out
 }
@@ -60,7 +88,7 @@ func (r *Registry) HistogramSeries(name string) []HistogramSeries {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	f := r.families[name]
-	if f == nil || !f.isHist || len(f.histograms) == 0 {
+	if f == nil || f.kind != kindHistogram || len(f.histograms) == 0 {
 		return nil
 	}
 	out := make([]HistogramSeries, 0, len(f.histograms))

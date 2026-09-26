@@ -49,10 +49,58 @@ func TestCounterSeriesUnknownFamily(t *testing.T) {
 	for _, name := range []string{
 		"nope_total",                        // never registered
 		MetricPluginHostCallDurationSeconds, // a histogram family
+		MetricPluginMemoryHighWaterBytes,    // a gauge family
 		MetricPluginStorageBytesTotal,       // registered but series-less
 	} {
 		if got := r.CounterSeries(name); len(got) != 0 {
 			t.Errorf("CounterSeries(%q) = %+v, want empty", name, got)
+		}
+	}
+}
+
+func TestGaugeSeriesDump(t *testing.T) {
+	r := NewRegistry()
+	r.SetGaugeMax(MetricPluginMemoryHighWaterBytes, 1024, Label{Name: "plugin", Value: "p1"})
+	r.SetGaugeMax(MetricPluginMemoryHighWaterBytes, 2048, Label{Name: "plugin", Value: "p1"})
+	r.SetGauge(MetricPluginMemoryHighWaterBytes, 512, Label{Name: "plugin", Value: "p2"})
+
+	series := r.GaugeSeries(MetricPluginMemoryHighWaterBytes)
+	if len(series) != 2 {
+		t.Fatalf("series count = %d, want 2", len(series))
+	}
+	// Series are key-ordered like Render ("p1" < "p2").
+	for i, want := range []struct {
+		plugin string
+		value  int64
+	}{{"p1", 2048}, {"p2", 512}} {
+		s := series[i]
+		wantLabels := []Label{{Name: "plugin", Value: want.plugin}}
+		if len(s.Labels) != len(wantLabels) {
+			t.Fatalf("series[%d] labels = %+v", i, s.Labels)
+		}
+		for j, l := range wantLabels {
+			if s.Labels[j] != l {
+				t.Errorf("series[%d].Labels[%d] = %+v, want %+v", i, j, s.Labels[j], l)
+			}
+		}
+		if s.Value != want.value {
+			t.Errorf("series[%d].Value = %d, want %d", i, s.Value, want.value)
+		}
+	}
+}
+
+func TestGaugeSeriesUnknownFamily(t *testing.T) {
+	r := NewRegistry()
+	r.SetGauge(MetricPluginMemoryHighWaterBytes, 1, Label{Name: "plugin", Value: "p"})
+	r.RegisterGauge("empty_gauge", "registered but series-less", "plugin")
+	for _, name := range []string{
+		"nope_bytes",                         // never registered
+		MetricPluginHostCallsTotal,           // a counter family
+		MetricPluginEntryCallDurationSeconds, // a histogram family
+		"empty_gauge",                        // registered but series-less
+	} {
+		if got := r.GaugeSeries(name); len(got) != 0 {
+			t.Errorf("GaugeSeries(%q) = %+v, want empty", name, got)
 		}
 	}
 }
@@ -110,12 +158,16 @@ func TestSeriesDumpDefensiveCopies(t *testing.T) {
 		Label{Name: "plugin", Value: "p1"}, Label{Name: "function", Value: "f"})
 	r.ObserveHistogram(MetricPluginHostCallDurationSeconds, 0.002,
 		Label{Name: "plugin", Value: "p1"}, Label{Name: "function", Value: "f"})
+	r.SetGauge(MetricPluginMemoryHighWaterBytes, 1024, Label{Name: "plugin", Value: "p1"})
 
 	counters := r.CounterSeries(MetricPluginCapabilityDenialsTotal)
 	counters[0].Labels[0].Value = "mutated"
 	hists := r.HistogramSeries(MetricPluginHostCallDurationSeconds)
 	hists[0].Labels[0].Value = "mutated"
 	hists[0].Buckets[0].Count = 999
+	gauges := r.GaugeSeries(MetricPluginMemoryHighWaterBytes)
+	gauges[0].Labels[0].Value = "mutated"
+	gauges[0].Value = 1
 
 	counters = r.CounterSeries(MetricPluginCapabilityDenialsTotal)
 	if counters[0].Labels[0].Value != "f" {
@@ -124,6 +176,10 @@ func TestSeriesDumpDefensiveCopies(t *testing.T) {
 	hists = r.HistogramSeries(MetricPluginHostCallDurationSeconds)
 	if hists[0].Labels[0].Value != "f" || hists[0].Buckets[0].Count != 0 {
 		t.Errorf("histogram mutated through the copy: %+v", hists[0])
+	}
+	gauges = r.GaugeSeries(MetricPluginMemoryHighWaterBytes)
+	if gauges[0].Labels[0].Value != "p1" || gauges[0].Value != 1024 {
+		t.Errorf("gauge mutated through the copy: %+v", gauges[0])
 	}
 }
 
