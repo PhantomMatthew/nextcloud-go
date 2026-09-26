@@ -13,6 +13,15 @@ import (
 // precedent); the two must never be conflated in operator tooling.
 var ErrUnresolvableKey = errors.New("encrypt: unresolvable file key")
 
+// ErrKeyLocked reports a v3-sealed file whose owning user is enrolled in
+// password-wrapped keys (ADR-0100) and whose file key no unlocked session of
+// the reading user can open: the request carries no principal, the principal
+// holds no unlocked key, or the reader holds no wrap row. It is strictly
+// distinct from ErrUnresolvableKey (a key/configuration problem) and
+// ErrIntegrity (wrong key or corruption): WebDAV maps it to 403 "encrypted:
+// key locked", and operator tooling must never report it as corruption.
+var ErrKeyLocked = errors.New("encrypt: file key locked (no unlocked session)")
+
 // KeyResolver is the narrow seam between the storage decorator and the
 // per-user key hierarchy (ADR-0096 phase 1, implemented in ADR-0097). The
 // decorator sees only storage keys; the resolver owns the master→UK→FK

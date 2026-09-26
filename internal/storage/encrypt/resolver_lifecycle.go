@@ -28,12 +28,13 @@ func (r *SQLResolver) OnUserCreated(ctx context.Context, uid string) error {
 }
 
 // OnUserDeleted purges the deleted user's per-user key rows (ADR-0099): the
-// UK row and every wrap row the user holds, theirs alone. Wrap rows of OTHER
-// users and files.key_uuid are untouched — sealed files a deleted user still
-// owned become unresolvable, the same operator territory as
-// users.SQLStore.Delete's "files are not cascaded" warning. An unknown uid
-// is a no-op (mirrors UnwrapKeyFor: no live user means no addressable row),
-// which also makes hook replays safe.
+// UK row, every wrap row the user holds, and any password-wrapped enrollment
+// row (ADR-0101), theirs alone. Wrap rows of OTHER users and files.key_uuid
+// are untouched — sealed files a deleted user still owned become
+// unresolvable, the same operator territory as users.SQLStore.Delete's
+// "files are not cascaded" warning. An unknown uid is a no-op (mirrors
+// UnwrapKeyFor: no live user means no addressable row), which also makes
+// hook replays safe.
 func (r *SQLResolver) OnUserDeleted(ctx context.Context, uid string) error {
 	userID, found, err := r.lookupUserID(ctx, uid)
 	if err != nil {
@@ -47,6 +48,9 @@ func (r *SQLResolver) OnUserDeleted(ctx context.Context, uid string) error {
 	}
 	if _, err := r.db.Exec(ctx, `DELETE FROM user_keys WHERE user_id = ?`, userID); err != nil {
 		return fmt.Errorf("encrypt: delete user key for user %d: %w", userID, err)
+	}
+	if _, err := r.db.Exec(ctx, `DELETE FROM user_key_pw WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("encrypt: delete enrollment for user %d: %w", userID, err)
 	}
 	return nil
 }
@@ -135,10 +139,13 @@ DELETE FROM file_keys WHERE user_id NOT IN (SELECT id FROM users)`)
 
 // MintMissingUserKeys mints a UK for every user who has none — the backfill
 // for accounts that predate per-user keys or the creation hook (ADR-0099).
-// Idempotent; returns the number of keys minted.
+// Enrolled users (user_key_pw rows, ADR-0100) are excluded: their symmetric
+// UK was deliberately deleted and re-minting it would void the enrollment
+// promise. Idempotent; returns the number of keys minted.
 func (r *SQLResolver) MintMissingUserKeys(ctx context.Context) (int, error) {
 	rows, err := r.db.Query(ctx, `
-SELECT id FROM users WHERE NOT EXISTS (SELECT 1 FROM user_keys WHERE user_keys.user_id = users.id) ORDER BY id`)
+SELECT id FROM users WHERE NOT EXISTS (SELECT 1 FROM user_keys WHERE user_keys.user_id = users.id)
+AND NOT EXISTS (SELECT 1 FROM user_key_pw WHERE user_key_pw.user_id = users.id) ORDER BY id`)
 	if err != nil {
 		return 0, fmt.Errorf("encrypt: list users without a user key: %w", err)
 	}
@@ -172,7 +179,9 @@ type KeyInventory struct {
 	UsersWithUK      int64 // user_keys rows
 	UKsRetiredKeyID  int64 // user_keys rows sealed under a retired ring position
 	StaleUKs         int64 // user_keys rows whose user is gone
+	EnrolledUsers    int64 // user_key_pw rows (ADR-0100 password-wrapped enrollment)
 	WrapRows         int64 // file_keys rows
+	BoxWraps         int64 // file_keys rows at scheme = 1 (X25519 boxes)
 	DistinctKeyUUIDs int64 // distinct file key UUIDs wrapped
 	StaleWraps       int64 // file_keys rows whose user is gone
 	V3Files          int64 // files rows with a key UUID
@@ -180,8 +189,8 @@ type KeyInventory struct {
 }
 
 // Inventory computes the KeyInventory against the live database. All queries
-// are dialect-agnostic (placeholders, NOT IN, NOT EXISTS); no schema beyond
-// migration 0020 is required.
+// are dialect-agnostic (placeholders, NOT IN, NOT EXISTS); the enrollment
+// counts read migration 0021's user_key_pw and file_keys.scheme (ADR-0101).
 func (r *SQLResolver) Inventory(ctx context.Context) (KeyInventory, error) {
 	var inv KeyInventory
 	current := len(r.keys) - 1
@@ -194,7 +203,9 @@ func (r *SQLResolver) Inventory(ctx context.Context) (KeyInventory, error) {
 		{`SELECT COUNT(*) FROM user_keys`, nil, &inv.UsersWithUK},
 		{`SELECT COUNT(*) FROM user_keys WHERE key_id < ?`, []any{current}, &inv.UKsRetiredKeyID},
 		{`SELECT COUNT(*) FROM user_keys WHERE user_id NOT IN (SELECT id FROM users)`, nil, &inv.StaleUKs},
+		{`SELECT COUNT(*) FROM user_key_pw`, nil, &inv.EnrolledUsers},
 		{`SELECT COUNT(*) FROM file_keys`, nil, &inv.WrapRows},
+		{`SELECT COUNT(*) FROM file_keys WHERE scheme = 1`, nil, &inv.BoxWraps},
 		{`SELECT COUNT(DISTINCT key_uuid) FROM file_keys`, nil, &inv.DistinctKeyUUIDs},
 		{`SELECT COUNT(*) FROM file_keys WHERE user_id NOT IN (SELECT id FROM users)`, nil, &inv.StaleWraps},
 		{`SELECT COUNT(*) FROM files WHERE key_uuid IS NOT NULL`, nil, &inv.V3Files},

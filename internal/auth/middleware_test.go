@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -55,6 +56,15 @@ func (m *memSessions) Delete(_ context.Context, id string) error {
 		return session.ErrNotFound
 	}
 	delete(m.byID, id)
+	return nil
+}
+
+func (m *memSessions) SetSealedUK(_ context.Context, id string, sealed []byte) error {
+	s, ok := m.byID[id]
+	if !ok {
+		return session.ErrNotFound
+	}
+	s.SealedUK = sealed
 	return nil
 }
 
@@ -324,5 +334,123 @@ func TestCSRFDisabledWhenTokenNil(t *testing.T) {
 	h.ServeHTTP(rr, sessionRequest(t, http.MethodPost, "s1", nil))
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("session POST with nil RequestToken = %d, want 204", rr.Code)
+	}
+}
+
+// stubKeyUnlocker is a SessionKeyUnlocker fake: it returns key, or fails
+// when the sealed copy is the "corrupt" marker.
+type stubKeyUnlocker struct {
+	key     []byte
+	calls   int
+	lastSID string
+}
+
+func (s *stubKeyUnlocker) UnsealSessionKey(_ context.Context, sessionID string, sealed []byte) ([]byte, error) {
+	s.calls++
+	s.lastSID = sessionID
+	if string(sealed) == "corrupt" {
+		return nil, errors.New("unseal failed")
+	}
+	out := make([]byte, len(s.key))
+	copy(out, s.key)
+	return out, nil
+}
+
+// TestSessionVerifierKeyAttach pins the ADR-0100 session key attach: a
+// session row carrying sealed_uk unlocks through Keys onto the Principal; a
+// corrupt copy fails the session closed; no Keys or no copy attaches
+// nothing.
+func TestSessionVerifierKeyAttach(t *testing.T) {
+	ctx := context.Background()
+	us := &memUsers{}
+	if err := us.Create(ctx, &UserInfo{ID: 1, UID: "alice", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	ms := &memSessions{byID: map[string]*session.Session{
+		"with-key":  {ID: "with-key", UserID: 1, ExpiresAt: time.Now().Add(time.Hour), SealedUK: []byte("sealed")},
+		"no-key":    {ID: "no-key", UserID: 1, ExpiresAt: time.Now().Add(time.Hour)},
+		"corrupt":   {ID: "corrupt", UserID: 1, ExpiresAt: time.Now().Add(time.Hour), SealedUK: []byte("corrupt")},
+		"stale-key": {ID: "stale-key", UserID: 1, ExpiresAt: time.Now().Add(time.Hour), SealedUK: []byte("sealed")},
+	}}
+	unlocker := &stubKeyUnlocker{key: []byte("0123456789abcdef0123456789abcdef")}
+	v := &SessionVerifier{Sessions: ms, Users: us, Keys: unlocker}
+
+	p, err := v.VerifyID(ctx, "with-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(p.UnlockedKey) != "0123456789abcdef0123456789abcdef" {
+		t.Errorf("UnlockedKey = %q", p.UnlockedKey)
+	}
+	if unlocker.lastSID != "with-key" {
+		t.Errorf("unseal saw session %q, want with-key", unlocker.lastSID)
+	}
+
+	// No copy on the row: no attach, no unseal call.
+	before := unlocker.calls
+	p, err = v.VerifyID(ctx, "no-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.UnlockedKey != nil {
+		t.Errorf("UnlockedKey = %q, want nil", p.UnlockedKey)
+	}
+	if unlocker.calls != before {
+		t.Error("unseal called for a keyless session row")
+	}
+
+	// A corrupt copy fails the session closed (never a silent degrade).
+	if _, err := v.VerifyID(ctx, "corrupt"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("corrupt copy err = %v, want ErrInvalidCredentials", err)
+	}
+
+	// A copy with no Keys configured is ignored (phase 1–3 behavior).
+	vNoKeys := &SessionVerifier{Sessions: ms, Users: us}
+	p, err = vNoKeys.VerifyID(ctx, "stale-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.UnlockedKey != nil {
+		t.Errorf("UnlockedKey without Keys = %q, want nil", p.UnlockedKey)
+	}
+}
+
+// TestMiddlewareZeroesUnlockedKey pins the best-effort zeroing: the key the
+// verifier attached is cleared once the request completes.
+func TestMiddlewareZeroesUnlockedKey(t *testing.T) {
+	ctx := context.Background()
+	us := &memUsers{}
+	if err := us.Create(ctx, &UserInfo{ID: 1, UID: "alice", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	ms := &memSessions{byID: map[string]*session.Session{
+		"sid": {ID: "sid", UserID: 1, ExpiresAt: time.Now().Add(time.Hour), SealedUK: []byte("sealed")},
+	}}
+	unlocker := &stubKeyUnlocker{key: []byte("0123456789abcdef0123456789abcdef")}
+	mw := Middleware(MiddlewareConfig{
+		Sessions: &SessionVerifier{Sessions: ms, Users: us, Keys: unlocker},
+		Cookie:   session.CookieName,
+		OnAuthFail: func(w http.ResponseWriter, _ *http.Request, _ error) {
+			w.WriteHeader(http.StatusUnauthorized)
+		},
+	})
+	var attached []byte
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, _ := UserFromContext(r.Context())
+		if p.UnlockedKey == nil {
+			t.Error("no key attached inside the request")
+		}
+		attached = p.UnlockedKey
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, sessionRequest(t, http.MethodGet, "sid", nil))
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status %d", rr.Code)
+	}
+	for i, b := range attached {
+		if b != 0 {
+			t.Fatalf("UnlockedKey byte %d not zeroed after the request", i)
+		}
 	}
 }

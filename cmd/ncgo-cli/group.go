@@ -51,7 +51,7 @@ func groupStore(cfg *config.Config, db database.DB) (*users.SQLStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ncgo-cli: encryption: %w", err)
 	}
-	res, err := perUserResolver(db, current, previous)
+	res, err := perUserResolver(db, cfg, current, previous)
 	if err != nil {
 		return nil, err
 	}

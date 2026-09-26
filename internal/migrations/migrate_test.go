@@ -29,8 +29,8 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("up: %v", err)
 	}
-	if n != 20 {
-		t.Errorf("applied = %d, want 20", n)
+	if n != 21 {
+		t.Errorf("applied = %d, want 21", n)
 	}
 
 	want := []string{
@@ -38,7 +38,7 @@ func TestSQLiteUpDownUp(t *testing.T) {
 		"app_passwords", "login_flows", "jobs", "module_config", "files", "uploads", "trash_items", "file_versions", "file_properties", "file_locks", "shares",
 		"calendars", "calendar_objects", "addressbooks", "addressbook_objects",
 		"notifications", "activities", "ocm_incoming", "calendar_shares", "plugins", "plugin_routes", "appconfig", "plugin_webdav_props", "addressbook_shares",
-		"user_keys", "file_keys",
+		"user_keys", "file_keys", "user_key_pw",
 	}
 	for _, table := range want {
 		var name string
@@ -53,12 +53,23 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Errorf("files.key_uuid column: %v", err)
 	}
+	// file_keys gained the scheme column, sessions the sealed_uk column.
+	var schemeCol string
+	err = db.QueryRow(ctx, `SELECT name FROM pragma_table_info('file_keys') WHERE name='scheme'`).Scan(&schemeCol)
+	if err != nil {
+		t.Errorf("file_keys.scheme column: %v", err)
+	}
+	var sealedUKCol string
+	err = db.QueryRow(ctx, `SELECT name FROM pragma_table_info('sessions') WHERE name='sealed_uk'`).Scan(&sealedUKCol)
+	if err != nil {
+		t.Errorf("sessions.sealed_uk column: %v", err)
+	}
 
 	v, dirty, err := Version(ctx, std, database.DialectSQLite)
 	if err != nil {
 		t.Fatalf("version: %v", err)
 	}
-	if v != 20 || dirty {
+	if v != 21 || dirty {
 		t.Errorf("version=%d dirty=%v", v, dirty)
 	}
 
@@ -77,8 +88,39 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version after down: %v", err)
 	}
-	if v != 19 || dirty {
+	if v != 20 || dirty {
 		t.Errorf("after down version=%d dirty=%v", v, dirty)
+	}
+	// 0021's objects are gone at v20; 0020's remain.
+	var pwName string
+	err = db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "user_key_pw").Scan(&pwName)
+	if err == nil {
+		t.Error("table user_key_pw still present after down to v20")
+	}
+	var schemeColAfter string
+	err = db.QueryRow(ctx, `SELECT name FROM pragma_table_info('file_keys') WHERE name='scheme'`).Scan(&schemeColAfter)
+	if err == nil {
+		t.Error("file_keys.scheme column still present after down to v20")
+	}
+	var sealedUKColAfter string
+	err = db.QueryRow(ctx, `SELECT name FROM pragma_table_info('sessions') WHERE name='sealed_uk'`).Scan(&sealedUKColAfter)
+	if err == nil {
+		t.Error("sessions.sealed_uk column still present after down to v20")
+	}
+	var userKeysAt20 string
+	if err := db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "user_keys").Scan(&userKeysAt20); err != nil {
+		t.Errorf("table user_keys missing after down to v20: %v", err)
+	}
+
+	if err := Down(ctx, std, database.DialectSQLite, 1, logger); err != nil {
+		t.Fatalf("second down: %v", err)
+	}
+	v, dirty, err = Version(ctx, std, database.DialectSQLite)
+	if err != nil {
+		t.Fatalf("version after second down: %v", err)
+	}
+	if v != 19 || dirty {
+		t.Errorf("after second down version=%d dirty=%v", v, dirty)
 	}
 	var userKeysName string
 	err = db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "user_keys").Scan(&userKeysName)
@@ -129,14 +171,14 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("up after down: %v", err)
 	}
-	if n != 1 {
-		t.Errorf("re-up applied = %d, want 1", n)
+	if n != 2 {
+		t.Errorf("re-up applied = %d, want 2", n)
 	}
 	v, dirty, err = Version(ctx, std, database.DialectSQLite)
 	if err != nil {
 		t.Fatalf("version after re-up: %v", err)
 	}
-	if v != 20 || dirty {
+	if v != 21 || dirty {
 		t.Errorf("after re-up version=%d dirty=%v", v, dirty)
 	}
 }

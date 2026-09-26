@@ -64,6 +64,7 @@ type App struct {
 	authStore     auth.Store
 	loginStore    login.Store
 	sessions      session.Store
+	keyResolver   *encrypt.SQLResolver
 	secret        string
 	instanceID    string
 	memCache      *cache.Memory
@@ -204,6 +205,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		_ = db.Close()
 		return nil, err
 	}
+	a.keyResolver = keyResolver
 	meta := files.NewSQLStore(db)
 	a.fileMeta = meta
 	bus := events.NewBus(logger)
@@ -577,6 +579,14 @@ func openStorage(cfg *config.Config, db database.DB) (storage.Storage, *encrypt.
 			resolver, err = encrypt.NewSQLResolver(db, ring)
 			if err != nil {
 				return nil, nil, fmt.Errorf("app: encryption: %w", err)
+			}
+			// ADR-0100: password-wrapped enrollment is driven from the
+			// password-login path; the KDF follows the password-hash params.
+			resolver.PasswordWrapped = cfg.Encryption.PasswordWrappedKeys
+			resolver.KDF = encrypt.KeyDerivationParams{
+				MemoryKB:    cfg.Auth.Argon2id.MemoryKB,
+				Iterations:  cfg.Auth.Argon2id.Iterations,
+				Parallelism: cfg.Auth.Argon2id.Parallelism,
 			}
 		}
 		// Widen only a non-nil resolver: a typed nil *SQLResolver would

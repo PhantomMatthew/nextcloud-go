@@ -411,7 +411,7 @@ func (f *FS) Create(ctx context.Context, p string, _ int64) (io.WriteCloser, err
 		return nil, err
 	}
 	if v3 {
-		return &keyedWriter{writer: w, keyUUID: keyUUID}, nil
+		return &keyedWriter{writer: w, keyUUID: keyUUID, fk: append([]byte(nil), key...)}, nil
 	}
 	return w, nil
 }
@@ -627,14 +627,24 @@ func (w *writer) Close() error {
 }
 
 // keyedWriter wraps a v3 writer with the key UUID its header carries, so
-// callers persisting file metadata can record it (storage.KeyUUIDWriter).
-// v1/v2 writers do not implement the interface.
+// callers persisting file metadata can record it (storage.KeyUUIDWriter),
+// and a copy of the plaintext file key it minted (storage.FileKeyWriter), so
+// the write path can thread it to the key-share hooks (ADR-0101). v1/v2
+// writers implement neither interface.
 type keyedWriter struct {
 	*writer
 	keyUUID [keyUUIDSize]byte
+	fk      []byte
 }
 
 // SealedKeyUUID implements storage.KeyUUIDWriter.
 func (w *keyedWriter) SealedKeyUUID() ([16]byte, bool) {
 	return w.keyUUID, true
+}
+
+// PlainFileKey implements storage.FileKeyWriter. The copy stays live for
+// the writer's lifetime: callers (the file DAV) read it after Close, once
+// the sealed write succeeded.
+func (w *keyedWriter) PlainFileKey() ([]byte, bool) {
+	return append([]byte(nil), w.fk...), true
 }

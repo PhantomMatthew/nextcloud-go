@@ -14,6 +14,12 @@ type Principal struct {
 	DisplayName string
 	Enabled     bool
 	AuthMethod  string
+	// UnlockedKey is the phase 5w-4 unlocked X25519 private key (ADR-0100
+	// password-wrapped user keys), attached by session verification when the
+	// session row carries a sealed key copy; nil for app-password, bearer,
+	// and anonymous requests. It is key material: never log or serialize it,
+	// and principals are never %v-dumped.
+	UnlockedKey []byte
 }
 
 // UserInfo is the account projection auth needs without importing internal/users.

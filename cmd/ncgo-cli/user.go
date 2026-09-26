@@ -12,6 +12,7 @@ import (
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
 	"github.com/PhantomMatthew/nextcloud-go/internal/config"
+	"github.com/PhantomMatthew/nextcloud-go/internal/storage/encrypt"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 )
 
@@ -191,10 +192,17 @@ func newUserDelete() *cobra.Command {
 
 func newUserResetPassword() *cobra.Command {
 	var stdin bool
+	var force bool
 	reset := &cobra.Command{
 		Use:   "reset-password <uid>",
 		Short: "Set a new password for a user",
-		Args:  cobra.ExactArgs(1),
+		Long: "Set a new password for a user.\n\n" +
+			"WARNING (ADR-0100): for a user enrolled in password-wrapped encryption keys,\n" +
+			"the old password is the only way to unwrap their private key, so resetting\n" +
+			"the password makes their sealed files PERMANENTLY UNREADABLE. The command\n" +
+			"refuses enrolled users unless --force is given; --force destroys their key\n" +
+			"enrollment and all their file-key wrap rows before setting the new password.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			pw, err := readPassword(cmd, stdin)
 			if err != nil {
@@ -218,6 +226,28 @@ func newUserResetPassword() *cobra.Command {
 				}
 				return err
 			}
+			// ADR-0100: an enrolled user's key is sealed under the OLD
+			// password — refuse unless the operator explicitly destroys the
+			// enrollment first.
+			hook, err := userKeysHook(cfg, db)
+			if err != nil {
+				return err
+			}
+			if resolver, ok := hook.(*encrypt.SQLResolver); ok {
+				enrolled, err := resolver.Enrolled(ctx, args[0])
+				if err != nil {
+					return err
+				}
+				if enrolled && !force {
+					return fmt.Errorf("ncgo-cli: user %s has password-wrapped encryption keys (ADR-0100); resetting the password makes their sealed files PERMANENTLY UNREADABLE. Re-run with --force to destroy their key enrollment and all wrap rows", args[0])
+				}
+				if enrolled {
+					if err := resolver.DestroyEnrollment(ctx, args[0]); err != nil {
+						return err
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "DATA LOSS: destroyed password-wrapped key enrollment and all file-key wrap rows for %s; their existing v3-sealed files are PERMANENTLY UNREADABLE\n", args[0])
+				}
+			}
 			hash, err := passwordHasher(cfg).Hash(pw)
 			if err != nil {
 				return err
@@ -230,6 +260,7 @@ func newUserResetPassword() *cobra.Command {
 		},
 	}
 	reset.Flags().BoolVar(&stdin, "password-stdin", false, "read password from stdin")
+	reset.Flags().BoolVar(&force, "force", false, "destroy an enrolled user's password-wrapped key enrollment and all wrap rows (PERMANENT DATA LOSS)")
 	return reset
 }
 

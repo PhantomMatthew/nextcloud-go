@@ -166,7 +166,7 @@ func newEncryptionSweep(direction encrypt.SweepDirection) *cobra.Command {
 					return err
 				}
 				defer func() { _ = db.Close() }()
-				sqlResolver, err = perUserResolver(db, current, previous)
+				sqlResolver, err = perUserResolver(db, cfg, current, previous)
 				if err != nil {
 					return err
 				}
@@ -207,6 +207,10 @@ func newEncryptionSweep(direction encrypt.SweepDirection) *cobra.Command {
 			} else {
 				fmt.Fprintf(out, "%s: scanned=%d %s=%d skipped=%d failed=%d bytes=%d\n",
 					verb, stats.Scanned, past, stats.Changed, stats.Skipped, stats.Failed, stats.Bytes)
+			}
+			if stats.LockedSkipped > 0 {
+				fmt.Fprintf(out, "%s: locked-skipped=%d (enrolled users' files; a locked skip is never a failure)\n",
+					verb, stats.LockedSkipped)
 			}
 			if stats.Failed > 0 {
 				return fmt.Errorf("ncgo-cli: encryption %s: %d file(s) failed", verb, stats.Failed)
@@ -343,7 +347,7 @@ func newEncryptionStatus() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("ncgo-cli: encryption: %w", err)
 			}
-			resolver, err := perUserResolver(db, current, ring)
+			resolver, err := perUserResolver(db, cfg, current, ring)
 			if err != nil {
 				return err
 			}
@@ -356,7 +360,11 @@ func newEncryptionStatus() *cobra.Command {
 			if inv.UKsRetiredKeyID > 0 {
 				fmt.Fprintf(out, "user keys sealed under retired key ids: %d (rotate-keys re-seals them)\n", inv.UKsRetiredKeyID)
 			}
-			fmt.Fprintf(out, "file key wraps: %d rows across %d key uuids\n", inv.WrapRows, inv.DistinctKeyUUIDs)
+			// ADR-0101: enrollment and box-wrap counts ride the same
+			// inventory; password_wrapped_keys marks the deployment mode.
+			fmt.Fprintf(out, "password-wrapped keys: %v\n", cfg.Encryption.PasswordWrappedKeys)
+			fmt.Fprintf(out, "password-wrapped users: %d\n", inv.EnrolledUsers)
+			fmt.Fprintf(out, "file key wraps: %d rows across %d key uuids (%d box wraps)\n", inv.WrapRows, inv.DistinctKeyUUIDs, inv.BoxWraps)
 			fmt.Fprintf(out, "v3-sealed files: %d\n", inv.V3Files)
 			if inv.StaleUKs > 0 || inv.StaleWraps > 0 {
 				fmt.Fprintf(out, "stale key rows (deleted users): %d uks, %d wraps (ncgo-cli encryption reconcile prunes)\n",
@@ -419,7 +427,7 @@ func newEncryptionReconcile() *cobra.Command {
 				return err
 			}
 			defer func() { _ = db.Close() }()
-			resolver, err := perUserResolver(db, current, previous)
+			resolver, err := perUserResolver(db, cfg, current, previous)
 			if err != nil {
 				return err
 			}

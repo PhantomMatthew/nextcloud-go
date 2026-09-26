@@ -108,7 +108,7 @@ func openStorage(cfg *config.Config, db database.DB) (storage.Storage, error) {
 		}
 		var resolver encrypt.KeyResolver
 		if cfg.Encryption.PerUserKeys {
-			resolver, err = perUserResolver(db, current, previous)
+			resolver, err = perUserResolver(db, cfg, current, previous)
 			if err != nil {
 				return nil, err
 			}
@@ -123,14 +123,22 @@ func openStorage(cfg *config.Config, db database.DB) (storage.Storage, error) {
 
 // perUserResolver builds the ADR-0097 key resolver over the full keyring:
 // previous keys first, the current key last, so ring positions are the key
-// IDs user_keys rows reference.
-func perUserResolver(db database.DB, current []byte, previous [][]byte) (*encrypt.SQLResolver, error) {
+// IDs user_keys rows reference. The ADR-0100 enrollment knobs come from the
+// config: CLI commands (sweeps, user administration) must agree with the
+// server on whether password-wrapped enrollment is live.
+func perUserResolver(db database.DB, cfg *config.Config, current []byte, previous [][]byte) (*encrypt.SQLResolver, error) {
 	ring := make([][]byte, 0, len(previous)+1)
 	ring = append(ring, previous...)
 	ring = append(ring, current)
 	res, err := encrypt.NewSQLResolver(db, ring)
 	if err != nil {
 		return nil, fmt.Errorf("ncgo-cli: encryption: %w", err)
+	}
+	res.PasswordWrapped = cfg.Encryption.PasswordWrappedKeys
+	res.KDF = encrypt.KeyDerivationParams{
+		MemoryKB:    cfg.Auth.Argon2id.MemoryKB,
+		Iterations:  cfg.Auth.Argon2id.Iterations,
+		Parallelism: cfg.Auth.Argon2id.Parallelism,
 	}
 	return res, nil
 }
@@ -147,5 +155,5 @@ func userKeysHook(cfg *config.Config, db database.DB) (users.UserKeysHook, error
 	if err != nil {
 		return nil, fmt.Errorf("ncgo-cli: encryption: %w", err)
 	}
-	return perUserResolver(db, current, previous)
+	return perUserResolver(db, cfg, current, previous)
 }

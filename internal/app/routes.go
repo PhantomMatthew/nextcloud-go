@@ -122,10 +122,19 @@ func (a *App) mountRoutes() error {
 	verifier := auth.NewChainVerifier(appPasswordVerifier, userVerifier)
 	userAccounts := authUsers{store: a.Users}
 	requestTokens := auth.NewRequestToken(a.secret)
+	// Widen only a non-nil resolver: a typed nil *SQLResolver would become a
+	// non-nil interface and key handling would dispatch to a nil receiver.
+	// Nil keeps every key seam inert (phases 1–3 behavior).
+	var sessionKeys auth.SessionKeyUnlocker
+	var loginKeys web.LoginKeyHandler
+	if a.keyResolver != nil {
+		sessionKeys = a.keyResolver
+		loginKeys = a.keyResolver
+	}
 	authCfg := auth.MiddlewareConfig{
 		Verifier:     verifier,
 		Bearer:       &auth.BearerVerifier{Store: a.authStore, Users: userAccounts, Secret: a.secret, Cache: a.Cache},
-		Sessions:     &auth.SessionVerifier{Sessions: a.sessions, Users: userAccounts},
+		Sessions:     &auth.SessionVerifier{Sessions: a.sessions, Users: userAccounts, Keys: sessionKeys},
 		Throttle:     auth.NewCacheThrottler(a.Cache, 8, 30*time.Second),
 		Cookie:       session.CookieName,
 		RequestToken: requestTokens,
@@ -201,6 +210,7 @@ func (a *App) mountRoutes() error {
 	lv2 := web.NewLoginV2(loginSvc, verifier, issuer)
 	lv2.Sessions = a.sessions
 	lv2.Users = a.Users
+	lv2.Keys = loginKeys
 	router.Handle(http.MethodPost, "/index.php/login/v2", http.HandlerFunc(lv2.HandleInit))
 	router.Handle(http.MethodPost, "/index.php/login/v2/poll", http.HandlerFunc(lv2.HandlePoll))
 	router.HandlePrefix(http.MethodGet, "/index.php/login/v2/flow/", http.HandlerFunc(lv2.HandleFlowToken))
@@ -213,6 +223,7 @@ func (a *App) mountRoutes() error {
 		Sessions: a.sessions,
 		Tokens:   requestTokens,
 		Throttle: authCfg.Throttle,
+		Keys:     loginKeys,
 	}
 	router.Handle(http.MethodPost, "/index.php/login", http.HandlerFunc(browserLogin.HandleLogin))
 	router.Handle(http.MethodGet, "/index.php/logout", http.HandlerFunc(browserLogin.HandleLogout))

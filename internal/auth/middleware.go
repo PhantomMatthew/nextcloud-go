@@ -16,10 +16,21 @@ import (
 
 const DefaultCookie = session.CookieName
 
+// SessionKeyUnlocker opens a session row's sealed private-key copy
+// (ADR-0100). *encrypt.SQLResolver satisfies it structurally; auth must not
+// import encrypt, so the seam is declared here.
+type SessionKeyUnlocker interface {
+	UnsealSessionKey(ctx context.Context, sessionID string, sealed []byte) ([]byte, error)
+}
+
 // SessionVerifier authenticates nc_session_id cookies.
 type SessionVerifier struct {
 	Sessions session.Store
 	Users    UserSource
+	// Keys, when non-nil, opens the session's sealed key copy (SealedUK)
+	// and attaches the unlocked private key to the Principal. Nil-ok: no key
+	// attach, phase 1–3 behavior.
+	Keys SessionKeyUnlocker
 }
 
 func (v *SessionVerifier) VerifyID(ctx context.Context, sid string) (*Principal, error) {
@@ -38,6 +49,15 @@ func (v *SessionVerifier) VerifyID(ctx context.Context, sid string) (*Principal,
 		return nil, ErrInvalidCredentials
 	}
 	p := &Principal{UID: u.UID, DisplayName: u.DisplayName, Enabled: true, AuthMethod: AuthMethodSession}
+	if sess.SealedUK != nil && v.Keys != nil {
+		// Fail closed: a corrupt key copy must not silently degrade to
+		// per-file 403s — the session is rejected instead.
+		key, err := v.Keys.UnsealSessionKey(ctx, sid, sess.SealedUK)
+		if err != nil {
+			return nil, ErrInvalidCredentials
+		}
+		p.UnlockedKey = key
+	}
 	touchSession(v.Sessions, ctx, sid)
 	return p, nil
 }
@@ -100,6 +120,12 @@ func Middleware(cfg MiddlewareConfig) func(http.Handler) http.Handler {
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write([]byte("CSRF check failed\n"))
 				return
+			}
+			if p.UnlockedKey != nil {
+				// Best-effort zeroing of the session-attached unlocked key
+				// (ADR-0100) once the request completes; Go gives no
+				// guarantees — noted, accepted in the ADR.
+				defer clear(p.UnlockedKey)
 			}
 			next.ServeHTTP(w, r.WithContext(WithUser(r.Context(), p)))
 		})

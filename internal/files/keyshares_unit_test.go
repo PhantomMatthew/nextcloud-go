@@ -90,7 +90,7 @@ func TestKeySharerWrapForWriteReconcilesVanishedShare(t *testing.T) {
 	ks := &KeySharer{Meta: stubKeyShareMeta{}, Wrapper: w, Shares: lookup, Users: stubGroupMembers{}}
 	var ku [16]byte
 	copy(ku[:], "0123456789abcdef")
-	if err := ks.WrapForWrite(context.Background(), 7, "/docs/new.txt", ku); err != nil {
+	if err := ks.WrapForWrite(context.Background(), 7, "/docs/new.txt", ku, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(w.wrapped) != 1 || w.wrapped[0] != "bob" {
@@ -109,7 +109,7 @@ func TestKeySharerWrapForWriteNoSharesIsCheap(t *testing.T) {
 	lookup := &stubShareLookup{covering: [][]*Share{{}}}
 	ks := &KeySharer{Meta: stubKeyShareMeta{}, Wrapper: w, Shares: lookup, Users: stubGroupMembers{}}
 	var ku [16]byte
-	if err := ks.WrapForWrite(context.Background(), 7, "/lonely.txt", ku); err != nil {
+	if err := ks.WrapForWrite(context.Background(), 7, "/lonely.txt", ku, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(w.wrapped) != 0 || lookup.calls != 1 {
@@ -197,16 +197,16 @@ func TestKeySharerMembershipAndOverwrite(t *testing.T) {
 	// delegates.
 	var zero, oldU, newU [16]byte
 	oldU[0], newU[0] = 1, 2
-	if err := ks.ReWrapForOverwrite(context.Background(), zero, newU); err != nil {
+	if err := ks.ReWrapForOverwrite(context.Background(), zero, newU, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := ks.ReWrapForOverwrite(context.Background(), newU, newU); err != nil {
+	if err := ks.ReWrapForOverwrite(context.Background(), newU, newU, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(w.rewrapped) != 0 {
 		t.Fatalf("rewrapped = %v, want none for zero/same UUID", w.rewrapped)
 	}
-	if err := ks.ReWrapForOverwrite(context.Background(), oldU, newU); err != nil {
+	if err := ks.ReWrapForOverwrite(context.Background(), oldU, newU, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(w.rewrapped) != 1 || w.rewrapped[0] != [2][16]byte{oldU, newU} {

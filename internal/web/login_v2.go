@@ -32,6 +32,10 @@ type LoginV2 struct {
 	Users      users.Store
 	SessionTTL time.Duration
 	Now        func() time.Time
+	// Keys, when non-nil, unlocks password-wrapped keys at basic-authenticated
+	// grant requests and copies the key onto the session the grant issues
+	// (ADR-0100).
+	Keys LoginKeyHandler
 }
 
 func NewLoginV2(svc *login.Service, verifier auth.Verifier, issuer AppPasswordIssuer) *LoginV2 {
@@ -202,7 +206,9 @@ func (h *LoginV2) HandleGrant(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to record grant", http.StatusInternalServerError)
 		return
 	}
-	h.setSessionCookie(w, r, principal)
+	if !h.setSessionCookie(w, r, principal) {
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(grantedHTML()))
@@ -219,16 +225,35 @@ func (h *LoginV2) requireAuth(w http.ResponseWriter, r *http.Request) (*auth.Pri
 		writePlainUnauthorized(w)
 		return nil, false
 	}
+	// A basic-authenticated grant request is a password login: enroll/unlock
+	// password-wrapped keys (ADR-0100) so the session the grant issues can
+	// carry the key copy. App-password auth carries no password and never
+	// unlocks. Failures fail loudly, mirroring the browser login.
+	if principal.AuthMethod == auth.AuthMethodBasic && h.Keys != nil {
+		priv, err := h.Keys.UnlockForLogin(r.Context(), principal.UID, pass)
+		if err != nil {
+			http.Error(w, "login key unlock failed", http.StatusInternalServerError)
+			return nil, false
+		}
+		principal.UnlockedKey = priv
+	}
 	return principal, true
 }
 
-func (h *LoginV2) setSessionCookie(w http.ResponseWriter, r *http.Request, principal *auth.Principal) {
+// setSessionCookie issues the browser session for a granted login-v2 flow.
+// When the authenticating principal carries an unlocked key (ADR-0100 —
+// attached at the basic-authenticated grant request), the key is sealed onto
+// the new session too; there is no password here, the key comes from the
+// principal. Returns false after writing the error response: a session whose
+// key copy could not be stored is deleted and fails the grant loudly,
+// because browsing with it would 403 every enrolled file.
+func (h *LoginV2) setSessionCookie(w http.ResponseWriter, r *http.Request, principal *auth.Principal) bool {
 	if h.Sessions == nil || h.Users == nil || principal == nil {
-		return
+		return true
 	}
 	u, err := h.Users.GetByUID(r.Context(), principal.UID)
 	if err != nil {
-		return
+		return true
 	}
 	now := time.Now().UTC()
 	if h.Now != nil {
@@ -245,7 +270,19 @@ func (h *LoginV2) setSessionCookie(w http.ResponseWriter, r *http.Request, princ
 	}
 	sess, err := h.Sessions.Create(r.Context(), u.ID, ua, ip, ttl, now)
 	if err != nil {
-		return
+		return true
+	}
+	if principal.UnlockedKey != nil && h.Keys != nil {
+		sealed, serr := h.Keys.SealSessionKey(principal.UnlockedKey, sess.ID)
+		if serr == nil {
+			serr = h.Sessions.SetSealedUK(r.Context(), sess.ID, sealed)
+		}
+		if serr != nil {
+			//nolint:errcheck // best-effort cleanup of the orphaned session before the 500; a leftover expires naturally
+			_ = h.Sessions.Delete(r.Context(), sess.ID)
+			http.Error(w, "session key store failed", http.StatusInternalServerError)
+			return false
+		}
 	}
 	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: Phase 1 login v2 is HTTP; Secure follows TLS in a later phase.
 		Name:     session.CookieName,
@@ -256,6 +293,7 @@ func (h *LoginV2) setSessionCookie(w http.ResponseWriter, r *http.Request, princ
 		Secure:   false,
 		MaxAge:   int(ttl.Seconds()),
 	})
+	return true
 }
 
 func writePlainUnauthorized(w http.ResponseWriter) {

@@ -579,8 +579,11 @@ func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *tim
 	}
 
 	if !created && snapshot && d.Versions != nil {
+		// mapKeyLocked: the snapshot reads the old file at the storage
+		// boundary — an enrolled owner's v3 content the writer cannot
+		// resolve is a 403 lock, not a 500 (ADR-0101).
 		if err := d.Versions.Snapshot(ctx, user, existing); err != nil {
-			return nil, false, err
+			return nil, false, mapKeyLocked(err)
 		}
 	}
 
@@ -607,11 +610,20 @@ func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *tim
 	// row so the key resolver finds the owner without parsing headers.
 	// v1/v2-sealing layers do not implement the interface and keyUUID stays
 	// nil — which also correctly clears the column when a rewrite seals a
-	// former v3 file back to v1/v2.
+	// former v3 file back to v1/v2. The same writer may also expose the
+	// plaintext file key it minted (storage.FileKeyWriter): the key-share
+	// hooks thread it so wraps across an overwrite never need a Resolve in
+	// the writer's ctx (ADR-0101).
 	var keyUUID []byte
 	if kw, ok := wc.(storage.KeyUUIDWriter); ok {
 		if uuid, reported := kw.SealedKeyUUID(); reported {
 			keyUUID = uuid[:]
+		}
+	}
+	var fileKey []byte
+	if fw, ok := wc.(storage.FileKeyWriter); ok {
+		if fk, reported := fw.PlainFileKey(); reported {
+			fileKey = fk
 		}
 	}
 	mt := d.now()
@@ -659,7 +671,7 @@ func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *tim
 	// The file row (with its key UUID) is persisted: keep share wrap rows in
 	// step (ADR-0098). Best-effort inside the stripe lock — a failure is
 	// Warn-logged and never fails the write.
-	d.shareFileKey(ctx, u.ID, np, oldKeyUUID, keyUUID)
+	d.shareFileKey(ctx, u.ID, np, oldKeyUUID, keyUUID, fileKey)
 	if err := d.Meta.RecalcAncestors(ctx, u.ID, f.ParentID, mt); err != nil {
 		return nil, false, err
 	}
@@ -676,8 +688,11 @@ func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *tim
 // of every share covering the path get a wrap of the new key. Best-effort:
 // failures are Warn-logged, never fail the write. Callers hold the write
 // stripe lock; WrapForWrite re-reads the covering set to stay consistent
-// with a concurrent unshare (which never takes this lock).
-func (d *DAV) shareFileKey(ctx context.Context, ownerUserID int64, np string, oldUUID, newUUID []byte) {
+// with a concurrent unshare (which never takes this lock). fileKey, when
+// non-nil, is the plaintext key the storage layer minted for the write —
+// threading it lets both hooks wrap without a Resolve in the writer's ctx,
+// which an enrolled owner's key would not satisfy (ADR-0101).
+func (d *DAV) shareFileKey(ctx context.Context, ownerUserID int64, np string, oldUUID, newUUID, fileKey []byte) {
 	ks := d.KeySharer
 	if ks == nil {
 		return
@@ -692,12 +707,12 @@ func (d *DAV) shareFileKey(ctx context.Context, ownerUserID int64, np string, ol
 		copy(newK[:], newUUID)
 	}
 	if haveOld && haveNew {
-		if err := ks.ReWrapForOverwrite(ctx, oldK, newK); err != nil {
+		if err := ks.ReWrapForOverwrite(ctx, oldK, newK, fileKey); err != nil {
 			d.warn(ctx, "files: share key carry on overwrite failed", slog.String("path", np), slog.Any("err", err))
 		}
 	}
 	if haveNew {
-		if err := ks.WrapForWrite(ctx, ownerUserID, np, newK); err != nil {
+		if err := ks.WrapForWrite(ctx, ownerUserID, np, newK, fileKey); err != nil {
 			d.warn(ctx, "files: share key wrap on write failed", slog.String("path", np), slog.Any("err", err))
 		}
 	}
@@ -1119,7 +1134,7 @@ func mapStorage(err error) error {
 	case errors.Is(err, storage.ErrInvalidPath):
 		return webdav.ErrForbidden
 	default:
-		return err
+		return mapKeyLocked(err)
 	}
 }
 

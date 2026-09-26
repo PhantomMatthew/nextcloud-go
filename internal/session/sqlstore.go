@@ -57,12 +57,12 @@ func (s *SQLStore) Get(ctx context.Context, id string) (*Session, error) {
 		return nil, ErrNotFound
 	}
 	row := s.db.QueryRow(ctx, `
-SELECT id, user_id, user_agent, ip, created_at, last_seen_at, expires_at
+SELECT id, user_id, user_agent, ip, created_at, last_seen_at, expires_at, sealed_uk
 FROM sessions WHERE id = ?`, id)
 	var sess Session
 	var created, last, exp int64
 	var ua, ip sql.NullString
-	if err := row.Scan(&sess.ID, &sess.UserID, &ua, &ip, &created, &last, &exp); err != nil {
+	if err := row.Scan(&sess.ID, &sess.UserID, &ua, &ip, &created, &last, &exp, &sess.SealedUK); err != nil {
 		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, database.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -88,6 +88,21 @@ func (s *SQLStore) Touch(ctx context.Context, id string, now time.Time, ttl time
 		now.UnixMilli(), now.Add(ttl).UnixMilli(), id)
 	if err != nil {
 		return fmt.Errorf("session: touch: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *SQLStore) SetSealedUK(ctx context.Context, id string, sealed []byte) error {
+	res, err := s.db.Exec(ctx, `UPDATE sessions SET sealed_uk = ? WHERE id = ?`, sealed, id)
+	if err != nil {
+		return fmt.Errorf("session: set sealed uk: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {

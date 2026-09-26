@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -93,5 +94,53 @@ func TestSQLStoreExpired(t *testing.T) {
 	}
 	if _, err := store.Get(ctx, sess.ID); !errors.Is(err, ErrExpired) {
 		t.Fatalf("expired = %v", err)
+	}
+}
+
+// TestSQLStoreSealedUK pins the ADR-0100 session key copy: nil by default,
+// round-trips through SetSealedUK/Get, clears with nil, and an unknown
+// session is ErrNotFound.
+func TestSQLStoreSealedUK(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+	userID := insertUser(t, db, "carol")
+	store := NewSQLStore(db)
+	sess, err := store.Create(ctx, userID, "ua", "127.0.0.1", time.Hour, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SealedUK != nil {
+		t.Errorf("fresh session SealedUK = %x, want nil", got.SealedUK)
+	}
+
+	blob := []byte{0x01, 0x02, 0x03, 0x04}
+	if err := store.SetSealedUK(ctx, sess.ID, blob); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.SealedUK, blob) {
+		t.Errorf("SealedUK = %x, want %x", got.SealedUK, blob)
+	}
+
+	if err := store.SetSealedUK(ctx, sess.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SealedUK != nil {
+		t.Errorf("cleared SealedUK = %x, want nil", got.SealedUK)
+	}
+
+	if err := store.SetSealedUK(ctx, "missing", blob); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown session SetSealedUK = %v, want ErrNotFound", err)
 	}
 }

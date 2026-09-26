@@ -66,13 +66,17 @@ type SweepOptions struct {
 }
 
 // SweepStats summarizes a Sweep run. Bytes counts plaintext bytes rewritten
-// (or, in a dry run, that would be rewritten).
+// (or, in a dry run, that would be rewritten). LockedSkipped counts files
+// whose read failed with ErrKeyLocked — enrolled users' v3 files a
+// principal-less sweep cannot resolve (ADR-0100); a locked skip is never a
+// failure and OnError is not called for it.
 type SweepStats struct {
-	Scanned int64
-	Changed int64
-	Skipped int64
-	Failed  int64
-	Bytes   int64
+	Scanned       int64
+	Changed       int64
+	Skipped       int64
+	Failed        int64
+	LockedSkipped int64
+	Bytes         int64
 }
 
 // maxSweepDepth bounds the recursive tree walk: backends cannot nest
@@ -97,15 +101,18 @@ const maxSweepDepth = 64
 // encoding, never a partial file.
 //
 // A per-file failure is counted (and reported via OnError) and the sweep
-// continues; a nonzero Failed count does not by itself fail the run. The
-// exceptions: in SweepOpen direction an ErrIntegrity read means the master
-// key does not match the sealed data (or the file is corrupt); in
-// SweepRotate direction an ErrIntegrity read means the same for the ring
-// key at the file's key ID, and an ErrUnknownKeyID read means the keyring
-// is incomplete; in SweepRekeyV3 direction the same two apply plus
-// ErrUnresolvableKey (the per-user key chain is broken). Continuing past
-// any of these would fail every remaining sealed file — the sweep aborts
-// at the first such file with an error wrapping ErrIntegrity,
+// continues; a nonzero Failed count does not by itself fail the run. A file
+// whose read fails with ErrKeyLocked (an enrolled user's v3 file the
+// principal-less sweep cannot resolve, ADR-0100) is counted as
+// LockedSkipped instead — a locked skip is never a failure and never calls
+// OnError. The exceptions: in SweepOpen direction an ErrIntegrity read
+// means the master key does not match the sealed data (or the file is
+// corrupt); in SweepRotate direction an ErrIntegrity read means the same
+// for the ring key at the file's key ID, and an ErrUnknownKeyID read means
+// the keyring is incomplete; in SweepRekeyV3 direction the same two apply
+// plus ErrUnresolvableKey (the per-user key chain is broken). Continuing
+// past any of these would fail every remaining sealed file — the sweep
+// aborts at the first such file with an error wrapping ErrIntegrity,
 // ErrUnknownKeyID, or ErrUnresolvableKey.
 func Sweep(ctx context.Context, raw storage.Storage, enc *FS, opts SweepOptions) (SweepStats, error) {
 	if raw == nil || enc == nil {
@@ -266,6 +273,15 @@ func (s *sweeper) process(ctx context.Context, fi *storage.FileInfo) error {
 		data, err = sweepRead(ctx, s.enc, fi.Path)
 	}
 	if err != nil {
+		if errors.Is(err, ErrKeyLocked) {
+			// An enrolled user's v3 file no principal-less sweep can
+			// resolve (ADR-0100): skip as locked, never fail. Only
+			// decrypt-all meaningfully hits this — encrypt-all skips
+			// sealed files, rotate-keys/rekey-v3 skip v3 by rule, and v3
+			// writes box via the recipient's public key (no session).
+			s.stats.LockedSkipped++
+			return nil
+		}
 		if s.opts.Direction == SweepOpen && errors.Is(err, ErrIntegrity) {
 			s.stats.Failed++
 			return fmt.Errorf("encrypt: sweep: %s: master key does not match the sealed data (or the file is corrupt): %w", fi.Path, err)

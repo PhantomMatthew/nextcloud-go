@@ -109,6 +109,11 @@ func (c *Config) Validate() error {
 		// without encryption would be a defined-but-dead key.
 		errs = append(errs, &ValidationError{Field: "encryption.per_user_keys", Reason: "requires encryption.enabled (per-user keys without encryption would be a dead key)"})
 	}
+	if c.Encryption.PasswordWrappedKeys && !c.Encryption.PerUserKeys {
+		// ADR-0100: password-wrapped keys are an enrollment mode of the
+		// per-user key hierarchy, not a standalone mode.
+		errs = append(errs, &ValidationError{Field: "encryption.password_wrapped_keys", Reason: "requires encryption.per_user_keys (password-wrapped keys without per-user keys would be a dead key)"})
+	}
 	errs = append(errs, validatePreviousKeyPaths(c.Encryption)...)
 
 	if c.Previews.MaxDimension < 32 || c.Previews.MaxDimension > 4096 {

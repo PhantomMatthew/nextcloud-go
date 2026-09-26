@@ -37,3 +37,16 @@ type Storage interface {
 type KeyUUIDWriter interface {
 	SealedKeyUUID() (keyUUID [16]byte, ok bool)
 }
+
+// FileKeyWriter is an optional interface a WriteCloser returned by Create
+// may implement when the storage layer seals content under a per-file key it
+// minted (the v3 envelope of internal/storage/encrypt, ADR-0097).
+// PlainFileKey reports a copy of the 32-byte plaintext file key the writer
+// sealed with; ok is false when the writer holds no per-file key. The file
+// DAV threads it to the key-share hooks so an overwrite into an enrolled
+// owner's tree can re-wrap the fresh key without a Resolve the writer's
+// session cannot satisfy (ADR-0101); the key is request-scope material and
+// must never be logged or persisted as-is.
+type FileKeyWriter interface {
+	PlainFileKey() (fk []byte, ok bool)
+}

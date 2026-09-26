@@ -40,6 +40,9 @@ encryption:
   # Requires enabled: true. Once v3 files exist, rolling back to a pre-v3
   # binary strands them — same rule as v2 key-rotation headers.
   per_user_keys: false
+  # Opt-in (ADR-0100): enrolled users' keys are sealed under their login
+  # password instead of the master key. Requires per_user_keys: true.
+  password_wrapped_keys: false
 
 auth:
   argon2id:

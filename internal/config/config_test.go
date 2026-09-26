@@ -103,6 +103,9 @@ func TestLoadFullFile(t *testing.T) {
 	if cfg.Encryption.PerUserKeys {
 		t.Error("full.yaml per_user_keys = true, want false")
 	}
+	if cfg.Encryption.PasswordWrappedKeys {
+		t.Error("full.yaml password_wrapped_keys = true, want false")
+	}
 	if cfg.Auth.BootstrapAdmin.UID != "admin" {
 		t.Errorf("bootstrap uid = %q", cfg.Auth.BootstrapAdmin.UID)
 	}
@@ -320,6 +323,45 @@ func TestLoadEncryptionPerUserKeys(t *testing.T) {
 	}
 }
 
+func TestLoadEncryptionPasswordWrappedKeys(t *testing.T) {
+	// Default: off.
+	cfg, err := Load(LoadOptions{EnvPrefix: unusedEnvPrefix})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Encryption.PasswordWrappedKeys {
+		t.Error("default password_wrapped_keys = true, want false")
+	}
+
+	// Overrides parse a native bool (per-user keys must be on for a true
+	// value to validate).
+	cfg, err = Load(LoadOptions{
+		EnvPrefix: unusedEnvPrefix,
+		Overrides: map[string]any{
+			"encryption.enabled":               true,
+			"encryption.master_key_path":       "/keys/current.key",
+			"encryption.per_user_keys":         true,
+			"encryption.password_wrapped_keys": true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Encryption.PasswordWrappedKeys {
+		t.Error("override password_wrapped_keys = false, want true")
+	}
+
+	// Valid alongside per-user keys.
+	c := Default()
+	c.Encryption.Enabled = true
+	c.Encryption.MasterKeyPath = "/keys/current.key"
+	c.Encryption.PerUserKeys = true
+	c.Encryption.PasswordWrappedKeys = true
+	if err := c.Validate(); err != nil {
+		t.Errorf("password-wrapped keys with per-user keys Validate() = %v", err)
+	}
+}
+
 func TestLoadEmptySecretIsValid(t *testing.T) {
 	cfg, err := Load(LoadOptions{EnvPrefix: unusedEnvPrefix})
 	if err != nil {
@@ -370,6 +412,11 @@ func TestValidateRules(t *testing.T) {
 		{"encryption_per_user_keys_without_enabled", func(c *Config) {
 			c.Encryption.PerUserKeys = true
 		}, "encryption.per_user_keys"},
+		{"encryption_password_wrapped_without_per_user", func(c *Config) {
+			c.Encryption.Enabled = true
+			c.Encryption.MasterKeyPath = "/keys/current.key"
+			c.Encryption.PasswordWrappedKeys = true
+		}, "encryption.password_wrapped_keys"},
 		{"encryption_previous_empty", func(c *Config) {
 			c.Encryption.PreviousKeyPaths = []string{"/var/lib/ncgo/old.key", "  "}
 		}, "encryption.previous_key_paths"},

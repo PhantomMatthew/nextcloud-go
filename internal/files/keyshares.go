@@ -9,7 +9,9 @@ import (
 
 // KeyWrapper wraps and unwraps per-user file keys for share recipients
 // (ADR-0098). *encrypt.SQLResolver satisfies it; the narrow interface keeps
-// the files package free of an encrypt dependency.
+// the share-hook seams free of an encrypt dependency (the ADR-0101
+// ErrKeyLocked mapping in keylocked.go is the package's one narrow
+// exception).
 type KeyWrapper interface {
 	// WrapKeyFor wraps the file key named by keyUUID for uid, lazily
 	// creating the recipient's user key; re-wrapping is a no-op.
@@ -20,6 +22,16 @@ type KeyWrapper interface {
 	// ReWrapSharees carries oldUUID's non-owner recipient wraps to newUUID
 	// and deletes the old rows (overwrite continuity).
 	ReWrapSharees(ctx context.Context, oldUUID, newUUID [16]byte) error
+}
+
+// FKThreadingWrapper is a KeyWrapper that also accepts a caller-held
+// plaintext file key, skipping the Resolve round-trip its WrapKeyFor /
+// ReWrapSharees perform (ADR-0101): for an enrolled owner's key, Resolve
+// succeeds only in an authorized reader's ctx, so the write path threads
+// the FK it holds from Allocate. *encrypt.SQLResolver satisfies it.
+type FKThreadingWrapper interface {
+	WrapKeyForFK(ctx context.Context, keyUUID [16]byte, uid string, fk []byte) error
+	ReWrapShareesFK(ctx context.Context, oldUUID, newUUID [16]byte, fk []byte) error
 }
 
 // KeyShareMeta is the filecache seam KeySharer needs; *SQLStore satisfies
@@ -49,11 +61,14 @@ type GroupMemberLookup interface {
 // grants wrap the file key for each recipient, revokes unwrap, group
 // membership changes wrap/unwrap per member, and the write path wraps
 // covering shares and carries recipients across overwrites. Every method is
-// best-effort by contract: it returns errors for the CALLER to log, and
-// recipient rows are the phase-4 substrate plus an audit record — the
-// server-side read path never depends on them, so a hook failure must never
-// fail the share/write/membership operation that triggered it. Files
-// without a v3 key UUID (plaintext, v1/v2) are skipped everywhere.
+// best-effort by contract: it returns errors for the CALLER to log, and a
+// hook failure must never fail the share/write/membership operation that
+// triggered it. Recipient rows are the phase-4 read path for enrolled
+// owners (ADR-0100) — with password-wrapped keys the read resolves through
+// the reading user's own wrap row — so for enrolled-owner files a failed
+// wrap means a locked read (ErrKeyLocked, 403) that heals on the next
+// authorized write (ADR-0101's documented residual gap). Files without a
+// v3 key UUID (plaintext, v1/v2) are skipped everywhere.
 type KeySharer struct {
 	Meta    KeyShareMeta
 	Wrapper KeyWrapper
@@ -149,14 +164,23 @@ func (k *KeySharer) forGroupShares(ctx context.Context, gid, uid string, op func
 // vanished mid-write are unwrapped again — that closes the race against a
 // concurrent unshare (ADR-0094 serializes same-path writes, but share
 // deletes do not take that lock): the last actor to touch a row leaves it
-// consistent with the share table.
-func (k *KeySharer) WrapForWrite(ctx context.Context, ownerUserID int64, p string, keyUUID [16]byte) error {
+// consistent with the share table. fk, when non-nil and the wrapper threads
+// FKs (FKThreadingWrapper), is the plaintext key the write minted — the
+// wraps then need no Resolve, which an enrolled owner's key would not
+// satisfy in a share-writer's ctx (ADR-0101).
+func (k *KeySharer) WrapForWrite(ctx context.Context, ownerUserID int64, p string, keyUUID [16]byte, fk []byte) error {
 	shares, err := k.Shares.Covering(ctx, ownerUserID, p)
 	if err != nil {
 		return err
 	}
 	if len(shares) == 0 {
 		return nil
+	}
+	wrap := k.Wrapper.WrapKeyFor
+	if thread, ok := k.Wrapper.(FKThreadingWrapper); ok && fk != nil {
+		wrap = func(ctx context.Context, keyUUID [16]byte, uid string) error {
+			return thread.WrapKeyForFK(ctx, keyUUID, uid, fk)
+		}
 	}
 	wrapped := map[string]bool{}
 	var errs []error
@@ -167,7 +191,7 @@ func (k *KeySharer) WrapForWrite(ctx context.Context, ownerUserID int64, p strin
 			continue
 		}
 		for _, uid := range uids {
-			if err := k.Wrapper.WrapKeyFor(ctx, keyUUID, uid); err != nil {
+			if err := wrap(ctx, keyUUID, uid); err != nil {
 				errs = append(errs, err)
 				continue
 			}
@@ -215,11 +239,19 @@ func (k *KeySharer) coveringUIDs(ctx context.Context, ownerUserID int64, p strin
 
 // ReWrapForOverwrite carries a shared file's recipient wraps from the
 // superseded key UUID to the fresh one an overwrite minted. A zero old UUID
-// (the file had no v3 key) or an unchanged UUID is a no-op.
-func (k *KeySharer) ReWrapForOverwrite(ctx context.Context, oldUUID, newUUID [16]byte) error {
+// (the file had no v3 key) or an unchanged UUID is a no-op. fk, when non-nil
+// and the wrapper threads FKs (FKThreadingWrapper), is the fresh plaintext
+// key from the write — the carry then needs no Resolve in the writer's ctx
+// (ADR-0101).
+func (k *KeySharer) ReWrapForOverwrite(ctx context.Context, oldUUID, newUUID [16]byte, fk []byte) error {
 	var zero [16]byte
 	if oldUUID == zero || oldUUID == newUUID {
 		return nil
+	}
+	if fk != nil {
+		if thread, ok := k.Wrapper.(FKThreadingWrapper); ok {
+			return thread.ReWrapShareesFK(ctx, oldUUID, newUUID, fk)
+		}
 	}
 	return k.Wrapper.ReWrapSharees(ctx, oldUUID, newUUID)
 }

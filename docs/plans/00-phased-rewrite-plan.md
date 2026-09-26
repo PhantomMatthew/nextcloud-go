@@ -191,6 +191,33 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-26** — Phase 5w-4a: SSE password-wrapped user keys —
+  **enrollment + identity path** (ADR-0101), delivering ADR-0100's phase
+  4-a and recording two implementation refinements (strike-annotated
+  there): the session-copy blob gains a key-ID byte (O(1) ring selection
+  after master-key rotation), and the FK-availability corner — recipient
+  wraps need no session (public keys) but the FK source does for enrolled
+  owners, so the write path threads the plaintext FK from `Allocate`
+  (`storage.FileKeyWriter` → `dav.write` → `KeySharer` →
+  `WrapKeyForFK`/`ReWrapShareesFK`); third-party-ctx hooks fail
+  best-effort and heal on the next authorized write (documented residual
+  gap). Migration 0021 (three dialects: `user_key_pw`,
+  `file_keys.scheme`, `sessions.sealed_uk`), `pwbox.go` constructions
+  byte-exact per ADR-0100 §3 (argon2id KEK, 60 B pw_sealed_uk, 92 B
+  X25519 box, `m=…,t=…,p=…` KDF params), the four-branch
+  enrollment/unenrollment state machine at password login (crash-resumable
+  in both directions, enroll-race unique-violation resume), the
+  Resolve/Allocate identity path (enrolled owners resolve through the
+  READING user's wrap row; `ErrKeyLocked` strictly distinct from
+  `ErrIntegrity`/`ErrUnresolvableKey`), session/principal plumbing
+  (`sessions.sealed_uk` → `Principal.UnlockedKey` via the fail-closed
+  `SessionKeyUnlocker` seam; basic-only `LoginKeyHandler` on browser login
+  and login-v2 grant; loud 500 + session delete on seal/store failure),
+  reset-password refusal + `--force` destruction, sweep locked-skip
+  accounting, status enrollment counts, and the dual-matched 403 mapping
+  (`internal/files/keylocked.go`; webdav stays encrypt-free). Phase 4-a
+  breaks app-password DAV for enrolled users until 4-b — opt-in,
+  documented. Zero new dependencies.
 - **2026-09-26** — Phase 5w-4 **design**: password-wrapped user keys
   (ADR-0100), supplying the phase-4 design ADR-0096 deferred (its two
   forward references annotated). The threat-model pivot: an enrolled

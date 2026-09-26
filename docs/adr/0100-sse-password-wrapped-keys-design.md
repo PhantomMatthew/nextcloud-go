@@ -116,8 +116,11 @@ symmetric (`scheme = 0`), delete the `user_key_pw` row.
   wrap replayed onto a different file or user fails authentication.
   Ephemeral ECDH needs no sender authentication — wraps are created
   exclusively server-side.
-- **Session copy** (`sessions.sealed_uk`): `nonce(12) ||
-  AES-256-GCM(ring[current], privkey, "NCGOSK1" || session_id)`. The
+- **Session copy** (`sessions.sealed_uk`): ~~`nonce(12) ||
+  AES-256-GCM(ring[current], privkey, "NCGOSK1" || session_id)`~~
+  (**refined by ADR-0101**: the blob gains a key-ID byte — `keyID(1) ||
+  nonce(12) || AES-256-GCM(ring[keyID], privkey, …)` — for O(1) ring
+  selection after master-key rotation). The
   master-sealed copy is the session's only key material; logout, expiry,
   and session deletion destroy it. At-rest exposure is exactly "users
   with an active session" — the stated threat model.
@@ -162,8 +165,13 @@ symmetric (`scheme = 0`), delete the `user_key_pw` row.
   unenrolled: symmetric as today; enrolled: box with their public key,
   no session needed. The writer (when not the owner, i.e. an incoming
   share write) and covering-share recipients are wrapped by the existing
-  ADR-0098 hooks, per-recipient by scheme, again without any session
-  (public keys). `WrapKeyFor` for an enrolled uid never lazy-mints — the
+  ADR-0098 hooks, per-recipient by scheme, ~~again without any session
+  (public keys)~~ (**refined by ADR-0101**: the recipient-side wrap truly
+  needs no session — boxes are public-key — but the FK SOURCE does for an
+  enrolled owner's key: `Resolve` succeeds only in an authorized reader's
+  ctx, so the write path threads the FK from `Allocate`, and hooks firing
+  in a third-party ctx fail best-effort and heal on the next authorized
+  write). `WrapKeyFor` for an enrolled uid never lazy-mints — the
   keypair exists by construction.
 - **Revoke**: row deletion, unchanged — with enrolled recipients it
   becomes cryptographically real (ADR-0096's phase-4 promise).

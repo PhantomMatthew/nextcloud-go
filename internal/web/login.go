@@ -18,6 +18,19 @@ import (
 // bound to (double-submit; ADR-0064). It is rotated away at successful login.
 const LoginNonceCookie = "ncgo_login_nonce"
 
+// LoginKeyHandler is the password-wrapped-keys seam of the login handlers
+// (ADR-0100): *encrypt.SQLResolver satisfies it structurally; web must not
+// import encrypt. Nil-ok on both handlers.
+type LoginKeyHandler interface {
+	// UnlockForLogin runs the enrollment state machine at a password login
+	// and returns the user's unlocked private key (nil when the user is
+	// master-wrapped).
+	UnlockForLogin(ctx context.Context, uid, password string) ([]byte, error)
+	// SealSessionKey seals an unlocked private key for storage on a session
+	// row.
+	SealSessionKey(priv []byte, sessionID string) ([]byte, error)
+}
+
 // BrowserLogin serves the SPA's browser form login and logout:
 // POST /index.php/login and GET|POST /index.php/logout.
 type BrowserLogin struct {
@@ -29,6 +42,9 @@ type BrowserLogin struct {
 	SessionTTL time.Duration
 	Now        func() time.Time
 	After      func(time.Duration)
+	// Keys, when non-nil, enrolls/unlocks password-wrapped keys at basic
+	// logins and stores the sealed key copy on the new session (ADR-0100).
+	Keys LoginKeyHandler
 }
 
 // HandleLogin authenticates a browser form POST. The requesttoken field is
@@ -60,6 +76,18 @@ func (h *BrowserLogin) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid username or password", http.StatusUnauthorized)
 		return
 	}
+	// Enroll/unlock password-wrapped keys (ADR-0100) — only a real password
+	// login (basic) ever holds the password; an app password presented at
+	// the form neither enrolls nor unlocks. A failure fails the login
+	// loudly: silent fallback would orphan every enrolled file.
+	var priv []byte
+	if principal.AuthMethod == auth.AuthMethodBasic && h.Keys != nil {
+		priv, err = h.Keys.UnlockForLogin(r.Context(), principal.UID, r.FormValue("password"))
+		if err != nil {
+			http.Error(w, "login key unlock failed", http.StatusInternalServerError)
+			return
+		}
+	}
 	u, err := h.Users.GetByUID(r.Context(), principal.UID)
 	if err != nil {
 		http.Error(w, "user lookup failed", http.StatusInternalServerError)
@@ -82,6 +110,20 @@ func (h *BrowserLogin) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "session create failed", http.StatusInternalServerError)
 		return
+	}
+	if priv != nil {
+		// A session without its key copy would 403 every enrolled file —
+		// seal/store errors delete the session and fail the login loudly.
+		sealed, serr := h.Keys.SealSessionKey(priv, sess.ID)
+		if serr == nil {
+			serr = h.Sessions.SetSealedUK(r.Context(), sess.ID, sealed)
+		}
+		if serr != nil {
+			//nolint:errcheck // best-effort cleanup of the orphaned session before the 500; a leftover expires naturally
+			_ = h.Sessions.Delete(r.Context(), sess.ID)
+			http.Error(w, "session key store failed", http.StatusInternalServerError)
+			return
+		}
 	}
 	// Rotate the anonymous nonce away: the login token must not be reusable,
 	// and the authenticated shell now derives its token from the session.

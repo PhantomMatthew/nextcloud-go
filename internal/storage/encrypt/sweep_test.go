@@ -595,3 +595,48 @@ func TestSweepRotateSingleKeyRing(t *testing.T) {
 		t.Fatalf("single-key ring err = %v", err)
 	}
 }
+
+// TestSweepOpenLockedSkipped pins the ADR-0100 sweep semantics: a
+// principal-less decrypt-all over an enrolled user's v3 tree skips every
+// file as locked — never a failure, never an OnError call, exit-clean.
+func TestSweepOpenLockedSkipped(t *testing.T) {
+	ctx := context.Background()
+	db := resolverDB(t)
+	seedResolverUser(t, db, "alice")
+	fs, inner, res := sqlResolverFS(t, db, testKey(t))
+	res.PasswordWrapped = true
+	res.KDF = fastKDF
+
+	writeV3(t, fs, "alice/a.txt", []byte("alpha"))
+	writeV3(t, fs, "alice/b.txt", []byte("beta"))
+	writeAll(t, inner, "alice/plain.txt", []byte("legacy"))
+	if _, err := res.UnlockForLogin(ctx, "alice", "wonderland"); err != nil {
+		t.Fatal(err)
+	}
+
+	var errPaths []string
+	stats, err := Sweep(ctx, inner, fs, SweepOptions{
+		Direction: SweepOpen,
+		OnError:   func(p string, _ error) { errPaths = append(errPaths, p) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.LockedSkipped != 2 {
+		t.Errorf("LockedSkipped = %d, want 2 (both enrolled v3 files)", stats.LockedSkipped)
+	}
+	if stats.Failed != 0 || len(errPaths) != 0 {
+		t.Errorf("Failed = %d, OnError paths = %v, want none (a locked skip is never a failure)", stats.Failed, errPaths)
+	}
+	if stats.Changed != 0 || stats.Skipped != 1 {
+		t.Errorf("Changed = %d, Skipped = %d, want 0/1 (the legacy plaintext file is already 'decrypted')",
+			stats.Changed, stats.Skipped)
+	}
+	// The enrolled files are untouched on disk: still v3-sealed.
+	for _, p := range []string{"alice/a.txt", "alice/b.txt"} {
+		raw := rawBytes(t, inner, p)
+		if !strings.HasPrefix(string(raw), magicV3) {
+			t.Errorf("%s was rewritten despite the lock", p)
+		}
+	}
+}

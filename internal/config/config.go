@@ -80,11 +80,17 @@ type BackendConfig struct {
 // wrapped under the owner's user key. It requires Enabled; deployments that
 // never turn it on stay bit-identical to v1/v2 builds (rollback-safe), but
 // once v3 files exist a rollback strands them, same as v2.
+// PasswordWrappedKeys (ADR-0100, opt-in) replaces enrolled users'
+// master-sealed user keys with X25519 keypairs whose private key is sealed
+// under the login password; enrollment is lazy at each user's first password
+// login after the flag turns on, and unenrollment mirrors at password login
+// with the flag off. It requires PerUserKeys.
 type EncryptionConfig struct {
-	Enabled          bool     `koanf:"enabled"`
-	MasterKeyPath    string   `koanf:"master_key_path"`
-	PreviousKeyPaths []string `koanf:"previous_key_paths"`
-	PerUserKeys      bool     `koanf:"per_user_keys"`
+	Enabled             bool     `koanf:"enabled"`
+	MasterKeyPath       string   `koanf:"master_key_path"`
+	PreviousKeyPaths    []string `koanf:"previous_key_paths"`
+	PerUserKeys         bool     `koanf:"per_user_keys"`
+	PasswordWrappedKeys bool     `koanf:"password_wrapped_keys"`
 }
 
 // PreviewsConfig controls server-side image preview generation (ADR-0053).

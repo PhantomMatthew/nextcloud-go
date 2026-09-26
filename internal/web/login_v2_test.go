@@ -363,7 +363,10 @@ func (stubUserStore) UserGroupGIDs(context.Context, string) ([]string, error) {
 }
 
 type stubSessionStore struct {
-	created *session.Session
+	created  *session.Session
+	sealedUK []byte
+	setErr   error
+	deleted  []string
 }
 
 func (s *stubSessionStore) Create(_ context.Context, userID int64, ua, ip string, ttl time.Duration, now time.Time) (*session.Session, error) {
@@ -378,7 +381,19 @@ func (*stubSessionStore) Get(context.Context, string) (*session.Session, error) 
 func (*stubSessionStore) Touch(context.Context, string, time.Time, time.Duration) error {
 	return nil
 }
-func (*stubSessionStore) Delete(context.Context, string) error { return nil }
+
+func (s *stubSessionStore) Delete(_ context.Context, id string) error {
+	s.deleted = append(s.deleted, id)
+	return nil
+}
+
+func (s *stubSessionStore) SetSealedUK(_ context.Context, _ string, sealed []byte) error {
+	if s.setErr != nil {
+		return s.setErr
+	}
+	s.sealedUK = sealed
+	return nil
+}
 
 func TestHandleGrantSetsSessionCookie(t *testing.T) {
 	h := newHandler(t, stubIssuer{password: "app-pw-grant"})
