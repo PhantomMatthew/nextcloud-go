@@ -28,7 +28,9 @@ Verified facts that shaped the build:
 - **The login-v2 grant request is basic-authenticated** (ADR-0101 §Context):
   `requireAuth` already runs `UnlockForLogin`, so a basic-authenticated
   grant of an enrolled user holds the unlocked private key on the principal
-  at `Issue` time — the one moment wrap-at-issuance is possible. The issuer
+  at `Issue` time. The same holds for a SESSION-authenticated OCS
+  `getapppassword` request (the 4-a middleware attaches the session's key) —
+  the two moments wrap-at-issuance is possible. The issuer
   previously discarded the `Token` (and with it the token id the wrap row
   keys on).
 - **Revocation goes through one store method.** `SQLStore.DeleteByHash`
@@ -68,11 +70,11 @@ verifier attaches no key); an open failure wraps `ErrIntegrity`
 not silently degrade to per-file 403s). `OnTokenDeleted(ctx, appPasswordID)`
 deletes the wrap (missing row no-op).
 
-### 3. Wrap-at-issuance (login-v2 grant)
+### 3. Wrap-at-issuance (login-v2 grant and OCS getapppassword)
 
 `web.AppPasswordIssuer.Issue` widens to return the token id alongside the
 raw token — `(raw, tokenID string, err error)` — and the OCS
-`AppPasswordIssuer` interface follows (its handler discards the id). The
+`AppPasswordIssuer` interface follows. The
 issuer (app routes) now keeps the `Token` it mints. `LoginV2.HandleGrant`:
 after a successful `Issue`, when `principal.UnlockedKey != nil` (a
 basic-authenticated grant of an enrolled user, unlocked at `requireAuth` in
@@ -82,9 +84,22 @@ basic-authenticated grant of an enrolled user, unlocked at `requireAuth` in
 every file. With no unlocked key (an app-password-authenticated grant, or an
 unenrolled user) the wrap is skipped silently: such tokens authenticate but
 cannot unlock files until re-issued from a password login (the pinned
-no-wrap behavior). The OCS `getapppassword` endpoint does NOT wrap (scope:
-the grant flow is the pinned issuance path; its tokens behave exactly like
-pre-enrollment tokens — see Consequences).
+no-wrap behavior).
+
+The OCS `getapppassword` endpoint wraps with the same semantics: its
+principal comes from the auth middleware, so a SESSION-authenticated request
+of an enrolled user carries the 4-a middleware-attached unlocked key (the
+web UI's settings flow), and the handler seals it under the new token via
+the narrow `ocs.AppTokenKeyWrapper` seam (constructor-wired from the key
+resolver, nil-ok). A wrap error fails the request loudly (server error).
+Basic/bearer OCS issuance carries no key and wraps nothing — those tokens
+behave like pre-enrollment tokens until re-issued from an unlocked session.
+
+**Same-day correction**: the first cut of this ADR claimed the OCS endpoint
+does not wrap, reasoning its principal never carries a key — true only for
+basic/bearer auth. Session-authenticated issuance silently produced
+wrap-less tokens for enrolled users; the handler now wraps as described
+above.
 
 ### 4. Verifier unlock (`internal/auth`, structural seam)
 
@@ -155,8 +170,8 @@ import.
   revocation) for no measurable win. Rejected; §7 strike-annotated.
 - **Wrap-at-issuance inside `auth.IssueAppPassword`** — the auth layer
   never sees the unlocked key (a web-layer value), and pushing key handling
-  into the token store would couple auth to encrypt. The grant handler is
-  the one moment both values meet. Rejected.
+  into the token store would couple auth to encrypt. The issuance handlers
+  are the moments both values meet. Rejected.
 - **Fail-open verifier** (unlock error → proceed keyless) — silently
   degrades an enrolled user's every file to 403 and masks wrap corruption;
   the 4-a session semantics chose fail-closed for the same reason.
@@ -173,9 +188,10 @@ import.
   the 4-a regression window closes. Per-request cost is one indexed
   PK-join + HKDF + AES-GCM open (µs), accepted; no key-material cache
   exists anywhere.
-- **Pre-enrollment, imported, and OCS-issued tokens authenticate but cannot
-  unlock files** until re-issued from a password login (login-v2 grant with
-  basic auth). `encryption status` names the count with the remedy; the
+- **Pre-enrollment, imported, and keylessly-issued tokens (app-password
+  grants, basic/bearer OCS issuance) authenticate but cannot unlock files**
+  until re-issued from a password login or an unlocked session.
+  `encryption status` names the count with the remedy; the
   import help says the same.
 - **Revocation is cryptographic**: deleting the token deletes its wrap
   (best-effort hook with the orphan purge as safety net), so a captured raw
@@ -215,6 +231,10 @@ import.
   nothing; app-password form login with a verifier-attached key gets the
   key sealed onto the new session (`UnlockForLogin` never called); 4-a
   login tests keep green.
+- `internal/ocs`: session-authenticated getapppassword wraps with (token
+  id, raw token, unlocked key) — spy; wrap error → server error; keyless
+  (basic/bearer) issuance wraps nothing, token still issued; app-password
+  principal still forbidden.
 - `internal/files` end-to-end: enrolled user, wrapped app password → GET
   200 with content (verifier → principal → `resolveIdentity` box path);
   bare token → 403; revoke → wrap row gone + token dead; re-issue with wrap

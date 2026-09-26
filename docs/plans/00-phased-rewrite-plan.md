@@ -215,9 +215,13 @@ These become candidates for v2 (post-1.0).
   unwrapped-enrolled-token warning with the re-issue remedy; BrowserLogin
   inheritance (an app-password form login whose token holds a wrap gets the
   key sealed onto the new session); imported tokens documented as wrap-less
-  (re-issue after import). Pre-enrollment and OCS-issued tokens
-  authenticate but cannot unlock files until re-issued from a password
-  login. Zero new dependencies.
+  (re-issue after import). Wrap-at-issuance covers BOTH issuance paths —
+  the login-v2 grant and session-authenticated OCS `getapppassword`
+  (same-day corrected; an app-password grant or basic/bearer OCS issuance
+  carries no key and wraps nothing). Pre-enrollment, imported, and
+  keylessly-issued tokens authenticate but cannot unlock files until
+  re-issued from a password login or an unlocked session. Zero new
+  dependencies.
 - **2026-09-26** — Phase 5w-4a: SSE password-wrapped user keys —
   **enrollment + identity path** (ADR-0101), delivering ADR-0100's phase
   4-a and recording two implementation refinements (strike-annotated

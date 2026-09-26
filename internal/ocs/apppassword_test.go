@@ -64,7 +64,7 @@ func newAuthedRequest(method string, principal *auth.Principal) *http.Request {
 
 func TestGetAppPasswordHandler_Success(t *testing.T) {
 	issuer := &stubIssuer{issueToken: "tok-123"}
-	h := GetAppPasswordHandler(V2, issuer)
+	h := GetAppPasswordHandler(V2, issuer, nil)
 	rr := httptest.NewRecorder()
 	r := newAuthedRequest(http.MethodGet, &auth.Principal{UID: "alice", AuthMethod: auth.AuthMethodBasic})
 
@@ -87,7 +87,7 @@ func TestGetAppPasswordHandler_Success(t *testing.T) {
 
 func TestGetAppPasswordHandler_ForbiddenWhenAppPassword(t *testing.T) {
 	issuer := &stubIssuer{issueToken: "should-not-be-issued"}
-	h := GetAppPasswordHandler(V2, issuer)
+	h := GetAppPasswordHandler(V2, issuer, nil)
 	rr := httptest.NewRecorder()
 	r := newAuthedRequest(http.MethodGet, &auth.Principal{UID: "alice", AuthMethod: auth.AuthMethodAppPassword})
 
@@ -107,7 +107,7 @@ func TestGetAppPasswordHandler_ForbiddenWhenAppPassword(t *testing.T) {
 
 func TestGetAppPasswordHandler_UnauthorizedWhenNoPrincipal(t *testing.T) {
 	issuer := &stubIssuer{}
-	h := GetAppPasswordHandler(V2, issuer)
+	h := GetAppPasswordHandler(V2, issuer, nil)
 	rr := httptest.NewRecorder()
 	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/?format=json", nil)
 
@@ -123,7 +123,7 @@ func TestGetAppPasswordHandler_UnauthorizedWhenNoPrincipal(t *testing.T) {
 
 func TestGetAppPasswordHandler_ServerErrorOnIssueFailure(t *testing.T) {
 	issuer := &stubIssuer{issueErr: errors.New("boom")}
-	h := GetAppPasswordHandler(V2, issuer)
+	h := GetAppPasswordHandler(V2, issuer, nil)
 	rr := httptest.NewRecorder()
 	r := newAuthedRequest(http.MethodGet, &auth.Principal{UID: "alice", AuthMethod: auth.AuthMethodBasic})
 
@@ -196,4 +196,96 @@ func TestDeleteAppPasswordHandler_ServerErrorOnRevokeFailure(t *testing.T) {
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("status: want 500, got %d", rr.Code)
 	}
+}
+
+// spyTokenWrapper records WrapKeyForToken calls (ADR-0102).
+type spyTokenWrapper struct {
+	calls []wrapCall
+	err   error
+}
+
+type wrapCall struct {
+	id   string
+	raw  string
+	priv []byte
+}
+
+func (s *spyTokenWrapper) WrapKeyForToken(_ context.Context, appPasswordID, tokenRaw string, priv []byte) error {
+	s.calls = append(s.calls, wrapCall{id: appPasswordID, raw: tokenRaw, priv: priv})
+	return s.err
+}
+
+// TestGetAppPasswordHandlerWrapsKeyForToken pins ADR-0102 wrap-at-issuance at
+// the OCS endpoint: a SESSION-authenticated request carries the middleware-
+// attached unlocked key, so the new token gets its wrap; a wrap failure is a
+// loud server error; a keyless principal (basic/bearer) issues without
+// wrapping — the pre-enrollment behavior.
+func TestGetAppPasswordHandlerWrapsKeyForToken(t *testing.T) {
+	priv := []byte("0123456789abcdef0123456789abcdef")
+	sessionPrincipal := &auth.Principal{UID: "alice", AuthMethod: auth.AuthMethodSession, UnlockedKey: priv}
+
+	t.Run("session principal with unlocked key wraps", func(t *testing.T) {
+		issuer := &stubIssuer{issueToken: "tok-123"}
+		keys := &spyTokenWrapper{}
+		h := GetAppPasswordHandler(V2, issuer, keys)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, newAuthedRequest(http.MethodGet, sessionPrincipal))
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status: want 200, got %d", rr.Code)
+		}
+		_, _, data := decodeOCS(t, rr.Body.Bytes())
+		if data["apppassword"] != "tok-123" {
+			t.Fatalf("apppassword: want tok-123, got %v", data["apppassword"])
+		}
+		if len(keys.calls) != 1 {
+			t.Fatalf("wrap calls = %v, want 1", keys.calls)
+		}
+		got := keys.calls[0]
+		if got.id != "tok-id" || got.raw != "tok-123" || string(got.priv) != string(priv) {
+			t.Errorf("wrap call = %+v, want (tok-id, tok-123, the unlocked key)", got)
+		}
+	})
+
+	t.Run("wrap error fails loudly", func(t *testing.T) {
+		issuer := &stubIssuer{issueToken: "tok-123"}
+		keys := &spyTokenWrapper{err: errors.New("db gone")}
+		h := GetAppPasswordHandler(V2, issuer, keys)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, newAuthedRequest(http.MethodGet, sessionPrincipal))
+
+		if rr.Code != http.StatusInternalServerError {
+			t.Fatalf("wrap failure: want 500, got %d", rr.Code)
+		}
+	})
+
+	t.Run("no unlocked key issues without wrapping", func(t *testing.T) {
+		issuer := &stubIssuer{issueToken: "tok-123"}
+		keys := &spyTokenWrapper{}
+		h := GetAppPasswordHandler(V2, issuer, keys)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, newAuthedRequest(http.MethodGet, &auth.Principal{UID: "alice", AuthMethod: auth.AuthMethodBasic}))
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status: want 200, got %d", rr.Code)
+		}
+		_, _, data := decodeOCS(t, rr.Body.Bytes())
+		if data["apppassword"] != "tok-123" {
+			t.Fatalf("apppassword: want tok-123, got %v", data["apppassword"])
+		}
+		if len(keys.calls) != 0 {
+			t.Errorf("wrap called without an unlocked key: %v", keys.calls)
+		}
+	})
+
+	t.Run("nil wrapper issues without wrapping", func(t *testing.T) {
+		issuer := &stubIssuer{issueToken: "tok-123"}
+		h := GetAppPasswordHandler(V2, issuer, nil)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, newAuthedRequest(http.MethodGet, sessionPrincipal))
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status: want 200, got %d", rr.Code)
+		}
+	})
 }

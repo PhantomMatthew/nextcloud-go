@@ -1,6 +1,7 @@
 package ocs
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
@@ -8,13 +9,21 @@ import (
 
 type AppPasswordIssuer interface {
 	// Issue mints a permanent app password for the principal, returning the
-	// raw token and the token id (the OCS endpoint discards the id; the
-	// login-v2 grant needs it for the ADR-0102 key wrap).
+	// raw token and the token id (the id names the app_passwords row — the
+	// ADR-0102 key wrap keys off it).
 	Issue(r *http.Request, principal *auth.Principal) (raw, tokenID string, err error)
 	Revoke(r *http.Request, principal *auth.Principal, raw string) error
 }
 
-func GetAppPasswordHandler(version Version, issuer AppPasswordIssuer) http.Handler {
+// AppTokenKeyWrapper seals an unlocked private key under a newly issued app
+// password's raw token (ADR-0102 wrap-at-issuance). *encrypt.SQLResolver
+// satisfies it structurally; ocs must not import encrypt, so the seam is
+// declared here.
+type AppTokenKeyWrapper interface {
+	WrapKeyForToken(ctx context.Context, appPasswordID, tokenRaw string, priv []byte) error
+}
+
+func GetAppPasswordHandler(version Version, issuer AppPasswordIssuer, keys AppTokenKeyWrapper) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := auth.UserFromContext(r.Context())
 		if !ok {
@@ -25,10 +34,24 @@ func GetAppPasswordHandler(version Version, issuer AppPasswordIssuer) http.Handl
 			writeForbidden(w, r, version, "App password can't generate app password")
 			return
 		}
-		token, _, err := issuer.Issue(r, principal)
+		token, tokenID, err := issuer.Issue(r, principal)
 		if err != nil {
 			writeServerError(w, r, version)
 			return
+		}
+		// Wrap-at-issuance (ADR-0102), mirroring the login-v2 grant: when the
+		// authenticating principal carries an unlocked key (a session-
+		// authenticated request of an enrolled user — the 4-a middleware
+		// attach), seal it under the new token so the token's requests can
+		// unlock files. A wrap failure fails LOUDLY: a silently unwrapped
+		// token would 403 every file. Without a key (basic/bearer issuance)
+		// the token authenticates but cannot unlock files until it is
+		// re-issued from an unlocked session — the pre-enrollment behavior.
+		if principal.UnlockedKey != nil && keys != nil {
+			if err := keys.WrapKeyForToken(r.Context(), tokenID, token, principal.UnlockedKey); err != nil {
+				writeServerError(w, r, version)
+				return
+			}
 		}
 		payload := Obj(K("apppassword", token))
 		writeOK(w, r, version, payload)

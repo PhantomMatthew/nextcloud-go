@@ -133,10 +133,12 @@ func (a *App) mountRoutes() error {
 	var sessionKeys auth.SessionKeyUnlocker
 	var loginKeys web.LoginKeyHandler
 	var tokenKeys auth.AppTokenKeyUnlocker
+	var tokenWrapper ocs.AppTokenKeyWrapper
 	if a.keyResolver != nil {
 		sessionKeys = a.keyResolver
 		loginKeys = a.keyResolver
 		tokenKeys = a.keyResolver
+		tokenWrapper = a.keyResolver
 	}
 	appPasswordVerifier.Keys = tokenKeys
 	authCfg := auth.MiddlewareConfig{
@@ -154,8 +156,8 @@ func (a *App) mountRoutes() error {
 		router.Handle(m, "/ocs/v2.php/cloud/user", ocs.CloudUserHandler(ocs.V2), httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
 	}
 	for _, m := range []string{"GET", "HEAD"} {
-		router.Handle(m, "/ocs/v1.php/core/getapppassword", ocs.GetAppPasswordHandler(ocs.V1, issuer), httpx.Middleware(ocs.Auth(ocs.V1, authCfg)))
-		router.Handle(m, "/ocs/v2.php/core/getapppassword", ocs.GetAppPasswordHandler(ocs.V2, issuer), httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
+		router.Handle(m, "/ocs/v1.php/core/getapppassword", ocs.GetAppPasswordHandler(ocs.V1, issuer, tokenWrapper), httpx.Middleware(ocs.Auth(ocs.V1, authCfg)))
+		router.Handle(m, "/ocs/v2.php/core/getapppassword", ocs.GetAppPasswordHandler(ocs.V2, issuer, tokenWrapper), httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
 	}
 	router.Handle("DELETE", "/ocs/v1.php/core/apppassword", ocs.DeleteAppPasswordHandler(ocs.V1, issuer), httpx.Middleware(ocs.Auth(ocs.V1, authCfg)))
 	router.Handle("DELETE", "/ocs/v2.php/core/apppassword", ocs.DeleteAppPasswordHandler(ocs.V2, issuer), httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))

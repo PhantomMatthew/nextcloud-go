@@ -212,8 +212,10 @@ type KeyInventory struct {
 	// TokenWraps counts app_token_keys rows (ADR-0102 app-token key wraps).
 	TokenWraps int64
 	// UnwrappedEnrolledTokens counts app passwords of ENROLLED users with no
-	// app_token_keys row — pre-enrollment, imported, or OCS-issued tokens
-	// that authenticate but cannot unlock files until re-issued.
+	// app_token_keys row — pre-enrollment, imported, or keylessly-issued
+	// (app-password grant, basic/bearer OCS) tokens that authenticate but
+	// cannot unlock files until re-issued from a password login or an
+	// unlocked session.
 	UnwrappedEnrolledTokens int64
 }
 
