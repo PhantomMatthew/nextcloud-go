@@ -164,6 +164,9 @@ func (p *Plugin) invokeEntryMode(ctx context.Context, entry string, inHook bool,
 	switch {
 	case callErr != nil:
 		release(true)
+		if ferr := p.fuelKill(inst, entry); ferr != nil {
+			return ferr
+		}
 		return wrapTrap(callErr)
 	case freeErr != nil:
 		release(true)

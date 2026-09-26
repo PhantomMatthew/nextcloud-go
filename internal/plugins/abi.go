@@ -24,7 +24,7 @@ const (
 func (h *Host) registerHostModule(ctx context.Context) error {
 	b := h.rt.NewHostModuleBuilder("ncgo")
 	export := func(name string, fn any) {
-		b.NewFunctionBuilder().WithFunc(h.wrapHostTracing(name, h.wrapHostMetrics(name, fn))).Export(name)
+		b.NewFunctionBuilder().WithFunc(h.wrapHostFuel(name, h.wrapHostTracing(name, h.wrapHostMetrics(name, fn)))).Export(name)
 	}
 	export("log", h.log)
 

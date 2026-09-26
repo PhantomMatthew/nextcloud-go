@@ -1571,6 +1571,49 @@ func MemGrowModule(deltaPages int32) []byte {
 	return out
 }
 
+// FuelModule builds a call-metering probe (ADR-0103): recurse(n) calls
+// itself n times (pure guest-call depth, no loop back-edges), and spam(n)
+// calls the ncgo log host function n times from a counted loop, so tests can
+// trip a small fuel_per_call budget deterministically on guest entries and on
+// host-function entries respectively.
+func FuelModule() []byte {
+	s := guestSpec{
+		imports:   []imp{{"log", tLog}},
+		onInstall: i32c(0),
+	}
+	// Declared function indices: imports, then ncgo_abi_version, ncgo_alloc,
+	// ncgo_free, ncgo_on_install, then extras in order — recurse is first.
+	selfIdx := uint32(len(s.imports)) + 4 //nolint:gosec // G115: test modules have few imports
+
+	// recurse(n): n == 0 ? 0 : recurse(n-1)
+	recurse := make([]byte, 0, 24)
+	recurse = append(recurse, opLocalGet, 0x00, opI32Eqz, opIf, i32)
+	recurse = append(recurse, i32c(0)...)
+	recurse = append(recurse, opElse)
+	recurse = append(recurse, opLocalGet, 0x00)
+	recurse = append(recurse, i32c(1)...)
+	recurse = append(recurse, opI32Sub, opCall)
+	recurse = append(recurse, u32(selfIdx)...)
+	recurse = append(recurse, opEnd)
+	s.extras = append(s.extras, extraFn{name: "recurse", typ: tAlloc, expr: recurse})
+
+	// spam(n): for i := 0; i < n; i++ { log(1, 64, 0) }; return 0.
+	// Local 1 is i (param 0 is n).
+	spam := make([]byte, 0, 32)
+	spam = append(spam, opBlock, blockVoid, opLoop, blockVoid)
+	spam = append(spam, opLocalGet, 0x01)
+	spam = append(spam, opLocalGet, 0x00, opI32GeU, opBrIf, 0x01)
+	spam = append(spam, logCall(64, 0)...)
+	spam = append(spam, opDrop)
+	spam = append(spam, opLocalGet, 0x01)
+	spam = append(spam, i32c(1)...)
+	spam = append(spam, opI32Add, opLocalSet, 0x01, opBr, 0x00)
+	spam = append(spam, opEnd, opEnd)
+	spam = append(spam, i32c(0)...)
+	s.extras = append(s.extras, extraFn{name: "spam", typ: tAlloc, locals: 1, expr: spam})
+	return s.build()
+}
+
 // NoExportsModule is a valid empty wasm module.
 func NoExportsModule() []byte {
 	return []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}

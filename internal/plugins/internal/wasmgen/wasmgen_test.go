@@ -19,6 +19,7 @@ func TestModulesCompile(t *testing.T) {
 		{"wasi", WASIModule()},
 		{"wasi-fd-write", WASIFdWriteModule(1, []byte("a\n"), []byte("b"))},
 		{"memgrow", MemGrowModule(32)},
+		{"fuel", FuelModule()},
 		{"noexports", NoExportsModule()},
 		{"loop", LoopModule()},
 		{"oob", OOBLogModule()},

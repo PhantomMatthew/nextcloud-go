@@ -10,6 +10,7 @@ import (
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
+	"github.com/tetratelabs/wazero/experimental"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/appconfig"
@@ -142,6 +143,14 @@ type Host struct {
 	// process restart.
 	handleAgg *handleAggregate
 
+	// fuelMeters maps a live module instance to its fuel_per_call meter
+	// (ADR-0103) so the compile-time guest listener and the host-function
+	// wrapper can find the per-call meter by calling module. Only
+	// fuel_per_call plugins register; the map is bounded by their live
+	// instance count.
+	fuelMu     sync.RWMutex
+	fuelMeters map[api.Module]*callMeter
+
 	// dispatch tracks started plugins eligible for event delivery.
 	dispMu      sync.RWMutex
 	dispatch    map[*Plugin]struct{}
@@ -192,7 +201,7 @@ func NewHost(ctx context.Context, cfg HostConfig, logger *slog.Logger) (*Host, e
 	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().
 		WithCloseOnContextDone(true).
 		WithMemoryLimitPages(pages))
-	h := &Host{rt: rt, logger: logger, cfg: cfg, handleTabs: make(map[api.Module]*handleTable), dispatch: make(map[*Plugin]struct{}), httpRate: make(map[string]*tokenBucket), dbConc: make(map[string]int), handleAgg: newHandleAggregate()}
+	h := &Host{rt: rt, logger: logger, cfg: cfg, handleTabs: make(map[api.Module]*handleTable), dispatch: make(map[*Plugin]struct{}), httpRate: make(map[string]*tokenBucket), dbConc: make(map[string]int), handleAgg: newHandleAggregate(), fuelMeters: make(map[api.Module]*callMeter)}
 	h.httpGuarded = guardedHTTPClient(ctx, cfg.HTTPClient, logger)
 	if cfg.Bus != nil {
 		h.unsubEvents = cfg.Bus.Subscribe(h.dispatchEvent)
@@ -301,7 +310,16 @@ func (h *Host) Load(ctx context.Context, m *Manifest, wasm []byte) (*Plugin, err
 	if err := m.Validate(); err != nil {
 		return nil, err
 	}
-	compiled, err := h.rt.CompileModule(ctx, wasm)
+	// fuel_per_call (ADR-0103) compiles the call-metering listener into the
+	// module: wazero binds function listeners at CompileModule, so the
+	// factory must ride the compile context (attaching it at
+	// InstantiateModule is silently ignored). fuel_per_call == 0 compiles
+	// without a factory — byte-identical to the unmetered path.
+	compileCtx := ctx
+	if m.Runtime.FuelPerCall > 0 {
+		compileCtx = experimental.WithFunctionListenerFactory(ctx, h.fuelListenerFactory())
+	}
+	compiled, err := h.rt.CompileModule(compileCtx, wasm)
 	if err != nil {
 		return nil, fmt.Errorf("plugins: compile: %w", err)
 	}

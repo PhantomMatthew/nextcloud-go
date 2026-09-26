@@ -416,6 +416,9 @@ func (p *Plugin) beginRequest(req *http.Request) (*pendingResponse, error) {
 	switch {
 	case callErr != nil:
 		pr.release(true)
+		if ferr := p.fuelKill(inst, entry); ferr != nil {
+			return nil, ferr
+		}
 		return nil, wrapTrap(callErr)
 	case freeErr != nil:
 		pr.release(true)
@@ -460,6 +463,9 @@ func (pr *pendingResponse) callExport(name string, args ...uint64) (uint64, erro
 	results, err := fn.Call(pr.ctx, args...)
 	if err != nil {
 		pr.broken = true
+		if ferr := pr.p.fuelKill(pr.inst, name); ferr != nil {
+			return 0, ferr
+		}
 		return 0, wrapTrap(err)
 	}
 	if len(results) == 0 {

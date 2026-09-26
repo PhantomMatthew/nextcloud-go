@@ -162,6 +162,9 @@ type instance struct {
 	handles *handleTable
 	stdout  *stdioLogWriter
 	stderr  *stdioLogWriter
+	// fuel is the instance's fuel_per_call meter (ADR-0103), nil when the
+	// manifest leaves it unset.
+	fuel *callMeter
 }
 
 // close releases leftover handles and closes the module.
@@ -170,6 +173,7 @@ func (in *instance) close(h *Host) {
 		h.logHandleCleanup(err)
 	}
 	h.unregisterHandles(in.mod)
+	h.unregisterFuelMeter(in.mod)
 	_ = in.mod.Close(context.Background())
 	// No writes can arrive after module close; flush any partial stdio line.
 	if in.stdout != nil {
@@ -255,6 +259,13 @@ func (im *instanceManager) instantiate(ctx context.Context) (*instance, error) {
 	}
 	inst := &instance{mod: mod, handles: newSharedHandleTable(im.host.handleAgg, im.manifest.Plugin.ID), stdout: stdout, stderr: stderr}
 	im.host.registerHandles(mod, inst.handles)
+	// fuel_per_call (ADR-0103): arm the instance's meter after _initialize,
+	// so toolchain runtime setup stays unmetered (bounded by cpu_timeout_ms
+	// exactly as before); acquire re-arms the meter for each plugin call.
+	if budget := im.manifest.Runtime.FuelPerCall; budget > 0 {
+		inst.fuel = &callMeter{budget: budget}
+		im.host.registerFuelMeter(mod, inst.fuel)
+	}
 	return inst, nil
 }
 
@@ -275,12 +286,17 @@ func (im *instanceManager) warm(ctx context.Context) error {
 
 // acquire hands out an instance per the model. The returned release must be
 // called with broken=true when the call trapped, which destroys the instance
-// (spec: any trap destroys the instance).
+// (spec: any trap destroys the instance). A successful checkout re-arms the
+// instance's fuel meter (ADR-0103) so every call gets the full budget; calls
+// on one instance are serialized, so the plain counter is race-free.
 func (im *instanceManager) acquire(ctx context.Context) (inst *instance, release func(broken bool), err error) {
 	switch im.manifest.Runtime.InstanceModel {
 	case "pooled":
 		select {
 		case inst := <-im.pool:
+			if inst.fuel != nil {
+				inst.fuel.reset()
+			}
 			return inst, func(broken bool) { im.releasePooled(ctx, inst, broken) }, nil
 		case <-ctx.Done():
 			return nil, nil, ctx.Err()
@@ -296,6 +312,9 @@ func (im *instanceManager) acquire(ctx context.Context) (inst *instance, release
 			im.single = inst
 		}
 		inst := im.single
+		if inst.fuel != nil {
+			inst.fuel.reset()
+		}
 		return inst, func(broken bool) {
 			// A clean release over the memory limit destroys the singleton
 			// exactly like a trap does (ADR-0095).
@@ -311,6 +330,9 @@ func (im *instanceManager) acquire(ctx context.Context) (inst *instance, release
 		inst, err := im.instantiate(ctx)
 		if err != nil {
 			return nil, nil, err
+		}
+		if inst.fuel != nil {
+			inst.fuel.reset()
 		}
 		return inst, func(bool) {
 			im.observeMemory(inst)

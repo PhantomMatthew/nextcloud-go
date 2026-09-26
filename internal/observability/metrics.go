@@ -50,6 +50,9 @@ const (
 	// MetricPluginMemoryLimitExceededTotal counts instances destroyed for
 	// exceeding the manifest's runtime.memory_limit_mb (ADR-0095).
 	MetricPluginMemoryLimitExceededTotal = "ncgo_plugin_memory_limit_exceeded_total"
+	// MetricPluginFuelExceededTotal counts plugin calls killed for exceeding
+	// the manifest's runtime.fuel_per_call function-entry budget (ADR-0103).
+	MetricPluginFuelExceededTotal = "ncgo_plugin_fuel_exceeded_total"
 )
 
 // histogramBuckets are the fixed latency bucket upper bounds (seconds) used
@@ -135,6 +138,8 @@ func NewRegistry() *Registry {
 		"Per-plugin linear-memory high-water mark in bytes.", "plugin")
 	r.RegisterCounter(MetricPluginMemoryLimitExceededTotal,
 		"Per-plugin instances destroyed for exceeding runtime.memory_limit_mb.", "plugin")
+	r.RegisterCounter(MetricPluginFuelExceededTotal,
+		"Per-plugin calls killed for exceeding runtime.fuel_per_call.", "plugin")
 	return r
 }
 

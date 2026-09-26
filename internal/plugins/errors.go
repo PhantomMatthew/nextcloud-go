@@ -29,6 +29,11 @@ var (
 	ErrMissingExport   = errors.New("plugins: missing required export")
 	ErrForbiddenImport = errors.New("plugins: forbidden import")
 	ErrTrap            = errors.New("plugins: wasm trap")
+	// ErrFuelExhausted kills a plugin call that exceeds its manifest's
+	// runtime.fuel_per_call budget of wasm function entries (ADR-0103). The
+	// instance is destroyed exactly like a trap, but the error is never
+	// wrapped in ErrTrap.
+	ErrFuelExhausted = errors.New("plugins: fuel exhausted")
 )
 
 // PluginError is a non-zero i32 returned by a plugin entry point.

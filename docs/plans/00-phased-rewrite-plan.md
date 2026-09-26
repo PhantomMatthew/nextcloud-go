@@ -191,6 +191,27 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-27** — Plugin fuel enforcement as wasm function-call metering
+  (ADR-0103): `runtime.fuel_per_call` — parsed since Phase 0, documented as
+  unenforced ("wazero v1 has no fuel") — now kills any plugin call that
+  exceeds its budget of wasm **function entries** (guest + ncgo
+  host-function entries) with `ErrFuelExhausted`, destroying the instance
+  with trap semantics. The unit is redefined from instructions to function
+  calls: wazero v1.12.0 (latest) carries no instruction fuel anywhere
+  (wazero/wazero#422 open; the thevilledev/wazero fork rejected as a
+  critical-path runtime dependency), so the official
+  `experimental.WithFunctionListenerFactory` — attached at CompileModule,
+  the only wiring that wazero honors — counts entries, a per-instance meter
+  re-armed at every `acquire` checkout across the three instance models,
+  and a panic-sentinel kills the in-flight call at the tripping entry
+  (CloseWithExitCode-from-listener was measured to notice only at loop
+  back-edges: 1,000,001 entries against a budget of 50). Residual
+  approximation gap: intra-function tight loops stay bounded only by
+  `cpu_timeout_ms`. Kills increment
+  `ncgo_plugin_fuel_exceeded_total{plugin}` and show in the console
+  plugins panel; `fuel_per_call = 0` restores the byte-identical unmetered
+  path. The ADR-0056 deviation note and the spec's runtime/limits/§12
+  sections are updated.
 - **2026-09-26** — Phase 5w-4b: SSE **app-token key wraps** (ADR-0102),
   delivering ADR-0100's phase 4-b: app-password/bearer clients of enrolled
   users unlock files again (4-a left them at per-file `ErrKeyLocked` →

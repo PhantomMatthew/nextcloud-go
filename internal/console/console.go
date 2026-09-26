@@ -372,6 +372,7 @@ type pluginInfo struct {
 	CapabilityDenials    int64   `json:"capability_denials"`
 	MemoryHighWaterBytes int64   `json:"memory_high_water_bytes"`
 	MemoryLimitExceeded  int64   `json:"memory_limit_exceeded"`
+	FuelExceeded         int64   `json:"fuel_exceeded"`
 }
 
 // histogramMerge accumulates histogram series that share the registry's
@@ -486,6 +487,9 @@ func (h *Handler) servePlugins(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, s := range reg.CounterSeries(observability.MetricPluginMemoryLimitExceededTotal) {
 		row(s.Labels).MemoryLimitExceeded += s.Value
+	}
+	for _, s := range reg.CounterSeries(observability.MetricPluginFuelExceededTotal) {
+		row(s.Labels).FuelExceeded += s.Value
 	}
 	for _, s := range reg.HistogramSeries(observability.MetricPluginHostCallDurationSeconds) {
 		merge(hostHist, s.Labels).add(s)

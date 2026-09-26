@@ -84,7 +84,7 @@ instance_model  = "pooled"          # per_request | pooled | singleton
 pool_size       = 4                  # only for pooled, 1..32
 memory_limit_mb = 32                 # max linear memory
 cpu_timeout_ms  = 5000               # per host call to plugin
-fuel_per_call   = 100_000_000        # wazero metering budget
+fuel_per_call   = 100_000_000        # max wasm function entries per plugin call (ADR-0103; unit is function calls — an interim approximation of instruction fuel)
 
 [capabilities]
 db.read         = ["calendar_*"]     # table name globs
@@ -452,7 +452,7 @@ Enforced by wazero configuration per instance:
 | Limit | Default | Configurable in Manifest |
 |---|---|---|
 | Linear memory max | 32 MiB | `runtime.memory_limit_mb` (host-capped at 256) |
-| CPU fuel per host call | 100M units | `runtime.fuel_per_call` |
+| Function entries per plugin call | unlimited (0) | `runtime.fuel_per_call` — enforced as wasm **function-call** metering (guest + host-function entries; ADR-0103), an interim approximation of instruction fuel: a tight loop inside one function stays bounded only by `cpu_timeout_ms` |
 | Wall-clock timeout per host call | 5 s | `runtime.cpu_timeout_ms` (host-capped at 30s) |
 | Max open stream handles | 64 | not configurable |
 | Max open DB rows handles | 16 | not configurable |
@@ -673,6 +673,8 @@ Per-plugin admin dashboard (Phase 4 UI):
 - Memory high-water mark — delivered as gauge
   `ncgo_plugin_memory_high_water_bytes{plugin}` (ADR-0095), set-max'd from
   the instance's linear-memory size at every release/close
+- Fuel-budget kills — counter `ncgo_plugin_fuel_exceeded_total{plugin}`
+  (ADR-0103), one per call killed for exceeding `runtime.fuel_per_call`
 - Capability denial events (security signal)
 
 ## 13. Security Review Checklist
@@ -721,6 +723,21 @@ Full ABI implementation is the bulk of Phase 4.
 
 ## Change Log
 
+- **2026-09-27** — `runtime.fuel_per_call` is now **enforced** (ADR-0103):
+  as wasm function-call metering, not instruction fuel — wazero v1.12.0 has
+  no instruction-fuel API anywhere (wazero/wazero#422 open; the
+  thevilledev/wazero fork rejected as a critical-path dependency), so the
+  official `experimental.WithFunctionListenerFactory` counts function
+  entries (guest + ncgo host-function entries) per plugin call and kills
+  the call with `ErrFuelExhausted` past the budget, destroying the instance
+  with trap semantics (pool replenished / singleton dropped / per_request
+  closed). Kills are counted in
+  `ncgo_plugin_fuel_exceeded_total{plugin}` and shown in the console
+  plugins panel. `0` (unset) stays unlimited with zero added guest-path
+  overhead. Residual gap, stated loudly: the unit changed from
+  "instructions" (never enforced) to "function calls", and a tight loop
+  inside one function makes no calls — it stays bounded only by
+  `cpu_timeout_ms`.
 - **2026-09-26** — Phase 5v (ADR-0095): per-plugin memory introspection. The
   registry gains a gauge kind and
   `ncgo_plugin_memory_high_water_bytes{plugin}` tracks each plugin's
@@ -1001,8 +1018,9 @@ Full ABI implementation is the bulk of Phase 4.
   `maxUnknownJobAttempts` (3) times, then completed with a warn log —
   ending the infinite retry loop for leftovers from before this cleanup
   existed. **Newly confirmed deviations (from review):**
-  `runtime.fuel_per_call` is parsed but unenforced (wazero v1 has no
-  fuel-metering API; CPU budget remains wall-clock timeout only);
+  `runtime.fuel_per_call` was then parsed but unenforced — **enforced since
+  ADR-0103 (2026-09-27) as wasm function-call metering**, the unit redefined
+  from instructions to function entries;
   per-plugin `runtime.memory_limit_mb` was then validated but not applied —
   since Phase 5v (ADR-0095) it is soft-enforced, retrospectively: an
   instance over the limit after a completed call is destroyed, counted in

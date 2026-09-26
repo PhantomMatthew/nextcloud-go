@@ -250,6 +250,7 @@ func TestRegistryZeroSeriesRender(t *testing.T) {
 		{MetricPluginEntryCallDurationSeconds, "histogram"},
 		{MetricPluginMemoryHighWaterBytes, "gauge"},
 		{MetricPluginMemoryLimitExceededTotal, "counter"},
+		{MetricPluginFuelExceededTotal, "counter"},
 	} {
 		if !strings.Contains(out, "# HELP "+fam.name+" ") {
 			t.Errorf("zero-series render missing HELP for %s:\n%s", fam.name, out)

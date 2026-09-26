@@ -210,6 +210,9 @@ func (p *Plugin) callPropGetter(ctx context.Context, entry, path string) (string
 	switch {
 	case callErr != nil:
 		release(true)
+		if ferr := p.fuelKill(inst, entry); ferr != nil {
+			return "", ferr
+		}
 		return "", wrapTrap(callErr)
 	case freeErr != nil:
 		release(true)

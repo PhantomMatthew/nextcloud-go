@@ -120,8 +120,9 @@ A strict review of the Phase 4 plugin stack found three functional gaps:
   unless granted) remains pending.~~ (**Resolved by ADR-0057**: egress IP
   guard with the `http.outbound_allow_private` grant.)
 - **Newly confirmed spec deviations** (recorded in the spec Change Log):
-  `runtime.fuel_per_call` is parsed but unenforced (wazero v1 has no fuel
-  API; CPU budget is wall-clock timeout only), per-plugin
+  ~~`runtime.fuel_per_call` is parsed but unenforced (wazero v1 has no fuel
+  API; CPU budget is wall-clock timeout only)~~ (**enforced as
+  function-call metering in ADR-0103**), per-plugin
   `runtime.memory_limit_mb` is validated but not applied (host-global cap
   only), and trap-during-request returns 502 (spec text corrected from
   500).

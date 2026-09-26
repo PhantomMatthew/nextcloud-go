@@ -140,6 +140,10 @@ func testHandler() (*Handler, *fakeUserStore, *fakeJobsStore, *fakeNotifsStore) 
 		reg.IncCounter(observability.MetricPluginMemoryLimitExceededTotal,
 			observability.Label{Name: "plugin", Value: "alpha"})
 	}
+	for i := 0; i < 3; i++ {
+		reg.IncCounter(observability.MetricPluginFuelExceededTotal,
+			observability.Label{Name: "plugin", Value: "alpha"})
+	}
 	// beta: entry-point traffic only (no host families at all).
 	ec := func(entry, result string) {
 		reg.IncCounter(observability.MetricPluginEntryCallsTotal,
@@ -568,6 +572,7 @@ type pluginRow struct {
 	CapabilityDenials    int64   `json:"capability_denials"`
 	MemoryHighWaterBytes int64   `json:"memory_high_water_bytes"`
 	MemoryLimitExceeded  int64   `json:"memory_limit_exceeded"`
+	FuelExceeded         int64   `json:"fuel_exceeded"`
 }
 
 func TestConsolePluginsPayload(t *testing.T) {
@@ -610,6 +615,9 @@ func TestConsolePluginsPayload(t *testing.T) {
 	if alpha.MemoryLimitExceeded != 2 {
 		t.Errorf("alpha memory limit exceeded = %d, want 2", alpha.MemoryLimitExceeded)
 	}
+	if alpha.FuelExceeded != 3 {
+		t.Errorf("alpha fuel exceeded = %d, want 3", alpha.FuelExceeded)
+	}
 	approx := func(got, want float64) bool { return math.Abs(got-want) < 1e-9 }
 	if !approx(alpha.HostCallMeanSeconds, 0.18) {
 		t.Errorf("alpha host mean = %v, want 0.18", alpha.HostCallMeanSeconds)
@@ -630,7 +638,7 @@ func TestConsolePluginsPayload(t *testing.T) {
 		t.Errorf("beta entry calls/errors = %d/%d, want 4/1", beta.EntryCalls, beta.EntryErrors)
 	}
 	if beta.HostCalls != 0 || beta.HostErrors != 0 || beta.CapabilityDenials != 0 || beta.StorageBytes != 0 ||
-		beta.MemoryHighWaterBytes != 0 || beta.MemoryLimitExceeded != 0 {
+		beta.MemoryHighWaterBytes != 0 || beta.MemoryLimitExceeded != 0 || beta.FuelExceeded != 0 {
 		t.Errorf("beta zero families = %+v", beta)
 	}
 	if !approx(beta.EntryCallMeanSeconds, 0.101) {
@@ -645,7 +653,7 @@ func TestConsolePluginsPayload(t *testing.T) {
 		t.Errorf("delta memory high-water = %d, want %d", delta.MemoryHighWaterBytes, 768<<10)
 	}
 	if delta.HostCalls != 0 || delta.EntryCalls != 0 || delta.CapabilityDenials != 0 ||
-		delta.StorageBytes != 0 || delta.MemoryLimitExceeded != 0 {
+		delta.StorageBytes != 0 || delta.MemoryLimitExceeded != 0 || delta.FuelExceeded != 0 {
 		t.Errorf("delta zero families = %+v", delta)
 	}
 
@@ -656,7 +664,7 @@ func TestConsolePluginsPayload(t *testing.T) {
 	}
 	if gamma.HostCalls != 0 || gamma.EntryCalls != 0 || gamma.CapabilityDenials != 0 ||
 		gamma.HostCallMeanSeconds != 0 || gamma.EntryCallP95Seconds != 0 ||
-		gamma.MemoryHighWaterBytes != 0 || gamma.MemoryLimitExceeded != 0 {
+		gamma.MemoryHighWaterBytes != 0 || gamma.MemoryLimitExceeded != 0 || gamma.FuelExceeded != 0 {
 		t.Errorf("gamma zero families = %+v", gamma)
 	}
 }

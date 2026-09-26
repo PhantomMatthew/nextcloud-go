@@ -68,6 +68,11 @@ func (p *Plugin) callInner(ctx context.Context, entry string, inHook bool, args 
 	results, err := fn.Call(callCtx, args...)
 	if err != nil {
 		release(true)
+		// A fuel kill is not a trap: it maps to ErrFuelExhausted, though the
+		// instance is destroyed with the same trap semantics (ADR-0103).
+		if ferr := p.fuelKill(inst, entry); ferr != nil {
+			return nil, ferr
+		}
 		return nil, wrapTrap(err)
 	}
 	release(false)
