@@ -191,6 +191,17 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-26** — Phase 5w: SSE per-user keys **design** (ADR-0096),
+  closing ADR-0074's deferral with the missing per-recipient wrapping +
+  admin-recovery design. Key hierarchy: random per-file key (v3 envelope
+  header `"NCGOENC3" || keyUUID || salt`), per-user keys sealed under the
+  master key, a `file_keys` wrap table with AEAD-bound wraps, a narrow
+  `KeyResolver` seam at the storage decorator (nil = today's behavior,
+  bit-compatible), share-grant wrap / revoke-unwrap integration, and
+  master-key recovery built into the chain. Implementation is phased
+  (1 envelope+resolver, 2 sharing, 3 lifecycle+CLI, 4 password-wrapped user
+  keys — the only phase that changes the threat model, with its own ADR);
+  no code in this increment.
 - **2026-09-26** — Phase 5v: per-plugin memory introspection (ADR-0095). The
   two long-deferred memory items (ADR-0055's high-water carve-out, ADR-0091's
   out-of-scope note, the spec's "validated but not applied"

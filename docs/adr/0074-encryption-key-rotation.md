@@ -179,8 +179,10 @@ Verified facts that shape the design:
 - **Filename encryption** — deferred: it changes every storage consumer
   (filecache paths, DAV listings, search, shares) and needs its own
   design phase.
-- **Per-user keys** — deferred: sharing requires per-recipient key
-  wrapping and an admin-recovery design.
+- ~~**Per-user keys** — deferred: sharing requires per-recipient key
+  wrapping and an admin-recovery design.~~ (**design landed in ADR-0096** —
+  key hierarchy, per-recipient wrapping, recovery chain, and phased
+  implementation; code per phase)
 - **S3 SSE-C** — rejected: redundant with the ADR-0052 decorator. The
   SSE-C key would still be server-held (identical threat model), and the
   feature adds per-request header plumbing for no security gain.
