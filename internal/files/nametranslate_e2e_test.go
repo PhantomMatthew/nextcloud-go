@@ -23,13 +23,15 @@ import (
 // TranslatingStore as DAV.Meta (phase 2), the lock/trash/version satellite
 // wrappers (phase 2), and — phase 3a — the RAW store as KeySharer.Meta
 // (share paths are ciphertext now), the share-metadata codec on the sharing
-// service, and the DAV cipher-mount seams. Users are flipped to scheme 1
-// individually by encryptUser (the server creation hook / phase-4 sweep do
-// this in production).
+// service, and the DAV cipher-mount seams. Phase 3b adds the translating
+// upload-session store. Users are flipped to scheme 1 individually by
+// encryptUser (the server creation hook / phase-4 sweep do this in
+// production).
 type nameE2EEnv struct {
 	*keyShareEnv
-	tmeta *files.TranslatingStore
-	xlate *files.NameTranslator
+	tmeta    *files.TranslatingStore
+	xlate    *files.NameTranslator
+	uploadFS *files.Uploads
 }
 
 func upgradeNameCrypt(t *testing.T, env *keyShareEnv, res *encrypt.SQLResolver) *nameE2EEnv {
@@ -50,7 +52,9 @@ func upgradeNameCrypt(t *testing.T, env *keyShareEnv, res *encrypt.SQLResolver) 
 	env.dav.Trash = files.NewTrash(env.dav.Storage, files.NewTranslatingTrashStore(files.NewSQLTrashStore(env.db), xlate), env.dav, env.users)
 	env.dav.Trash.LocationNamer = xlate.TrashLocationBase
 	env.dav.Versions = files.NewVersions(env.dav.Storage, files.NewTranslatingVersionStore(files.NewSQLVersionStore(env.db), xlate), env.dav, env.users)
-	return &nameE2EEnv{keyShareEnv: env, tmeta: tmeta, xlate: xlate}
+	// Phase 3b: upload sessions tokenize their destination.
+	uploadFS := files.NewUploads(env.dav.Storage, files.NewTranslatingUploadStore(files.NewSQLUploadStore(env.db), xlate), env.dav, env.users)
+	return &nameE2EEnv{keyShareEnv: env, tmeta: tmeta, xlate: xlate, uploadFS: uploadFS}
 }
 
 func newNameE2EEnv(t *testing.T, uids ...string) *nameE2EEnv {

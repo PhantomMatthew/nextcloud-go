@@ -2,6 +2,7 @@ package files
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"path"
 	"strings"
@@ -541,6 +542,88 @@ func (t *NameTranslator) OpenShareMeta(ctx context.Context, ownerUserID int64, s
 		return "", "", err
 	}
 	return abs, mount, nil
+}
+
+// ShareSubjectMeta computes the notification-subject token for a share row
+// (ADR-0104 §9, phase 3b): the share target's mount basename as an NCGOFN1
+// token under the target's OWN key — exactly SealShareMeta's mount_name_enc
+// construction, so the two are byte-identical for the same target
+// (deterministic). ctPath is the share row's ciphertext file_path; the
+// basename must come from the PLAINTEXT path, so it is recovered by
+// decrypting the target row's name token under its parent (the caller's ctx
+// is the owner's at grant time — their tree resolves). The returned key UUID
+// hex names the sealing key so the render side (the notifications
+// SubjectDecryptor seam) can resolve it in the VIEWER's ctx. A resolution
+// failure is loud — never a plaintext fallback.
+func (t *NameTranslator) ShareSubjectMeta(ctx context.Context, ownerUserID int64, ctPath string) (nameToken, keyUUIDHex string, err error) {
+	c := newTranslateCache()
+	np, err := NormalizePath(ctPath)
+	if err != nil {
+		return "", "", err
+	}
+	row, err := t.raw.GetByPath(ctx, ownerUserID, np)
+	if err != nil {
+		return "", "", err
+	}
+	dk, uuid, err := t.dkFor(ctx, c, row.KeyUUID)
+	if err != nil {
+		return "", "", err
+	}
+	var base string
+	if row.ParentID == nil {
+		// The root-share corner: the root's name is "" (never encrypted) and
+		// SealShareMeta tokens path.Base("/") for it — mirror that exactly.
+		base = path.Base(np)
+	} else {
+		base = row.Name
+		if row.NameScheme == encrypt.NameSchemeNCGOFN1 {
+			parent, err := t.rowByID(ctx, c, *row.ParentID)
+			if err != nil {
+				return "", "", err
+			}
+			base, err = t.decryptSegment(ctx, c, parent, row.Name)
+			if err != nil {
+				return "", "", err
+			}
+		}
+	}
+	nk, err := encrypt.DeriveNameKey(dk, uuid)
+	if err != nil {
+		return "", "", err
+	}
+	token, err := encrypt.EncryptName(nk, uuid, base)
+	if err != nil {
+		return "", "", err
+	}
+	return token, hex.EncodeToString(uuid[:]), nil
+}
+
+// DecryptSubjectName opens a §9 subject token in the VIEWER's ctx (ADR-0104
+// phase 3b — the notifications render seam): the key named by keyUUIDHex
+// (carried by the row's "ncgoNameScheme" marker param) resolves through the
+// viewer's own wrap rows, so a sharee opens the share-target token the grant
+// wrapped for them. An enrolled viewer without an unlocked session surfaces
+// ErrKeyLocked; a tampered token or a wrong key UUID surfaces ErrIntegrity;
+// malformed UUID hex is a plain error. Callers degrade every failure to the
+// placeholder — this method never falls back to the token.
+func (t *NameTranslator) DecryptSubjectName(ctx context.Context, keyUUIDHex, token string) (string, error) {
+	raw, err := hex.DecodeString(keyUUIDHex)
+	if err != nil {
+		return "", fmt.Errorf("files: subject name key uuid: %w", err)
+	}
+	if len(raw) != keyUUIDSize {
+		return "", fmt.Errorf("files: subject name key uuid is %d bytes, want %d", len(raw), keyUUIDSize)
+	}
+	c := newTranslateCache()
+	dk, uuid, err := t.dkFor(ctx, c, raw)
+	if err != nil {
+		return "", err
+	}
+	nk, err := encrypt.DeriveNameKey(dk, uuid)
+	if err != nil {
+		return "", err
+	}
+	return encrypt.DecryptName(nk, uuid, token)
 }
 
 // AnchorRow fetches the raw (ciphertext) row at an owner's ciphertext path —

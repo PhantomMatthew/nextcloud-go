@@ -2,6 +2,7 @@ package files
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -139,6 +140,69 @@ func TestShareOpenTamper(t *testing.T) {
 		OwnerUserID: env.uid, Path: "/rqZrAhgnaEN35P61yNTBQ3UuflDzpi5AUWAqpjg", MountNameEnc: mountEnc, AbsPathEnc: absEnc,
 	}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("missing target err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestShareSubjectMetaMatchesMountToken pins the phase-3b deterministic
+// construction (ADR-0104 §9): ShareSubjectMeta recomputes exactly the
+// SealShareMeta mount token for the same target — the basename recovered from
+// the PLAINTEXT path even though the row's tree token is parent-keyed — and
+// reports the sealing key's UUID hex; DecryptSubjectName round-trips it.
+func TestShareSubjectMetaMatchesMountToken(t *testing.T) {
+	ctx := context.Background()
+	env := newNameCoreEnv(t, encrypt.NameSchemeNCGOFN1)
+	env.mkdir(t, "/Photos", 0x10)
+	env.mkdir(t, "/Photos/2026", 0x20)
+
+	ctPath, mountEnc, _, err := env.tr.SealShareMeta(ctx, env.uid, "/Photos/2026")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, hexID, err := env.tr.ShareSubjectMeta(ctx, env.uid, ctPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != mountEnc {
+		t.Errorf("subject token = %q, want mount_name_enc %q", token, mountEnc)
+	}
+	uuid, _ := fixedKey(0x20)
+	if hexID != hex.EncodeToString(uuid[:]) {
+		t.Errorf("key uuid hex = %q, want %q", hexID, hex.EncodeToString(uuid[:]))
+	}
+	name, err := env.tr.DecryptSubjectName(ctx, hexID, token)
+	if err != nil || name != "2026" {
+		t.Errorf("decrypt = %q %v, want the basename 2026", name, err)
+	}
+}
+
+// TestDecryptSubjectNameFailures pins the render-side failure modes: bad hex
+// and a wrong-length UUID are plain errors, an unresolvable key propagates
+// the resolver error, and a tampered token is ErrIntegrity — the handler
+// degrades ALL of them to the placeholder, never emitting the token.
+func TestDecryptSubjectNameFailures(t *testing.T) {
+	ctx := context.Background()
+	env := newNameCoreEnv(t, encrypt.NameSchemeNCGOFN1)
+	env.mkdir(t, "/Photos", 0x10)
+	token, hexID, err := env.tr.ShareSubjectMeta(ctx, env.uid, env.cipher(t, "/Photos"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := env.tr.DecryptSubjectName(ctx, "zz", token); err == nil {
+		t.Error("bad hex accepted")
+	}
+	if _, err := env.tr.DecryptSubjectName(ctx, "abcd", token); err == nil {
+		t.Error("short hex accepted")
+	}
+	// A key UUID the resolver cannot unwrap (pruned wraps).
+	otherUUID, _ := fixedKey(0x99)
+	if _, err := env.tr.DecryptSubjectName(ctx, hex.EncodeToString(otherUUID[:]), token); err == nil {
+		t.Error("unresolvable key accepted")
+	}
+	// Tampered token: ErrIntegrity, never a plaintext fallback.
+	tampered := token[:len(token)-2] + "AA"
+	if _, err := env.tr.DecryptSubjectName(ctx, hexID, tampered); !errors.Is(err, encrypt.ErrIntegrity) {
+		t.Errorf("tampered token err = %v, want ErrIntegrity", err)
 	}
 }
 

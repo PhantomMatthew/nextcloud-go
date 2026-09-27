@@ -689,3 +689,86 @@ func (s *TranslatingVersionStore) RenamePath(ctx context.Context, userID int64, 
 }
 
 var _ VersionStore = (*TranslatingVersionStore)(nil)
+
+// TranslatingUploadStore carries ciphertext in uploads.destination (ADR-0104
+// §6, phase 3b): the session's destination path is tokenized at creation so a
+// DB-only reader never sees the plaintext upload target during the session's
+// lifetime. Create/UpdateDest translate through cipherPath — scheme 0 passes
+// through unchanged; scheme 1 stores the ciphertext path. The destination's
+// LEAF need not exist (the file is being uploaded) but its parent MUST: a
+// missing parent fails LOUDLY (cipherPath's ErrNotFound), never a plaintext
+// fallback. Get decrypts via PlainPath — the destination's ancestors exist by
+// construction, so a failure propagates (no degrade here). Delete passes
+// through (id-keyed). An empty Destination (transfer folder created without a
+// Destination header) passes through verbatim — it is the unset marker, not a
+// path.
+type TranslatingUploadStore struct {
+	raw UploadStore
+	t   *NameTranslator
+}
+
+// NewTranslatingUploadStore wraps raw with filename translation.
+func NewTranslatingUploadStore(raw UploadStore, t *NameTranslator) *TranslatingUploadStore {
+	return &TranslatingUploadStore{raw: raw, t: t}
+}
+
+// Raw returns the wrapped store (wiring audits and tests).
+func (s *TranslatingUploadStore) Raw() UploadStore { return s.raw }
+
+func (s *TranslatingUploadStore) Create(ctx context.Context, sess *UploadSession) error {
+	if sess == nil || sess.Destination == "" {
+		return s.raw.Create(ctx, sess) // the raw validation error / unset destination verbatim
+	}
+	np, err := NormalizePath(sess.Destination)
+	if err != nil {
+		return err
+	}
+	cp, err := s.t.cipherPath(ctx, newTranslateCache(), sess.UserID, np)
+	if err != nil {
+		return err
+	}
+	sess.Destination = cp
+	err = s.raw.Create(ctx, sess)
+	// The raw create re-read the row (ciphertext) into sess; hand the caller
+	// back the plaintext view this boundary speaks, success or not.
+	sess.Destination = np
+	return err
+}
+
+func (s *TranslatingUploadStore) Get(ctx context.Context, userID int64, transferID string) (*UploadSession, error) {
+	sess, err := s.raw.Get(ctx, userID, transferID)
+	if err != nil {
+		return nil, err
+	}
+	if sess.Destination == "" {
+		return sess, nil
+	}
+	plain, err := s.t.PlainPath(ctx, userID, sess.Destination)
+	if err != nil {
+		return nil, err
+	}
+	sess.Destination = plain
+	return sess, nil
+}
+
+func (s *TranslatingUploadStore) UpdateDest(ctx context.Context, userID int64, transferID, dest string, total int64) error {
+	if dest == "" {
+		return s.raw.UpdateDest(ctx, userID, transferID, dest, total)
+	}
+	np, err := NormalizePath(dest)
+	if err != nil {
+		return err
+	}
+	cp, err := s.t.cipherPath(ctx, newTranslateCache(), userID, np)
+	if err != nil {
+		return err
+	}
+	return s.raw.UpdateDest(ctx, userID, transferID, cp, total)
+}
+
+// Delete passes through (transfer-id keyed; no path material).
+func (s *TranslatingUploadStore) Delete(ctx context.Context, userID int64, transferID string) error {
+	return s.raw.Delete(ctx, userID, transferID)
+}
+
+var _ UploadStore = (*TranslatingUploadStore)(nil)

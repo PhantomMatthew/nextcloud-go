@@ -191,6 +191,32 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-27** — SSE **filename encryption phase 3b** (ADR-0104 §9/§6/§12):
+  notification token subjects + upload-session destination tokenization.
+  **Finding**: the activities table has NO production writer (store + OCS read
+  API only), so §9's activity rule is forward-pinned for the first producer —
+  the one live subject producer is the share bell. `notifyShareCreated`
+  (user + group shares, scheme-1 owners) now stores the mount-name **token**
+  in the subject and `params["share"].name` — byte-identical to
+  `shares.mount_name_enc` (deterministic pin) — plus a
+  `"ncgoNameScheme": {"type":"ncgo","id":<key UUID hex>,"name":"1"}` meta
+  param naming the sealing key. **Display change (documented)**: the rendered
+  name is the mount BASENAME, never the full owner path (a sharee cannot
+  resolve ancestor names). The OCS notifications render (new nil-ok
+  `SubjectDecryptor` seam on the handler, `*files.NameTranslator`) strips the
+  marker, decrypts the token in the VIEWER's ctx (enrolled sharee through
+  their own wrap; keyless → ErrKeyLocked), and **rebuilds the subject from
+  the SubjectRich template**; any failure degrades the item to the
+  `encrypted file` placeholder — per item, never failing the list, never
+  emitting the token. Scheme-0 rows bit-identical; flag off = seam nil =
+  verbatim passthrough. `TranslatingUploadStore` (phase-2 satellite idiom)
+  tokenizes `uploads.destination` at `Create`/`UpdateDest` and decrypts at
+  `Get` — the destination leaf need not exist but its parent must (loud
+  failure, no plaintext fallback); `uploads.go` itself unchanged (assembly
+  compares/writes plaintext through the translating DAV Meta). The ADR-0090
+  admin console ships stored subjects to the admin UI verbatim (admin
+  audience) — noted, not wired. Gates: full suite + race + lint green, zero
+  new deps, golden suites untouched.
 - **2026-09-27** — SSE **filename encryption phase 3a** (ADR-0104 §12):
   sharing integration. Migration **0024** adds `shares.mount_name_enc` +
   `shares.abs_path_enc`: the mount basename's tree token lives under the

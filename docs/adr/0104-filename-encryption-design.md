@@ -1,6 +1,6 @@
 # ADR-0104: Server-side filename encryption — parent-keyed deterministic names with ciphertext-materialized paths (design)
 
-- **Status**: Accepted (design; implementation phased as below) (phases 1–2 landed 2026-09-27 — primitives, migration 0023, folder key minting, share coverage; store + DAV cutover with the translating decorator, satellite stores, search scan, and the write switch; phase **3a** landed 2026-09-27 — migration 0024, ciphertext share paths with share-root anchoring, KeySharer ciphertext rewiring, public-link boundary; phases 3b–4 pending)
+- **Status**: Accepted (design; implementation phased as below) (phases 1–2 landed 2026-09-27 — primitives, migration 0023, folder key minting, share coverage; store + DAV cutover with the translating decorator, satellite stores, search scan, and the write switch; phase **3a** landed 2026-09-27 — migration 0024, ciphertext share paths with share-root anchoring, KeySharer ciphertext rewiring, public-link boundary; phase **3b** landed 2026-09-27 — share-notification token subjects with list-time decrypt/rebuild, upload-session destination tokenization; phase 4 pending)
 - **Date**: 2026-09-27
 - **Deciders**: Project lead
 - **Supersedes**: (none)
@@ -183,7 +183,13 @@ name.
   again). Prefix listing and rename rewrite work verbatim.
 - **Upload sessions**: the destination path is stored tokenized at session
   creation (the creator is authenticated and unlocked in every supported
-  flow, ADR-0102 included), removing the current plaintext window.
+  flow, ADR-0102 included), removing the current plaintext window. (Landed in
+  phase 3b via `TranslatingUploadStore` over the same translation core:
+  `Create`/`UpdateDest` tokenize, `Get` decrypts, `Delete` passes through;
+  the destination leaf need not exist but its parent MUST — a missing parent
+  fails loudly, never a plaintext fallback. Assembly (`uploads.go`) is
+  unchanged: `Get` returns plaintext, so the destination comparison and the
+  write both run on the translating views.)
 
 ### 7. Sharing, federation, public links
 
@@ -242,14 +248,35 @@ and buy nothing at personal-cloud scale.
 
 ### 9. Activity and notifications
 
-File names/paths inside `subject`/`subject_rich_parameters` are written as the
-**ciphertext tokens copied from `files.name`/`path` at event time**, marked
-with `"ncgoNameScheme": 1` in the parameters JSON. Rendering decrypts with the
-viewer's wraps; unresolvable entries (file permanently deleted and wraps
-pruned, viewer never had access) render a localized *"encrypted file"*
-placeholder — matching how upstream renders dead file references. Actors,
-verbs, and timestamps stay plaintext: the activity stream remains an audit
-log, and that residual is accepted and documented.
+**Activity**: the activities table has no production writer yet (store + OCS
+read API only), so the token-subject rule below is forward-pinned for the
+first activity producer: names/paths inside `subject`/
+`subject_rich_parameters` are written as ciphertext tokens with the
+`"ncgoNameScheme"` marker, and rendering decrypts with the viewer's wraps.
+
+**Notifications** (landed phase 3b): the one live subject producer is the
+share bell (`notifyShareCreated`, user and group shares). For a scheme-1
+owner the stored subject embeds the mount-name **token** — the share target's
+basename as an NCGOFN1 token under the target's own key, byte-identical to
+`shares.mount_name_enc` (deterministic) — never the full owner path: a sharee
+cannot resolve ancestor names, so the rendered display name is the mount
+basename, a documented display change for encrypted trees. The row adds a
+`"ncgoNameScheme"` meta param (`{"type":"ncgo","id":<key UUID
+hex>,"name":"1"}`) naming the sealing key; the param is never referenced by
+the rich template. The OCS list/get render strips the marker from the emitted
+params, decrypts the token in the **viewer's** ctx (an enrolled sharee
+resolves through their own wrap row; keyless → `ErrKeyLocked`), and
+**rebuilds the plain subject from the SubjectRich template** by substituting
+each `{key}` with the post-decryption param name. ANY decrypt failure —
+locked keys, tampered token, pruned wraps — degrades the item to the constant
+*"encrypted file"* placeholder: per item, never failing the list, never
+emitting the token (matching how upstream renders dead file references).
+Scheme-0 rows and unmarked rows pass through verbatim, as does every row with
+the seam unwired (flag off). Actors, verbs, and timestamps stay plaintext:
+the stream remains an audit log, and that residual is accepted and
+documented. The admin console's notifications panel (ADR-0090) ships the
+stored subject to the admin UI verbatim — an admin-audience view where a
+tokenized subject displays as the token.
 
 ### 10. Threat model and residual leaks
 
@@ -350,8 +377,17 @@ log, and that residual is accepted and documented.
    opening them in the owner's ctx, the rename re-seal pass, the KeySharer
    rewired to ciphertext paths end to end (raw meta seam; `WrapForWrite` call
    sites translate), and the public-link master-works/enrolled-403 boundary.
-   **3b (follow-up)** — activity subject tokens + upload-session destination
-   tokenization + the §9 marker, unchanged in scope.
+   **3b (landed 2026-09-27)** — notification token subjects + upload-session
+   destination tokenization. The share bell (`notifyShareCreated`, the only
+   live §9 producer — the activities table has no production writer, so the
+   activity token rule is forward-pinned) stores the mount-name token
+   (basename display for scheme-1 trees), the `"ncgoNameScheme"` key-UUID
+   marker param, and a token-embedded subject that the OCS render rebuilds
+   from the rich template after decrypting in the viewer's ctx, degrading per
+   item to the `encrypted file` placeholder on any failure.
+   `TranslatingUploadStore` tokenizes `uploads.destination` (loud failure on
+   a missing parent, no plaintext fallback; `uploads.go` unchanged). OCM
+   incoming mount names stay plaintext — the phase-3a residual, unchanged.
 4. **Tooling**: encrypt-names/decrypt-names sweeps, status/reconcile
    reporting, config reference and docs.
 
@@ -422,8 +458,13 @@ log, and that residual is accepted and documented.
   GET, PUT with both wrap rows, MKCOL DK mint+wrap) plus the no-session 403
   variant, rename re-seal of mount_name_enc/abs_path_enc (root/ancestor/
   below-point), owner OCS plaintext views, and the public-link
-  master-works/enrolled-403 pair. Phase 3b pins the activity placeholder
-  fallback and tokenized upload sessions.
+  master-works/enrolled-403 pair. Phase 3b pins the share-notification token
+  subject (no plaintext path material; token == mount_name_enc), the
+  list-time decrypt + template rebuild + marker strip, the `encrypted file`
+  placeholder degradation (keyless viewer, tampered token), scheme-0
+  verbatim, and tokenized upload sessions (raw ciphertext destination,
+  plaintext Get, UpdateDest re-tokenizing, loud missing-parent failure, the
+  full chunked assemble flow).
 - Phase 4 pins sweep idempotence, per-user transactional cutover (failure
   leaves the user fully scheme 0), decrypt-names round-trip, and
   status/reconcile output.

@@ -204,8 +204,8 @@ func (a *App) mountRoutes() error {
 	}
 
 	if a.notifStore != nil {
-		notifV1 := notifpkg.Handler{Store: a.notifStore, Users: a.Users, Version: ocs.V1}
-		notifV2 := notifpkg.Handler{Store: a.notifStore, Users: a.Users, Version: ocs.V2}
+		notifV1 := notifpkg.Handler{Store: a.notifStore, Users: a.Users, Version: ocs.V1, Subjects: a.notifSubjects}
+		notifV2 := notifpkg.Handler{Store: a.notifStore, Users: a.Users, Version: ocs.V2, Subjects: a.notifSubjects}
 		router.HandlePrefix(httpx.MethodAny, "/ocs/v1.php/apps/notifications/api/v2/notifications", notifV1, httpx.Middleware(ocs.Auth(ocs.V1, authCfg)))
 		router.HandlePrefix(httpx.MethodAny, "/ocs/v2.php/apps/notifications/api/v2/notifications", notifV2, httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
 	}

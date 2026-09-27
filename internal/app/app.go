@@ -83,6 +83,7 @@ type App struct {
 	contactsStore *carddav.SQLStore
 	contactsFS    *carddav.DAV
 	notifStore    *notifications.SQLStore
+	notifSubjects notifications.SubjectDecryptor
 	activityStore *activity.SQLStore
 	ocmStore      *ocm.SQLStore
 	lookup        *sharing.LookupClient
@@ -300,7 +301,19 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		a.publicFS.NameCodec = nameTranslator
 		dav.ShareResealer = a.shares
 	}
-	a.uploadsFS = files.NewUploads(st, files.NewSQLUploadStore(db), dav, a.Users)
+	// ADR-0104 phase 3b: with filename encryption on, upload sessions carry
+	// the tokenized destination (no plaintext window) through the same
+	// translation core; flag off leaves the raw store — bit-identical.
+	var uploadStore files.UploadStore = files.NewSQLUploadStore(db)
+	if nameTranslator != nil {
+		uploadStore = files.NewTranslatingUploadStore(uploadStore, nameTranslator)
+	}
+	a.uploadsFS = files.NewUploads(st, uploadStore, dav, a.Users)
+	if nameTranslator != nil {
+		// The notifications render decrypts ADR-0104 §9 subject tokens in the
+		// viewer's ctx (nil seam = verbatim passthrough).
+		a.notifSubjects = nameTranslator
+	}
 	// Trash and versions carry ciphertext paths when filename encryption is
 	// on (ADR-0104 §6) through thin wrappers on the same translation core.
 	var trashStore files.TrashStore = files.NewSQLTrashStore(db)

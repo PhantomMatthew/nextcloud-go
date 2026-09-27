@@ -47,10 +47,12 @@ type ShareKeys interface {
 	UnwrapForShare(ctx context.Context, sh *files.Share) error
 }
 
-// NameCodec is the ADR-0104 phase-3a share-metadata cipher seam: share rows
-// carry the ciphertext owner path plus the sealed mount name / absolute path
-// copies. *files.NameTranslator satisfies it; nil keeps every share row
-// plaintext (the filename-encryption flag off — bit-identical behavior).
+// NameCodec is the ADR-0104 share-metadata cipher seam: share rows carry the
+// ciphertext owner path plus the sealed mount name / absolute path copies
+// (phase 3a), and share-notification subjects embed the mount-name token the
+// OCS render opens in the viewer's ctx (phase 3b). *files.NameTranslator
+// satisfies it; nil keeps every share row plaintext (the filename-encryption
+// flag off — bit-identical behavior).
 type NameCodec interface {
 	// ShareCipherPath maps a plaintext owner path to the ciphertext form
 	// stored in shares.file_path, reporting whether the user is scheme 1.
@@ -61,6 +63,11 @@ type NameCodec interface {
 	// OpenShareMeta resolves a share row to its plaintext absolute owner
 	// path and mount basename in the caller's ctx.
 	OpenShareMeta(ctx context.Context, ownerUserID int64, sh *files.Share) (plainAbsPath, mountName string, err error)
+	// ShareSubjectMeta computes the phase-3b notification subject token for a
+	// share row (ADR-0104 §9): the mount basename's NCGOFN1 token under the
+	// share target's own key — byte-identical to the row's MountNameEnc —
+	// plus the sealing key's UUID hex for the list-time render.
+	ShareSubjectMeta(ctx context.Context, ownerUserID int64, ctPath string) (nameToken, keyUUIDHex string, err error)
 }
 
 // shareMetaStore is the rename re-seal seam over the share store
@@ -83,8 +90,9 @@ type Service struct {
 	Notifs   ShareNotifier
 	Keys     ShareKeys
 	// NameCodec, when set (filename encryption on, ADR-0104 phase 3a), seals
-	// share metadata at grant and opens it for owner/sharee-facing views.
-	// Nil keeps plaintext share rows (flag off — bit-identical).
+	// share metadata at grant and opens it for owner/sharee-facing views; it
+	// also supplies the phase-3b notification subject token. Nil keeps
+	// plaintext share rows (flag off — bit-identical).
 	NameCodec NameCodec
 	Logger    *slog.Logger
 }
@@ -317,10 +325,18 @@ type richParam struct {
 
 // notifyShareCreated sends the incoming-share bell for user and group shares
 // (ADR-0082). plainPath is the plaintext owner path (the row's Path is
-// ciphertext for scheme-1 owners, ADR-0104 phase 3a — notification subjects
-// stay plaintext until the §9 token-subject design in phase 3b). A
+// ciphertext for scheme-1 owners, ADR-0104 phase 3a). For a scheme-1 owner
+// (MountNameEnc set) the stored subject embeds the mount-name TOKEN under the
+// share target's own key and params carry the "ncgoNameScheme" marker with
+// the sealing key's UUID hex (ADR-0104 §9, phase 3b): a sharee cannot resolve
+// ancestor names, so the rendered display name is the mount BASENAME, never
+// the full path — a documented display change for encrypted trees. The OCS
+// render (list and get) decrypts the token in the viewer's ctx and rebuilds
+// the subject from the rich template. Scheme-0 rows stay today's exact
+// plaintext rows. A
 // notification failure never fails the share: it is Warn-logged and share
-// creation continues.
+// creation continues; a token failure skips the notification entirely —
+// never a plaintext fallback.
 func (s *Service) notifyShareCreated(ctx context.Context, owner *users.User, sh *files.Share, plainPath string) {
 	if s.Notifs == nil {
 		return
@@ -330,9 +346,22 @@ func (s *Service) notifyShareCreated(ctx context.Context, owner *users.User, sh 
 	if sharerName == "" {
 		sharerName = owner.UID
 	}
+	subjectName := plainPath
+	keyUUIDHex := ""
+	if s.NameCodec != nil && sh.MountNameEnc != "" {
+		token, hexID, err := s.NameCodec.ShareSubjectMeta(ctx, sh.OwnerUserID, sh.Path)
+		if err != nil {
+			s.warn("sharing: share notification: subject token failed", slog.Int64("share", sh.ID), slog.Any("err", err))
+			return
+		}
+		subjectName, keyUUIDHex = token, hexID
+	}
 	params := map[string]richParam{
-		"share": {Type: "highlight", ID: objectID, Name: plainPath},
+		"share": {Type: "highlight", ID: objectID, Name: subjectName},
 		"user":  {Type: "user", ID: owner.UID, Name: sharerName},
+	}
+	if keyUUIDHex != "" {
+		params["ncgoNameScheme"] = richParam{Type: "ncgo", ID: keyUUIDHex, Name: "1"}
 	}
 	var subject, template string
 	var recipients []*users.User
@@ -343,7 +372,7 @@ func (s *Service) notifyShareCreated(ctx context.Context, owner *users.User, sh 
 			s.warn("sharing: share notification: sharee lookup failed", slog.String("sharee", sh.ShareWith), slog.Any("err", err))
 			return
 		}
-		subject = fmt.Sprintf("You received %s as a share by %s", plainPath, sharerName)
+		subject = fmt.Sprintf("You received %s as a share by %s", subjectName, sharerName)
 		template = "You received {share} as a share by {user}"
 		recipients = append(recipients, sharee)
 	case files.ShareTypeGroup:
@@ -353,7 +382,7 @@ func (s *Service) notifyShareCreated(ctx context.Context, owner *users.User, sh 
 			groupName = g.DisplayName
 		}
 		params["group"] = richParam{Type: "user-group", ID: gid, Name: groupName}
-		subject = fmt.Sprintf("You received %s to group %s as a share by %s", plainPath, gid, sharerName)
+		subject = fmt.Sprintf("You received %s to group %s as a share by %s", subjectName, gid, sharerName)
 		template = "You received {share} to group {group} as a share by {user}"
 		members, err := s.Users.GroupMembers(ctx, gid, 0)
 		if err != nil {

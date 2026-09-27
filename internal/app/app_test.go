@@ -538,6 +538,18 @@ func TestNewAppPerUserKeysWiresKeySharer(t *testing.T) {
 	if dav.Names != nil || dav.RawMeta != nil || dav.ShareResealer != nil {
 		t.Error("DAV phase-3a seams wired without filename_encryption")
 	}
+	// ADR-0104 phase 3b, flag off: upload sessions keep plaintext
+	// destinations and the notifications render has no decrypt seam.
+	if up, ok := a.uploadsFS.(*files.Uploads); ok {
+		if _, wrapped := up.Sessions.(*files.TranslatingUploadStore); wrapped {
+			t.Error("upload store wrapped without filename_encryption")
+		}
+	} else {
+		t.Error("uploadsFS is not *files.Uploads")
+	}
+	if a.notifSubjects != nil {
+		t.Error("notification subject decryptor wired without filename_encryption")
+	}
 }
 
 // TestNewAppFilenameEncryptionWiresDirKeys pins the ADR-0104 phase-1 app
@@ -550,7 +562,8 @@ func TestNewAppPerUserKeysWiresKeySharer(t *testing.T) {
 // seam back to the RAW store (share rows carry ciphertext paths now — the
 // translating wrapper would double-encrypt) and wires the share-metadata
 // codec into the sharing service, the public-link jail, and the DAV
-// rename re-seal hook.
+// rename re-seal hook. Phase 3b wraps the upload-session store (tokenized
+// destinations) and wires the notifications subject decryptor.
 func TestNewAppFilenameEncryptionWiresDirKeys(t *testing.T) {
 	ctx := context.Background()
 	cfg := DevConfig()
@@ -613,6 +626,22 @@ func TestNewAppFilenameEncryptionWiresDirKeys(t *testing.T) {
 	}
 	if _, ok := a.versionsFS.Meta.(*files.TranslatingVersionStore); !ok {
 		t.Error("versions store is not the translating wrapper")
+	}
+	// Phase 3b: the upload-session store translates destinations, and the
+	// notifications render seam decrypts §9 subject tokens in the viewer ctx.
+	up, ok := a.uploadsFS.(*files.Uploads)
+	if !ok {
+		t.Fatal("uploadsFS is not *files.Uploads")
+	}
+	uploadStore, ok := up.Sessions.(*files.TranslatingUploadStore)
+	if !ok {
+		t.Fatal("upload store is not the translating wrapper")
+	}
+	if uploadStore.Raw() == nil {
+		t.Error("translating upload store lost its raw store")
+	}
+	if a.notifSubjects == nil {
+		t.Error("notification subject decryptor not wired with filename_encryption on")
 	}
 	// One shared core: the satellite wrappers and the files decorator hold
 	// the same translator (per-call caches only — no cross-request key
