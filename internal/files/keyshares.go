@@ -34,6 +34,14 @@ type FKThreadingWrapper interface {
 	ReWrapShareesFK(ctx context.Context, oldUUID, newUUID [16]byte, fk []byte) error
 }
 
+// DirKeyMinter mints a fresh directory key wrapped for uid (ADR-0104 phase
+// 1). *encrypt.SQLResolver satisfies it via AllocateForUser; the narrow
+// interface keeps the mint seam free of an encrypt dependency, mirroring
+// KeyWrapper.
+type DirKeyMinter interface {
+	AllocateForUser(ctx context.Context, uid string) (keyUUID [16]byte, dk []byte, err error)
+}
+
 // KeyShareMeta is the filecache seam KeySharer needs; *SQLStore satisfies
 // it.
 type KeyShareMeta interface {

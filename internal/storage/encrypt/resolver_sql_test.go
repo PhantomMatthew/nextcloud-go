@@ -475,3 +475,119 @@ func hasV3Magic(t *testing.T, inner storage.Storage, p string) bool {
 	raw := rawBytes(t, inner, p)
 	return len(raw) >= len(magicV3) && string(raw[:len(magicV3)]) == magicV3
 }
+
+// TestSQLResolverAllocateForUserUnenrolled pins the ADR-0104 phase-1
+// directory-key mint for a master-wrapped user: a fresh 32-byte key + UUID,
+// a scheme=0 owner wrap, the UK lazily minted, and a Resolve round-trip —
+// with no files row involved (ownerOf falls back to the wrap row).
+func TestSQLResolverAllocateForUserUnenrolled(t *testing.T) {
+	ctx := context.Background()
+	db := resolverDB(t)
+	aliceID := seedResolverUser(t, db, "alice")
+	_, _, res := sqlResolverFS(t, db, testKey(t))
+
+	uuid, dk, err := res.AllocateForUser(ctx, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dk) != fileKeySize {
+		t.Errorf("DK length = %d, want %d", len(dk), fileKeySize)
+	}
+
+	// The UK was minted lazily; the wrap row is scheme 0 and opens under the
+	// pinned FK AD.
+	var sealedUK []byte
+	if err := db.QueryRow(ctx, `SELECT sealed_uk FROM user_keys WHERE user_id = ?`, aliceID).Scan(&sealedUK); err != nil {
+		t.Fatal("UK not lazily minted:", err)
+	}
+	uk, err := wrapOpen(res.keys[0], sealedUK, ukAD(aliceID))
+	if err != nil {
+		t.Fatalf("UK row does not open: %v", err)
+	}
+	var wrapped []byte
+	var scheme int64
+	if err := db.QueryRow(ctx, `
+SELECT wrapped_fk, scheme FROM file_keys WHERE key_uuid = ? AND user_id = ?`, uuid[:], aliceID).Scan(&wrapped, &scheme); err != nil {
+		t.Fatal(err)
+	}
+	if scheme != 0 {
+		t.Errorf("wrap scheme = %d, want 0 for an unenrolled user", scheme)
+	}
+	got, err := wrapOpen(uk, wrapped, fkAD(uuid, aliceID))
+	if err != nil {
+		t.Fatalf("DK wrap does not open with the pinned AD: %v", err)
+	}
+	if !bytes.Equal(got, dk) {
+		t.Error("wrapped DK != returned DK")
+	}
+
+	// Resolve round-trips the key through the wrap row (no files row names
+	// the UUID — the directory row is inserted by the caller afterwards).
+	resolved, err := res.Resolve(ctx, uuid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(resolved, dk) {
+		t.Error("Resolve(DK) != DK")
+	}
+}
+
+// TestSQLResolverAllocateForUserEnrolled pins the mint for an enrolled user
+// (ADR-0100): the wrap is a scheme=1 box under the user's public key — no
+// session, no symmetric UK — and Resolve goes through the reader's identity
+// ctx like any enrolled owner's key.
+func TestSQLResolverAllocateForUserEnrolled(t *testing.T) {
+	ctx := context.Background()
+	db := resolverDB(t)
+	aliceID := seedResolverUser(t, db, "alice")
+	_, _, res := sqlResolverFS(t, db, testKey(t))
+	res.PasswordWrapped = true
+	res.KDF = fastKDF
+
+	priv, err := res.UnlockForLogin(ctx, "alice", "wonderland")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uuid, dk, err := res.AllocateForUser(ctx, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var scheme int64
+	if err := db.QueryRow(ctx, `
+SELECT scheme FROM file_keys WHERE key_uuid = ? AND user_id = ?`, uuid[:], aliceID).Scan(&scheme); err != nil {
+		t.Fatal(err)
+	}
+	if scheme != 1 {
+		t.Errorf("wrap scheme = %d, want 1 (box) for an enrolled user", scheme)
+	}
+	if n := rowCount(t, db, `SELECT COUNT(*) FROM user_keys WHERE user_id = ?`, aliceID); n != 0 {
+		t.Errorf("user_keys rows = %d, want 0 (enrolled users get no symmetric UK)", n)
+	}
+
+	got, err := res.Resolve(identityCtx("alice", priv), uuid)
+	if err != nil {
+		t.Fatalf("resolve via reader identity: %v", err)
+	}
+	if !bytes.Equal(got, dk) {
+		t.Error("identity Resolve(DK) != DK")
+	}
+	if _, err := res.Resolve(ctx, uuid); !errors.Is(err, ErrKeyLocked) {
+		t.Errorf("resolve without identity err = %v, want ErrKeyLocked", err)
+	}
+}
+
+// TestSQLResolverAllocateForUserUnknownUID pins the never-invent rule: an
+// unknown uid is an error, and no key material is persisted.
+func TestSQLResolverAllocateForUserUnknownUID(t *testing.T) {
+	ctx := context.Background()
+	db := resolverDB(t)
+	_, _, res := sqlResolverFS(t, db, testKey(t))
+
+	if _, _, err := res.AllocateForUser(ctx, "ghost"); err == nil || !strings.Contains(err.Error(), "ghost") {
+		t.Errorf("AllocateForUser for an unknown user err = %v", err)
+	}
+	if n := rowCount(t, db, `SELECT COUNT(*) FROM file_keys`); n != 0 {
+		t.Errorf("file_keys rows = %d, want 0 (nothing persisted on error)", n)
+	}
+}

@@ -507,4 +507,35 @@ func TestNewAppPerUserKeysWiresKeySharer(t *testing.T) {
 	if !ok || us.MemberKeys == nil {
 		t.Error("users MemberKeys hook not wired in per-user mode")
 	}
+	if dav.DirKeys != nil {
+		t.Error("DAV.DirKeys wired without filename_encryption (ADR-0104 flag off)")
+	}
+}
+
+// TestNewAppFilenameEncryptionWiresDirKeys pins the ADR-0104 phase-1 app
+// wiring: with filename encryption on (validation requires per-user keys),
+// the DAV directory-key minter is the same resolver.
+func TestNewAppFilenameEncryptionWiresDirKeys(t *testing.T) {
+	ctx := context.Background()
+	cfg := DevConfig()
+	cfg.Database.DSN = "file:ncgo-dirkeys-wiring?mode=memory&cache=shared"
+	cfg.Storage.Backends = map[string]config.BackendConfig{
+		"local": {Type: "localfs", Root: t.TempDir()},
+	}
+	cfg.Encryption.Enabled = true
+	cfg.Encryption.MasterKeyPath = writeTestMasterKey(t)
+	cfg.Encryption.PerUserKeys = true
+	cfg.Encryption.FilenameEncryption = true
+	a, err := New(ctx, cfg, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Close(ctx) })
+	dav, ok := a.davFS.(*files.DAV)
+	if !ok || dav.DirKeys == nil {
+		t.Fatal("DAV.DirKeys not wired with filename_encryption on")
+	}
+	if dav.DirKeys != a.keyResolver {
+		t.Error("DAV.DirKeys must be the app's SQLResolver (the DK wrap rows live in file_keys)")
+	}
 }

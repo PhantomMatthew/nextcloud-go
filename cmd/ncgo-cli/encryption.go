@@ -366,6 +366,9 @@ func newEncryptionStatus() *cobra.Command {
 			fmt.Fprintf(out, "password-wrapped users: %d\n", inv.EnrolledUsers)
 			fmt.Fprintf(out, "file key wraps: %d rows across %d key uuids (%d box wraps)\n", inv.WrapRows, inv.DistinctKeyUUIDs, inv.BoxWraps)
 			fmt.Fprintf(out, "v3-sealed files: %d\n", inv.V3Files)
+			// ADR-0104: directory rows carry directory keys under key_uuid
+			// once filename encryption is on; they inventory like files.
+			fmt.Fprintf(out, "v3-sealed folders: %d\n", inv.V3Folders)
 			// ADR-0102: app-token key wraps ride the same inventory; tokens
 			// of enrolled users WITHOUT a wrap authenticate but cannot
 			// unlock files until re-issued.
@@ -379,8 +382,9 @@ func newEncryptionStatus() *cobra.Command {
 					inv.StaleUKs, inv.StaleWraps)
 			}
 			fmt.Fprintf(out, "broken v3 files (owner wrap missing, file UNREADABLE): %d\n", inv.BrokenV3Files)
-			if inv.BrokenV3Files > 0 {
-				return fmt.Errorf("ncgo-cli: encryption status: %d v3 file(s) have no owner wrap row and are unreadable (run: ncgo-cli encryption reconcile)", inv.BrokenV3Files)
+			fmt.Fprintf(out, "broken v3 folders (owner wrap missing, names UNREADABLE): %d\n", inv.BrokenV3Folders)
+			if broken := inv.BrokenV3Files + inv.BrokenV3Folders; broken > 0 {
+				return fmt.Errorf("ncgo-cli: encryption status: %d v3 file(s)/folder(s) have no owner wrap row and are unreadable (run: ncgo-cli encryption reconcile)", broken)
 			}
 			return nil
 		},

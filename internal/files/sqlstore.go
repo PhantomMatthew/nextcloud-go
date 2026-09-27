@@ -21,6 +21,7 @@ type Store interface {
 	Insert(ctx context.Context, f *File) error
 	UpdateMeta(ctx context.Context, f *File) error
 	UpdateMetaIfETag(ctx context.Context, f *File, expectETag string) error
+	SetKeyUUIDIfNull(ctx context.Context, fileID int64, keyUUID []byte) (bool, error)
 	DeleteSubtree(ctx context.Context, userID int64, p string) error
 	RenameSubtree(ctx context.Context, userID int64, srcPath, dstPath string, now time.Time) error
 	Usage(ctx context.Context, userID int64) (int64, error)
@@ -236,6 +237,23 @@ WHERE id = ? AND etag = ?`, append(args, f.ID, expectETag)...)
 		return ErrETagConflict
 	}
 	return nil
+}
+
+// SetKeyUUIDIfNull claims keyUUID onto the files row when it carries none —
+// the lazy directory-key claim (ADR-0104 phase 1). It reports whether the
+// claim landed (exactly one row updated); a lost claim means a concurrent
+// mint won the row, and the caller's wrap row stays a benign orphan.
+func (s *SQLStore) SetKeyUUIDIfNull(ctx context.Context, fileID int64, keyUUID []byte) (bool, error) {
+	res, err := s.db.Exec(ctx, `
+UPDATE files SET key_uuid = ? WHERE id = ? AND key_uuid IS NULL`, keyUUID, fileID)
+	if err != nil {
+		return false, fmt.Errorf("files: set key uuid: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("files: set key uuid: %w", err)
+	}
+	return n == 1, nil
 }
 
 // updateMetaStmt builds the shared UPDATE statement and column arguments for

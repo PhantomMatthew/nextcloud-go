@@ -808,7 +808,9 @@ func TestEncryptionStatusPerUser(t *testing.T) {
 		"users: 1 total, 0 with user key",
 		"file key wraps: 0 rows across 0 key uuids",
 		"v3-sealed files: 0",
+		"v3-sealed folders: 0",
 		"broken v3 files (owner wrap missing, file UNREADABLE): 0",
+		"broken v3 folders (owner wrap missing, names UNREADABLE): 0",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("status missing %q: %q", want, out)
@@ -834,6 +836,25 @@ VALUES (?, 'gone.txt', '/gone.txt', 0, 4, 0, 'x', 'application/octet-stream', 31
 	if err == nil ||
 		!strings.Contains(out, "broken v3 files (owner wrap missing, file UNREADABLE): 1") {
 		t.Fatalf("broken status = %q %v", out, err)
+	}
+
+	// A broken FOLDER (ADR-0104 DK without owner wrap) feeds the same
+	// nonzero-exit rule.
+	if _, err := db.Exec(ctx, `DELETE FROM files WHERE path = '/gone.txt'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `
+INSERT INTO files (user_id, name, path, is_dir, size, mtime_ms, etag, mime, permissions, key_uuid)
+VALUES (?, 'gone-dir', '/gone-dir', 1, 0, 0, 'x', 'httpd/unix-directory', 31, ?)`, aliceID, []byte("fedcba9876543210")); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runCLI(t, "", "--config", cfgPath, "encryption", "status")
+	if err == nil ||
+		!strings.Contains(out, "broken v3 folders (owner wrap missing, names UNREADABLE): 1") {
+		t.Fatalf("broken folder status = %q %v", out, err)
+	}
+	if strings.Contains(out, "broken v3 files (owner wrap missing, file UNREADABLE): 1") {
+		t.Fatalf("folder row counted as a file: %q", out)
 	}
 }
 

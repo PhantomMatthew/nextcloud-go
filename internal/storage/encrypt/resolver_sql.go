@@ -90,6 +90,30 @@ func (r *SQLResolver) Allocate(ctx context.Context, storageKey string) ([16]byte
 	if err != nil {
 		return zero, nil, err
 	}
+	return r.allocateForUserID(ctx, userID)
+}
+
+// AllocateForUser mints a fresh 32-byte key with a fresh 16-byte key UUID
+// and wraps it for the named user — Allocate with the uid given directly
+// instead of parsed from a storage key. ADR-0104 phase 1 mints directory
+// keys (DKs) through it: a DK is an FK whose files row is a directory, so
+// the wrap machinery is identical. An unknown uid is an error, never an
+// invented user.
+func (r *SQLResolver) AllocateForUser(ctx context.Context, uid string) ([16]byte, []byte, error) {
+	var zero [16]byte
+	userID, err := r.userID(ctx, uid)
+	if err != nil {
+		return zero, nil, err
+	}
+	return r.allocateForUserID(ctx, userID)
+}
+
+// allocateForUserID mints and wraps a fresh file/directory key for the
+// resolved user. An enrolled owner is wrapped with their public key
+// (ADR-0100): a box needs no session and no key material of theirs. An
+// unenrolled owner gets the symmetric UK wrap, lazily minted on first use.
+func (r *SQLResolver) allocateForUserID(ctx context.Context, userID int64) ([16]byte, []byte, error) {
+	var zero [16]byte
 	fk := make([]byte, fileKeySize)
 	if _, err := rand.Read(fk); err != nil {
 		return zero, nil, fmt.Errorf("encrypt: generate file key: %w", err)
@@ -98,9 +122,6 @@ func (r *SQLResolver) Allocate(ctx context.Context, storageKey string) ([16]byte
 	if _, err := rand.Read(keyUUID[:]); err != nil {
 		return zero, nil, fmt.Errorf("encrypt: generate key uuid: %w", err)
 	}
-	// An enrolled owner is wrapped with their public key (ADR-0100): a box
-	// needs no session and no key material of theirs. An unenrolled owner
-	// gets the symmetric UK wrap, lazily minted on first use.
 	if pub, enrolled, err := r.publicKeyFor(ctx, userID); err != nil {
 		return zero, nil, err
 	} else if enrolled {

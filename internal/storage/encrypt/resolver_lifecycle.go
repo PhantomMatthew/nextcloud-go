@@ -196,7 +196,9 @@ AND NOT EXISTS (SELECT 1 FROM user_key_pw WHERE user_key_pw.user_id = users.id) 
 // `ncgo-cli encryption status` (ADR-0099). Counts are plain row counts over
 // users/user_keys/file_keys/files; "stale" rows name a user_id no users row
 // carries, and a "broken" v3 file is a filecache row whose key UUID has no
-// wrap row for its owner — that file cannot resolve and is UNREADABLE.
+// wrap row for its owner — that file cannot resolve and is UNREADABLE. The
+// folder counts (ADR-0104) are the same pair restricted to directory rows,
+// which carry directory keys under key_uuid once filename encryption is on.
 type KeyInventory struct {
 	UsersTotal       int64 // users rows
 	UsersWithUK      int64 // user_keys rows
@@ -207,8 +209,10 @@ type KeyInventory struct {
 	BoxWraps         int64 // file_keys rows at scheme = 1 (X25519 boxes)
 	DistinctKeyUUIDs int64 // distinct file key UUIDs wrapped
 	StaleWraps       int64 // file_keys rows whose user is gone
-	V3Files          int64 // files rows with a key UUID
+	V3Files          int64 // non-directory files rows with a key UUID
 	BrokenV3Files    int64 // v3 files with no owner wrap row (unreadable)
+	V3Folders        int64 // directory files rows with a key UUID (ADR-0104 DKs)
+	BrokenV3Folders  int64 // v3 folders with no owner wrap row (names unresolvable)
 	// TokenWraps counts app_token_keys rows (ADR-0102 app-token key wraps).
 	TokenWraps int64
 	// UnwrappedEnrolledTokens counts app passwords of ENROLLED users with no
@@ -240,9 +244,16 @@ func (r *SQLResolver) Inventory(ctx context.Context) (KeyInventory, error) {
 		{`SELECT COUNT(*) FROM file_keys WHERE scheme = 1`, nil, &inv.BoxWraps},
 		{`SELECT COUNT(DISTINCT key_uuid) FROM file_keys`, nil, &inv.DistinctKeyUUIDs},
 		{`SELECT COUNT(*) FROM file_keys WHERE user_id NOT IN (SELECT id FROM users)`, nil, &inv.StaleWraps},
-		{`SELECT COUNT(*) FROM files WHERE key_uuid IS NOT NULL`, nil, &inv.V3Files},
-		{`SELECT COUNT(*) FROM files f WHERE f.key_uuid IS NOT NULL AND NOT EXISTS (
+		// ADR-0104: directories carry DKs under key_uuid too, so the file
+		// counts exclude them (bare is_dir / NOT is_dir are the dialect-safe
+		// predicates: sqlite 0/1, postgres boolean, mysql tinyint) and the
+		// folder counts are the same pair restricted to directory rows.
+		{`SELECT COUNT(*) FROM files WHERE key_uuid IS NOT NULL AND NOT is_dir`, nil, &inv.V3Files},
+		{`SELECT COUNT(*) FROM files f WHERE f.key_uuid IS NOT NULL AND NOT is_dir AND NOT EXISTS (
 	SELECT 1 FROM file_keys k WHERE k.key_uuid = f.key_uuid AND k.user_id = f.user_id)`, nil, &inv.BrokenV3Files},
+		{`SELECT COUNT(*) FROM files WHERE key_uuid IS NOT NULL AND is_dir`, nil, &inv.V3Folders},
+		{`SELECT COUNT(*) FROM files f WHERE f.key_uuid IS NOT NULL AND is_dir AND NOT EXISTS (
+	SELECT 1 FROM file_keys k WHERE k.key_uuid = f.key_uuid AND k.user_id = f.user_id)`, nil, &inv.BrokenV3Folders},
 		{`SELECT COUNT(*) FROM app_token_keys`, nil, &inv.TokenWraps},
 		{`SELECT COUNT(*) FROM app_passwords p JOIN user_key_pw e ON e.user_id = p.user_id
 	WHERE NOT EXISTS (SELECT 1 FROM app_token_keys k WHERE k.app_password_id = p.id)`, nil, &inv.UnwrappedEnrolledTokens},

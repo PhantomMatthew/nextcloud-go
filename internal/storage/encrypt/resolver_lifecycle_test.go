@@ -307,6 +307,28 @@ VALUES (?, ?, ?, 0, 8, 0, 'x', 'application/octet-stream', 31, ?)`, userID, name
 	}
 	insertFile(aliceID, "gone.txt", ghost)
 
+	// ADR-0104: directory rows with a key UUID inventory separately. bob's
+	// dir has its owner wrap (a minted DK); alice's ghost-UUID dir does not,
+	// so it counts broken.
+	insertDir := func(userID int64, name string, uuid []byte) {
+		t.Helper()
+		if _, err := db.Exec(ctx, `
+	INSERT INTO files (user_id, name, path, is_dir, size, mtime_ms, etag, mime, permissions, key_uuid)
+	VALUES (?, ?, ?, 1, 0, 0, 'x', 'httpd/unix-directory', 31, ?)`, userID, name, "/"+name, uuid); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dirUUID, _, err := res.AllocateForUser(ctx, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertDir(bobID, "dir1", dirUUID[:])
+	ghostDir := make([]byte, 16)
+	if _, err := rand.Read(ghostDir); err != nil {
+		t.Fatal(err)
+	}
+	insertDir(aliceID, "gone-dir", ghostDir)
+
 	inv, err := res.Inventory(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -316,11 +338,13 @@ VALUES (?, ?, ?, 0, 8, 0, 'x', 'application/octet-stream', 31, ?)`, userID, name
 		UsersWithUK:      3, // + carol's stale row
 		UKsRetiredKeyID:  1, // alice at key id 0
 		StaleUKs:         1, // carol
-		WrapRows:         1, // bob's owner wrap
-		DistinctKeyUUIDs: 1,
+		WrapRows:         2, // bob's owner wraps (file + dir)
+		DistinctKeyUUIDs: 2,
 		StaleWraps:       0,
 		V3Files:          2,
 		BrokenV3Files:    1, // alice's ghost-UUID file
+		V3Folders:        2, // bob's dir + alice's ghost-UUID dir
+		BrokenV3Folders:  1, // alice's ghost-UUID dir
 	}
 	if inv != want {
 		t.Fatalf("inventory = %+v, want %+v", inv, want)

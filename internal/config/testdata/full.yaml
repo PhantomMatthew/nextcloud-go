@@ -43,6 +43,9 @@ encryption:
   # Opt-in (ADR-0100): enrolled users' keys are sealed under their login
   # password instead of the master key. Requires per_user_keys: true.
   password_wrapped_keys: false
+  # Opt-in (ADR-0104): deterministic filename encryption keyed by per-user
+  # directory keys. Requires per_user_keys: true.
+  filename_encryption: false
 
 auth:
   argon2id:

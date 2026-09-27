@@ -191,6 +191,24 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-27** — SSE **filename encryption phase 1** (ADR-0104 §12):
+  primitives + folder keys behind the new opt-in `encryption.filename_encryption`
+  (startup validation requires `per_user_keys`). The **NCGOFN1** token
+  primitive lands byte-exact with frozen test vectors (`DeriveNameKey` /
+  `EncryptName` / `DecryptName`; every decrypt failure wraps `ErrIntegrity`),
+  migration 0023 adds `files.name_scheme`/`users.name_scheme` in three
+  dialects, and the resolver gains `AllocateForUser` (directory-key minting:
+  enrolled owners boxed at scheme 1, unenrolled symmetric-wrapped with lazy
+  UK mint, unknown uid rejected). With the flag on, every folder-creation
+  site mints a DK — MKCOL, copy, storage-ingest (which also covers trash
+  restore) — and the user root lazily claims one at the first request via
+  `SetKeyUUIDIfNull`; folder wrap-on-write for covering shares landed here
+  (phase-boundary refinement noted in the ADR: the mint site holds the DK,
+  so one WrapForWrite closes the gap immediately). KeySharer coverage is
+  pinned for folder rows (grant/revoke/group churn/owner-guard), and
+  `encryption status` reports `V3Folders`/`BrokenV3Folders` with the broken
+  count feeding the same nonzero exit. Flag off stays bit-identical — the
+  never-enable rollback carve-out, test-pinned.
 - **2026-09-27** — SSE **filename encryption design** (ADR-0104, design
   only, zero code): closes the last large at-rest metadata leak (ADR-0052
   §6's accepted plaintext names/structure) now that 5w's wrapping

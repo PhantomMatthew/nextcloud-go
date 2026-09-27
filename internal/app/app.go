@@ -243,6 +243,13 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		userStore.MemberKeys = keySharer
 		userStore.UserKeys = keyResolver
 		userStore.Logger = logger
+		// ADR-0104 phase 1: filename encryption mints directory keys at
+		// folder creation through the same resolver (validation guarantees
+		// per_user_keys + enabled when the flag is set). Flag off leaves
+		// dav.DirKeys nil — writes stay bit-identical.
+		if cfg.Encryption.FilenameEncryption {
+			dav.DirKeys = keyResolver
+		}
 	}
 	a.notifStore = notifications.NewSQLStore(db)
 	a.shares = &sharing.Service{

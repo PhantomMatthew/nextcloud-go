@@ -114,6 +114,11 @@ func (c *Config) Validate() error {
 		// per-user key hierarchy, not a standalone mode.
 		errs = append(errs, &ValidationError{Field: "encryption.password_wrapped_keys", Reason: "requires encryption.per_user_keys (password-wrapped keys without per-user keys would be a dead key)"})
 	}
+	if c.Encryption.FilenameEncryption && !c.Encryption.PerUserKeys {
+		// ADR-0104: filename encryption wraps names under per-user directory
+		// keys — without per-user keys there is no hierarchy to key them.
+		errs = append(errs, &ValidationError{Field: "encryption.filename_encryption", Reason: "requires encryption.per_user_keys (filename encryption wraps names under per-user directory keys)"})
+	}
 	errs = append(errs, validatePreviousKeyPaths(c.Encryption)...)
 
 	if c.Previews.MaxDimension < 32 || c.Previews.MaxDimension > 4096 {

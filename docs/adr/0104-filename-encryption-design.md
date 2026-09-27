@@ -1,6 +1,6 @@
 # ADR-0104: Server-side filename encryption — parent-keyed deterministic names with ciphertext-materialized paths (design)
 
-- **Status**: Accepted (design; implementation phased as below)
+- **Status**: Accepted (design; implementation phased as below) (phase 1 landed 2026-09-27 — primitives, migration 0023, folder key minting, share coverage; phases 2–4 pending)
 - **Date**: 2026-09-27
 - **Deciders**: Project lead
 - **Supersedes**: (none)
@@ -254,14 +254,17 @@ log, and that residual is accepted and documented.
 ### 12. Implementation phases (each its own increment, full gates)
 
 1. **Primitives + folder keys**: NCGOFN1 token enc/dec with test vectors,
-   migration 0023, DK minting behind the flag, KeySharer folder coverage,
-   resolver inventory extension. No behavior change with the flag off.
+   migration 0023, DK minting behind the flag, folder wrap-on-write for new
+   folders under covering shares, KeySharer folder coverage, resolver
+   inventory extension. No behavior change with the flag off. (Phase
+   assignment refined same-day: folder wrap-on-write landed in phase 1 — the
+   mint site holds the DK, so one WrapForWrite call closes the gap
+   immediately.)
 2. **Store + DAV cutover**: translation seam, per-request key cache, listing
    sort, search scan, locks/trash/versions string carry, rename/move/copy
    rules, length-budget enforcement.
-3. **Sharing + activity + uploads**: ListIncoming decryption, wrap-on-write
-   for folders, activity token subjects, upload-session tokenization,
-   public-link boundary tests.
+3. **Sharing + activity + uploads**: ListIncoming decryption, activity token
+   subjects, upload-session tokenization, public-link boundary tests.
 4. **Tooling**: encrypt-names/decrypt-names sweeps, status/reconcile
    reporting, config reference and docs.
 

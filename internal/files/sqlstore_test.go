@@ -181,6 +181,53 @@ func TestUpdateMetaIfETag(t *testing.T) {
 	}
 }
 
+func TestSetKeyUUIDIfNull(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+	store := NewSQLStore(db)
+	uid := seedUser(t, db)
+	root, err := store.EnsureRoot(ctx, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.KeyUUID != nil {
+		t.Fatalf("root key_uuid = %x, want nil", root.KeyUUID)
+	}
+
+	uuid := []byte("0123456789abcdef")
+	claimed, err := store.SetKeyUUIDIfNull(ctx, root.ID, uuid)
+	if err != nil || !claimed {
+		t.Fatalf("first claim = %v %v, want true nil", claimed, err)
+	}
+	got, err := store.GetByID(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.KeyUUID) != string(uuid) {
+		t.Errorf("key_uuid = %x, want %x", got.KeyUUID, uuid)
+	}
+
+	// The second claim loses: the row already carries a key UUID, and the
+	// stored value stays the winner's.
+	claimed, err = store.SetKeyUUIDIfNull(ctx, root.ID, []byte("fedcba9876543210"))
+	if err != nil || claimed {
+		t.Fatalf("second claim = %v %v, want false nil", claimed, err)
+	}
+	got, err = store.GetByID(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.KeyUUID) != string(uuid) {
+		t.Errorf("key_uuid after lost claim = %x, want unchanged %x", got.KeyUUID, uuid)
+	}
+
+	// An unknown id claims nothing.
+	claimed, err = store.SetKeyUUIDIfNull(ctx, 9999, uuid)
+	if err != nil || claimed {
+		t.Fatalf("unknown id claim = %v %v, want false nil", claimed, err)
+	}
+}
+
 func TestSearchByName(t *testing.T) {
 	ctx := t.Context()
 	db := testDB(t)

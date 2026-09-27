@@ -33,6 +33,7 @@ type keyShareEnv struct {
 	keys   *files.KeySharer
 	svc    *sharing.Service
 	ids    map[string]int64
+	res    *encrypt.SQLResolver
 }
 
 func newKeyShareEnv(t *testing.T, uids ...string) *keyShareEnv {
@@ -98,7 +99,7 @@ func newKeyShareEnv(t *testing.T, uids ...string) *keyShareEnv {
 		Keys:   ks,
 		Logger: slog.New(slog.DiscardHandler),
 	}
-	return &keyShareEnv{db: db, dav: dav, meta: meta, users: us, shares: shareStore, keys: ks, svc: svc, ids: ids}
+	return &keyShareEnv{db: db, dav: dav, meta: meta, users: us, shares: shareStore, keys: ks, svc: svc, ids: ids, res: res}
 }
 
 func (e *keyShareEnv) write(t *testing.T, p, content string) {
@@ -463,4 +464,146 @@ func TestKeyShareWriteUnshareRace(t *testing.T) {
 			t.Errorf("recipient rows with the share live = %d, want 1", got)
 		}
 	})
+}
+
+// setFolderKey mints a directory key for alice via the resolver and claims
+// it onto the folder row — what the ADR-0104 phase-1 mint does at mkdir,
+// applied directly to pin the KeySharer folder coverage (ADR-0104 phase 1)
+// in isolation from the mint call sites.
+func (e *keyShareEnv) setFolderKey(t *testing.T, p string) []byte {
+	t.Helper()
+	uuid, _, err := e.res.AllocateForUser(context.Background(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := e.meta.GetByPath(context.Background(), e.ids["alice"], p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := e.meta.SetKeyUUIDIfNull(context.Background(), f.ID, uuid[:])
+	if err != nil || !claimed {
+		t.Fatalf("claim on %s = %v %v", p, claimed, err)
+	}
+	return uuid[:]
+}
+
+// TestKeyShareFolderKeysWrapAndRevoke pins that folder rows carrying a key
+// UUID ride the ADR-0098 machinery unchanged: ListSealedSubtree selects them
+// (key_uuid IS NOT NULL, no is_dir filter), so a folder share wraps every
+// subfolder DK for the recipients and the revoke removes them.
+func TestKeyShareFolderKeysWrapAndRevoke(t *testing.T) {
+	ctx := context.Background()
+	env := newKeyShareEnv(t, "alice", "bob")
+	env.mkdir(t, "/docs")
+	env.mkdir(t, "/docs/sub")
+	env.write(t, "/docs/sub/b.txt", "two")
+	docsUUID := env.setFolderKey(t, "/docs")
+	subUUID := env.setFolderKey(t, "/docs/sub")
+
+	sh := env.share(t, "/docs", files.ShareTypeUser, "bob")
+	// Recipients hold wraps of the folder DKs as well as the file FK.
+	if got := env.wrapRowsForUUID(t, docsUUID, "bob"); got != 1 {
+		t.Errorf("/docs DK: bob rows = %d, want 1", got)
+	}
+	if got := env.wrapRowsForUUID(t, subUUID, "bob"); got != 1 {
+		t.Errorf("/docs/sub DK: bob rows = %d, want 1", got)
+	}
+	if got := env.wrapRows(t, "/docs/sub/b.txt", "bob"); got != 1 {
+		t.Errorf("b.txt FK: bob rows = %d, want 1", got)
+	}
+
+	if err := env.svc.Delete(ctx, "alice", sh.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, uuid := range [][]byte{docsUUID, subUUID} {
+		if got := env.wrapRowsForUUID(t, uuid, "bob"); got != 0 {
+			t.Errorf("bob rows after unshare = %d, want 0", got)
+		}
+		if got := env.wrapRowsForUUID(t, uuid, "alice"); got != 1 {
+			t.Errorf("alice rows after unshare = %d, want 1 (owner row survives)", got)
+		}
+	}
+}
+
+// TestKeyShareFolderKeysGroupChurn pins group membership changes covering
+// folder rows: joining members gain wraps of the folder DKs, leaving members
+// lose them.
+func TestKeyShareFolderKeysGroupChurn(t *testing.T) {
+	ctx := context.Background()
+	env := newKeyShareEnv(t, "alice", "bob", "carol", "dave")
+	if err := env.users.CreateGroup(ctx, &users.Group{GID: "g1", DisplayName: "Group 1"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, uid := range []string{"bob", "carol"} {
+		if err := env.users.AddGroupMember(ctx, "g1", uid); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env.mkdir(t, "/docs")
+	env.mkdir(t, "/docs/sub")
+	docsUUID := env.setFolderKey(t, "/docs")
+	subUUID := env.setFolderKey(t, "/docs/sub")
+
+	env.share(t, "/docs", files.ShareTypeGroup, "g1")
+	for _, uid := range []string{"bob", "carol"} {
+		for _, uuid := range [][]byte{docsUUID, subUUID} {
+			if got := env.wrapRowsForUUID(t, uuid, uid); got != 1 {
+				t.Errorf("%s: folder DK rows after group grant = %d, want 1", uid, got)
+			}
+		}
+	}
+
+	// Join wraps the folder DKs; leave unwraps them; the rest are untouched.
+	if err := env.users.AddGroupMember(ctx, "g1", "dave"); err != nil {
+		t.Fatal(err)
+	}
+	for _, uuid := range [][]byte{docsUUID, subUUID} {
+		if got := env.wrapRowsForUUID(t, uuid, "dave"); got != 1 {
+			t.Errorf("dave: folder DK rows after join = %d, want 1", got)
+		}
+	}
+	if err := env.users.RemoveGroupMember(ctx, "g1", "bob"); err != nil {
+		t.Fatal(err)
+	}
+	for _, uuid := range [][]byte{docsUUID, subUUID} {
+		if got := env.wrapRowsForUUID(t, uuid, "bob"); got != 0 {
+			t.Errorf("bob: folder DK rows after leave = %d, want 0", got)
+		}
+		if got := env.wrapRowsForUUID(t, uuid, "carol"); got != 1 {
+			t.Errorf("carol: folder DK rows after bob's leave = %d, want 1", got)
+		}
+	}
+}
+
+// TestKeyShareFolderKeyOwnerGuard pins UnwrapKeyFor's owner guard for folder
+// key UUIDs: fileOwner looks up files.key_uuid, and a folder row is found
+// there by construction, so a revoke must never orphan the folder from its
+// owner even when the owner sits in the revoked share's recipient set.
+func TestKeyShareFolderKeyOwnerGuard(t *testing.T) {
+	ctx := context.Background()
+	env := newKeyShareEnv(t, "alice", "bob")
+	env.mkdir(t, "/docs")
+	docsUUID := env.setFolderKey(t, "/docs")
+	var uuid [16]byte
+	copy(uuid[:], docsUUID)
+
+	env.share(t, "/docs", files.ShareTypeUser, "bob")
+	if got := env.wrapRowsForUUID(t, docsUUID, "bob"); got != 1 {
+		t.Fatalf("bob rows = %d, want 1", got)
+	}
+
+	// The owner is never unwrapped, even by a direct call.
+	if err := env.res.UnwrapKeyFor(ctx, uuid, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if got := env.wrapRowsForUUID(t, docsUUID, "alice"); got != 1 {
+		t.Errorf("alice rows after owner unwrap attempt = %d, want 1 (guard held)", got)
+	}
+	// The recipient unwraps normally.
+	if err := env.res.UnwrapKeyFor(ctx, uuid, "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if got := env.wrapRowsForUUID(t, docsUUID, "bob"); got != 0 {
+		t.Errorf("bob rows after unwrap = %d, want 0", got)
+	}
 }

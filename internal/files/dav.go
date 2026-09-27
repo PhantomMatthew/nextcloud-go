@@ -40,6 +40,12 @@ type DAV struct {
 	// overwrite carries recipient wraps across the key-UUID change. Nil
 	// disables the feature (per-user keys off) with zero overhead.
 	KeySharer *KeySharer
+	// DirKeys, when set (filename encryption on, ADR-0104), mints a
+	// directory key at every folder creation — mkdir, copy, ingest — so the
+	// fresh row carries its key_uuid, and lazily claims one onto the user's
+	// root at their first request. Nil means the flag is off and every write
+	// stays bit-identical (the never-enable rollback carve-out).
+	DirKeys DirKeyMinter
 	// Logger, when set, receives the best-effort key-share warnings.
 	Logger *slog.Logger
 	// LiveProps, when set, attaches plugin-provided custom properties to
@@ -80,8 +86,27 @@ func (d *DAV) resolveUser(ctx context.Context, uid string) (*users.User, error) 
 		}
 		return nil, err
 	}
-	if _, err := d.Meta.EnsureRoot(ctx, u.ID); err != nil {
+	root, err := d.Meta.EnsureRoot(ctx, u.ID)
+	if err != nil {
 		return nil, err
+	}
+	// ADR-0104 phase 1: with filename encryption on, the user's root lazily
+	// gains its directory key at the first request — the one existing-row
+	// mint site (folder creations mint before their insert).
+	if d.DirKeys != nil && len(root.KeyUUID) == 0 {
+		keyUUID, _, err := d.DirKeys.AllocateForUser(ctx, u.UID)
+		if err != nil {
+			return nil, err
+		}
+		claimed, err := d.Meta.SetKeyUUIDIfNull(ctx, root.ID, keyUUID[:])
+		if err != nil {
+			return nil, err
+		}
+		if !claimed {
+			// A concurrent mint won the row; this one's wrap row is a
+			// benign orphan (reconcile owns the cleanup).
+			d.warn(ctx, "files: root directory key claim lost to a concurrent mint", slog.String("uid", u.UID))
+		}
 	}
 	if err := d.ensureHome(ctx, uid); err != nil {
 		return nil, err
@@ -754,11 +779,33 @@ func (d *DAV) mkdirOwned(ctx context.Context, user, p string) (*webdav.Entry, er
 		MIME:        "httpd/unix-directory",
 		Permissions: webdav.PermAll,
 	}
+	// ADR-0104 phase 1: with filename encryption on, mint the folder's
+	// directory key before the insert so the row is written once, carrying
+	// its key_uuid. UNIQUE(user_id, path) rejects a racing insert; the
+	// loser's wrap row is a benign orphan (reconcile owns the cleanup).
+	var dirUUID [16]byte
+	var dirKey []byte
+	if d.DirKeys != nil {
+		var err error
+		dirUUID, dirKey, err = d.DirKeys.AllocateForUser(ctx, u.UID)
+		if err != nil {
+			return nil, d.compensateDelete(ctx, key, err)
+		}
+		f.KeyUUID = dirUUID[:]
+	}
 	if err := d.Meta.Insert(ctx, f); err != nil {
 		return nil, d.compensateDelete(ctx, key, mapMeta(err))
 	}
 	if err := d.Meta.RecalcAncestors(ctx, u.ID, f.ParentID, d.now()); err != nil {
 		return nil, err
+	}
+	// ADR-0104 phase 1 (folder wrap-on-write, moved from phase 3): the
+	// recipients of every share covering the new folder get a wrap of its
+	// DK. Best-effort, same as the file write path's share hooks.
+	if d.DirKeys != nil && d.KeySharer != nil {
+		if err := d.KeySharer.WrapForWrite(ctx, u.ID, np, dirUUID, dirKey); err != nil {
+			d.warn(ctx, "files: share key wrap on mkdir failed", slog.String("path", np), slog.Any("err", err))
+		}
 	}
 	got, err := d.Meta.GetByPath(ctx, u.ID, np)
 	if err != nil {
@@ -1056,6 +1103,15 @@ func (d *DAV) ingestFromStorage(ctx context.Context, user, p string) error {
 				Mtime:       mt,
 				MIME:        "httpd/unix-directory",
 				Permissions: webdav.PermAll,
+			}
+			// ADR-0104 phase 1: mint-then-insert, as in mkdirOwned. The
+			// ErrExists race loser's wrap row is a benign orphan.
+			if d.DirKeys != nil {
+				dirUUID, _, err := d.DirKeys.AllocateForUser(ctx, u.UID)
+				if err != nil {
+					return err
+				}
+				f.KeyUUID = dirUUID[:]
 			}
 			if err := d.Meta.Insert(ctx, f); err != nil && !errors.Is(err, ErrExists) {
 				return mapMeta(err)
