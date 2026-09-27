@@ -747,6 +747,19 @@ func (d *DAV) Mkdir(ctx context.Context, user, p string) (*webdav.Entry, error) 
 	return d.mkdirMaybeIncoming(ctx, user, p)
 }
 
+// checkNameBudget enforces the ADR-0104 §3 plaintext name budget before the
+// storage backend sees a new path (its own name limits would surface as
+// 500s). Only the translating store enforces a budget; the raw store fails
+// the assertion and the call is a no-op, keeping flag-off bit-identical.
+func (d *DAV) checkNameBudget(ctx context.Context, userID int64, p string) error {
+	if bc, ok := d.Meta.(interface {
+		CheckNameBudget(context.Context, int64, string) error
+	}); ok {
+		return mapMeta(bc.CheckNameBudget(ctx, userID, p))
+	}
+	return nil
+}
+
 func (d *DAV) mkdirOwned(ctx context.Context, user, p string) (*webdav.Entry, error) {
 	u, err := d.resolveUser(ctx, user)
 	if err != nil {
@@ -758,6 +771,9 @@ func (d *DAV) mkdirOwned(ctx context.Context, user, p string) (*webdav.Entry, er
 	}
 	if np == "/" {
 		return nil, webdav.ErrExists
+	}
+	if err := d.checkNameBudget(ctx, u.ID, np); err != nil {
+		return nil, err
 	}
 	key, err := storageKey(user, np)
 	if err != nil {
@@ -844,7 +860,7 @@ func (d *DAV) Purge(ctx context.Context, user, p string) error {
 	if f.IsDir {
 		desc, err := d.collect(ctx, u.ID, f.ID)
 		if err != nil {
-			return err
+			return mapKeyLocked(err) // name decryption can hit a locked key
 		}
 		nodes = append(nodes, desc...)
 	}
@@ -943,6 +959,11 @@ func (d *DAV) Move(ctx context.Context, srcUser, srcPath, dstUser, dstPath strin
 			return nil, false, err
 		}
 		created = false
+	}
+	// The destination's name budget must reject before the storage rename
+	// (backend name limits would surface as 500s).
+	if err := d.checkNameBudget(ctx, u.ID, dst); err != nil {
+		return nil, false, err
 	}
 	from, err := storageKey(srcUser, src)
 	if err != nil {
@@ -1172,8 +1193,14 @@ func mapMeta(err error) error {
 		return webdav.ErrForbidden
 	case errors.Is(err, ErrETagConflict):
 		return webdav.ErrPrecondition
+	case errors.Is(err, ErrNameBudget):
+		// ADR-0104 §3: over-budget names/paths are a client error (400).
+		return webdav.ErrBadRequest
 	default:
-		return err
+		// ADR-0104 phase 2: name resolution runs inside store calls, so an
+		// enrolled reader without an unlocked session surfaces ErrKeyLocked
+		// from any of them — map it to the 403 lock like the content path.
+		return mapKeyLocked(err)
 	}
 }
 

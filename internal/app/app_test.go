@@ -510,11 +510,32 @@ func TestNewAppPerUserKeysWiresKeySharer(t *testing.T) {
 	if dav.DirKeys != nil {
 		t.Error("DAV.DirKeys wired without filename_encryption (ADR-0104 flag off)")
 	}
+	// ADR-0104 phase 2, flag off: no translating wrapper anywhere — the raw
+	// stores keep the never-enable carve-out bit-identical.
+	if _, translated := dav.Meta.(*files.TranslatingStore); translated {
+		t.Error("DAV.Meta wrapped without filename_encryption (ADR-0104 flag off)")
+	}
+	if _, translated := a.fileMeta.(*files.TranslatingStore); translated {
+		t.Error("app fileMeta wrapped without filename_encryption")
+	}
+	if _, translated := dav.Locks.(*files.TranslatingLockStore); translated {
+		t.Error("DAV.Locks wrapped without filename_encryption")
+	}
+	if _, translated := a.trashFS.Sessions.(*files.TranslatingTrashStore); translated {
+		t.Error("trash store wrapped without filename_encryption")
+	}
+	if _, translated := a.versionsFS.Meta.(*files.TranslatingVersionStore); translated {
+		t.Error("versions store wrapped without filename_encryption")
+	}
 }
 
 // TestNewAppFilenameEncryptionWiresDirKeys pins the ADR-0104 phase-1 app
 // wiring: with filename encryption on (validation requires per-user keys),
-// the DAV directory-key minter is the same resolver.
+// the DAV directory-key minter is the same resolver. Phase 2 adds the
+// translating decorator: DAV.Meta, the KeySharer's meta seam, the app's
+// fileMeta (search/quota handlers), and the lock/trash/version satellite
+// stores all wrap the raw stores over one shared translation core, and the
+// user-creation hook flips users.name_scheme (the write switch).
 func TestNewAppFilenameEncryptionWiresDirKeys(t *testing.T) {
 	ctx := context.Background()
 	cfg := DevConfig()
@@ -537,5 +558,58 @@ func TestNewAppFilenameEncryptionWiresDirKeys(t *testing.T) {
 	}
 	if dav.DirKeys != a.keyResolver {
 		t.Error("DAV.DirKeys must be the app's SQLResolver (the DK wrap rows live in file_keys)")
+	}
+
+	// Phase 2: the translating decorator reaches every files-store consumer.
+	tMeta, ok := dav.Meta.(*files.TranslatingStore)
+	if !ok {
+		t.Fatal("DAV.Meta is not the translating store with filename_encryption on")
+	}
+	if a.fileMeta != dav.Meta {
+		t.Error("app fileMeta (search/quota) must be the same translating store as DAV.Meta")
+	}
+	if dav.KeySharer == nil {
+		t.Fatal("DAV.KeySharer not wired in per-user mode")
+	}
+	ksMeta, ok := dav.KeySharer.Meta.(*files.TranslatingStore)
+	if !ok || ksMeta != tMeta {
+		t.Error("KeySharer.Meta must be the translating store (plaintext share paths, no double-encryption)")
+	}
+	if _, ok := dav.Locks.(*files.TranslatingLockStore); !ok {
+		t.Error("DAV.Locks is not the translating wrapper")
+	}
+	if _, ok := a.trashFS.Sessions.(*files.TranslatingTrashStore); !ok {
+		t.Error("trash store is not the translating wrapper")
+	}
+	if _, ok := a.versionsFS.Meta.(*files.TranslatingVersionStore); !ok {
+		t.Error("versions store is not the translating wrapper")
+	}
+	// One shared core: the satellite wrappers and the files decorator hold
+	// the same translator (per-call caches only — no cross-request key
+	// caching, see NameTranslator).
+	if tMeta.Raw() == nil {
+		t.Error("translating store lost its raw store")
+	}
+
+	// The write switch: a user created while the mode is on starts at
+	// users.name_scheme = 1 (the bootstrap admin, created before the wiring,
+	// stays scheme 0 until the phase-4 sweep — ADR-0104 §11).
+	u := &users.User{UID: "fresh", DisplayName: "Fresh", PasswordHash: "x", Enabled: true}
+	if err := a.Users.Create(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	scheme, err := a.Users.(*users.SQLStore).UserNameScheme(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scheme != 1 {
+		t.Errorf("fresh user name_scheme = %d, want 1 (server creation hook)", scheme)
+	}
+	admin, err := a.Users.GetByUID(ctx, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scheme, err := a.Users.(*users.SQLStore).UserNameScheme(ctx, admin.ID); err != nil || scheme != 0 {
+		t.Errorf("bootstrap admin name_scheme = %d %v, want 0 (pre-wiring creation)", scheme, err)
 	}
 }

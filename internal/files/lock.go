@@ -42,7 +42,7 @@ func (d *DAV) Lock(ctx context.Context, user, p string, req webdav.LockRequest) 
 	now := d.now()
 	existing, err := d.Locks.GetByPath(ctx, u.ID, np)
 	if err != nil && !errors.Is(err, ErrNotFound) {
-		return nil, err
+		return nil, mapMeta(err) // lock paths encrypt under ADR-0104 (budget/locked map too)
 	}
 	if err == nil {
 		if expired, err := d.expireLock(ctx, existing, now); err != nil {
@@ -81,7 +81,7 @@ func (d *DAV) Lock(ctx context.Context, user, p string, req webdav.LockRequest) 
 		if errors.Is(err, ErrExists) {
 			return nil, webdav.ErrLocked
 		}
-		return nil, err
+		return nil, mapMeta(err) // budget/locked name translation errors map too
 	}
 	info := lockInfoFromRow(row, now)
 	info.DepthInfinity = req.DepthInfinity
@@ -113,7 +113,7 @@ func (d *DAV) Unlock(ctx context.Context, user, p, token string) error {
 		if errors.Is(err, ErrNotFound) {
 			return webdav.ErrConflict
 		}
-		return err
+		return mapMeta(err) // lock paths encrypt under ADR-0104 (budget/locked map too)
 	}
 	now := d.now()
 	expired, err := d.expireLock(ctx, existing, now)
@@ -145,7 +145,7 @@ func (d *DAV) checkLockOwned(ctx context.Context, user, p, ifHeader string) erro
 	for cur := np; ; cur = parentFilePath(cur) {
 		existing, err := d.Locks.GetByPath(ctx, u.ID, cur)
 		if err != nil && !errors.Is(err, ErrNotFound) {
-			return err
+			return mapMeta(err) // lock paths encrypt under ADR-0104 (budget/locked map too)
 		}
 		if existing != nil {
 			expired, err := d.expireLock(ctx, existing, now)

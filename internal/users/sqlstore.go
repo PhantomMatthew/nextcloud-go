@@ -232,6 +232,41 @@ func (s *SQLStore) Count(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
+// UserNameScheme returns the user's authoritative name-encryption write
+// switch (users.name_scheme, ADR-0104 §3): 0 = plaintext tree, 1 = NCGOFN1
+// (encrypt.NameSchemeNCGOFN1). An unknown user ID yields ErrNotFound.
+func (s *SQLStore) UserNameScheme(ctx context.Context, userID int64) (int, error) {
+	var scheme int
+	err := s.db.QueryRow(ctx, `SELECT name_scheme FROM users WHERE id = ?`, userID).Scan(&scheme)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, database.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+		return 0, fmt.Errorf("users: name scheme: %w", err)
+	}
+	return scheme, nil
+}
+
+// SetNameScheme flips the user's name-encryption write switch (ADR-0104):
+// the server wiring sets scheme 1 for users created while filename
+// encryption is on, and the phase-4 encrypt-names sweep sets it after
+// rewriting the tree. Idempotent; an unknown uid yields ErrNotFound.
+func (s *SQLStore) SetNameScheme(ctx context.Context, uid string, scheme int) error {
+	res, err := s.db.Exec(ctx, `UPDATE users SET name_scheme = ?, updated_at = ? WHERE uid = ?`,
+		scheme, time.Now().UTC().UnixMilli(), uid)
+	if err != nil {
+		return fmt.Errorf("users: set name scheme: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *SQLStore) CreateGroup(ctx context.Context, g *Group) error {
 	if g == nil || g.GID == "" {
 		return fmt.Errorf("users: invalid group")

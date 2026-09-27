@@ -87,11 +87,12 @@ type BackendConfig struct {
 // with the flag off. It requires PerUserKeys.
 // FilenameEncryption (ADR-0104, opt-in) switches the owner's tree to
 // NCGOFN1 deterministic name tokens keyed by per-user directory keys. It
-// requires PerUserKeys. Phase 1 scope: directory keys are minted and wrapped
-// (folder rows carry key_uuid) while names stay plaintext until later
-// phases. The rollback carve-out is the v2/v3 rule: a deployment that never
-// turns it on stays bit-identical, but once any user's tree is scheme 1 an
-// older binary cannot resolve those paths.
+// requires PerUserKeys. Landed scope: directory keys are minted and wrapped
+// (folder rows carry key_uuid) and the stores/DAV translate names for
+// scheme-1 users (users created while the flag is on, or after the
+// encrypt-names sweep). The rollback carve-out is the v2/v3 rule: a
+// deployment that never turns it on stays bit-identical, but once any
+// user's tree is scheme 1 an older binary cannot resolve those paths.
 type EncryptionConfig struct {
 	Enabled             bool     `koanf:"enabled"`
 	MasterKeyPath       string   `koanf:"master_key_path"`

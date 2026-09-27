@@ -19,4 +19,8 @@ type File struct {
 	// KeyUUID is the 16-byte key UUID of the file's v3 encryption envelope
 	// (ADR-0097); nil for plaintext-on-backend or v1/v2-sealed files.
 	KeyUUID []byte
+	// NameScheme is the row's name encoding (ADR-0104): 0 = plaintext,
+	// 1 = NCGOFN1 parent-keyed deterministic token (encrypt.NameSchemeNCGOFN1).
+	// Self-describing rows permit dual-read of mixed trees.
+	NameScheme int
 }

@@ -83,6 +83,36 @@ func TestSQLStoreUsers(t *testing.T) {
 	}
 }
 
+// TestSQLStoreNameScheme pins the ADR-0104 write-switch column: new users
+// default to scheme 0 (plaintext), SetNameScheme flips idempotently, and
+// unknown users report ErrNotFound on both ends.
+func TestSQLStoreNameScheme(t *testing.T) {
+	ctx := context.Background()
+	store := NewSQLStore(testDB(t))
+	u := &User{UID: "alice", DisplayName: "Alice", PasswordHash: "x", Enabled: true}
+	if err := store.Create(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	if scheme, err := store.UserNameScheme(ctx, u.ID); err != nil || scheme != 0 {
+		t.Fatalf("default scheme = %d %v, want 0", scheme, err)
+	}
+	if err := store.SetNameScheme(ctx, "alice", 1); err != nil {
+		t.Fatal(err)
+	}
+	if scheme, err := store.UserNameScheme(ctx, u.ID); err != nil || scheme != 1 {
+		t.Errorf("flipped scheme = %d %v, want 1", scheme, err)
+	}
+	if err := store.SetNameScheme(ctx, "alice", 1); err != nil {
+		t.Errorf("idempotent flip: %v", err)
+	}
+	if _, err := store.UserNameScheme(ctx, 9999); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown id scheme = %v, want ErrNotFound", err)
+	}
+	if err := store.SetNameScheme(ctx, "missing", 1); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown uid flip = %v, want ErrNotFound", err)
+	}
+}
+
 func TestSQLStoreGroups(t *testing.T) {
 	ctx := context.Background()
 	store := NewSQLStore(testDB(t))

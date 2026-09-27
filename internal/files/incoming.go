@@ -130,7 +130,7 @@ func (d *DAV) listOwned(ctx context.Context, user, p string) ([]*webdav.Entry, e
 	}
 	children, err := d.Meta.ListChildren(ctx, u.ID, dir.ID)
 	if err != nil {
-		return nil, err
+		return nil, mapKeyLocked(err) // name decryption can hit a locked key
 	}
 	out := make([]*webdav.Entry, 0, len(children))
 	for i := range children {

@@ -191,6 +191,35 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-27** — SSE **filename encryption phase 2** (ADR-0104 §12): store +
+  DAV cutover behind `encryption.filename_encryption`. **Architecture: one
+  translating decorator** (`files.TranslatingStore`) around the files `Store`,
+  plus thin wrappers reusing the same core for the path-keyed satellite stores
+  (`file_locks`, `trash_items`, `file_versions`); DAV, KeySharer, sharing,
+  search, trash, and versions keep speaking plaintext paths while only DB rows
+  carry ciphertext. `cipherPath` walks segments re-encrypting per parent DK
+  (missing intermediate → `ErrNotFound`, leaf needs only the parent's key —
+  create/lock-null work); the reverse walk decrypts rows via `parent_id` with
+  tamper → `ErrIntegrity` (never silent plaintext). **All key/row caches are
+  per top-level call** — a shared cache would be an authorization bypass since
+  `Resolve` enforces per-ctx authorization for enrolled readers. Budget:
+  >255-rune names and >768-char ciphertext paths are `ErrNameBudget` → DAV
+  400, checked before the storage backend sees new paths (MKCOL/MOVE). Rename
+  and cross-parent move share one math: re-token the basename under the
+  destination parent's DK and let the raw prefix rewrite carry descendants
+  (their tokens are keyed to their own folders and stay unchanged); copy
+  re-keys AND re-tokens. Scheme-1 search scans the user's rows
+  (`ListAllByUser`) and applies Unicode case-folded contains with the limit
+  after filtering — unifying the sqlite-ASCII/pg-ILIKE divergence; scheme 0
+  keeps the SQL `LIKE` path untouched. The **write switch is
+  `users.name_scheme`**, flipped at user creation by the server wiring only
+  (CLI/importer trees stay scheme 0 until the phase-4 sweep). Flag off = no
+  wrapper = bit-identical (golden DAV suite untouched and green). ADR-0104
+  same-day refinements: §10 gains the storage-backend object-key residual
+  (localfs paths/S3 keys stay plaintext, as upstream SSE); §12 records the
+  phase-2 landing notes (per-call cache rationale, plaintext
+  `shares.file_path` until phase 3, importer scheme 0, search fold, trash
+  missing-ancestor degradation).
 - **2026-09-27** — SSE **filename encryption phase 1** (ADR-0104 §12):
   primitives + folder keys behind the new opt-in `encryption.filename_encryption`
   (startup validation requires `per_user_keys`). The **NCGOFN1** token

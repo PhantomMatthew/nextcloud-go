@@ -230,6 +230,9 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	// before this block, so its UK is minted lazily on its first sealed
 	// write or by `ncgo-cli encryption reconcile` (ADR-0099 known gap).
 	var keySharer *files.KeySharer
+	// nameTranslator, when non-nil (ADR-0104 filename encryption on), is the
+	// one translation core every files-store consumer below is wrapped with.
+	var nameTranslator *files.NameTranslator
 	if keyResolver != nil {
 		keySharer = &files.KeySharer{
 			Meta:    meta,
@@ -243,12 +246,26 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		userStore.MemberKeys = keySharer
 		userStore.UserKeys = keyResolver
 		userStore.Logger = logger
-		// ADR-0104 phase 1: filename encryption mints directory keys at
-		// folder creation through the same resolver (validation guarantees
-		// per_user_keys + enabled when the flag is set). Flag off leaves
-		// dav.DirKeys nil — writes stay bit-identical.
 		if cfg.Encryption.FilenameEncryption {
+			// ADR-0104 phase 1: directory keys mint at folder creation
+			// through the same resolver (validation guarantees per_user_keys
+			// + enabled when the flag is set).
 			dav.DirKeys = keyResolver
+			// ADR-0104 phase 2: one translating decorator around the raw
+			// filecache, reused by the satellite path-keyed stores. Every
+			// consumer keeps speaking plaintext paths; only DB rows carry
+			// ciphertext. Flag off leaves the raw stores — bit-identical.
+			nameTranslator = files.NewNameTranslator(meta, keyResolver, userStore)
+			tMeta := files.NewTranslatingStore(meta, nameTranslator)
+			a.fileMeta = tMeta
+			dav.Meta = tMeta
+			keySharer.Meta = tMeta
+			dav.Locks = files.NewTranslatingLockStore(dav.Locks, nameTranslator)
+			// The write switch is users.name_scheme: users created while the
+			// mode is on start at scheme 1. Server wiring only — the
+			// CLI/importer does not set it; imported trees stay scheme 0
+			// until the phase-4 encrypt-names sweep.
+			userStore.UserKeys = nameSchemeUserKeys{UserKeysHook: keyResolver, users: userStore}
 		}
 	}
 	a.notifStore = notifications.NewSQLStore(db)
@@ -270,10 +287,18 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	dav.Remote = a.shares.OCM
 	a.publicFS = &files.PublicDAV{Files: dav, Resolve: a.shares.LookupValid}
 	a.uploadsFS = files.NewUploads(st, files.NewSQLUploadStore(db), dav, a.Users)
-	tr := files.NewTrash(st, files.NewSQLTrashStore(db), dav, a.Users)
+	// Trash and versions carry ciphertext paths when filename encryption is
+	// on (ADR-0104 §6) through thin wrappers on the same translation core.
+	var trashStore files.TrashStore = files.NewSQLTrashStore(db)
+	var versionStore files.VersionStore = files.NewSQLVersionStore(db)
+	if nameTranslator != nil {
+		trashStore = files.NewTranslatingTrashStore(trashStore, nameTranslator)
+		versionStore = files.NewTranslatingVersionStore(versionStore, nameTranslator)
+	}
+	tr := files.NewTrash(st, trashStore, dav, a.Users)
 	dav.Trash = tr
 	a.trashFS = tr
-	ver := files.NewVersions(st, files.NewSQLVersionStore(db), dav, a.Users)
+	ver := files.NewVersions(st, versionStore, dav, a.Users)
 	dav.Versions = ver
 	a.versionsFS = ver
 	jobsStore := jobs.NewSQLStore(db)
@@ -549,6 +574,24 @@ func joinErr(a, b error) error {
 		return a
 	}
 	return errors.Join(a, b)
+}
+
+// nameSchemeUserKeys wraps the ADR-0099 user-key lifecycle hook with the
+// ADR-0104 write switch: a user created while filename encryption is on
+// starts at users.name_scheme = 1, so their tree encrypts from the first
+// write (their root DK still mints lazily at the first request). Wired by the
+// server only — CLI/importer user creation keeps scheme 0 until the phase-4
+// encrypt-names sweep. Both legs stay best-effort like the wrapped hook: a
+// failure is Warn-logged by the users store, never fatal to Create.
+type nameSchemeUserKeys struct {
+	users.UserKeysHook
+	users *users.SQLStore
+}
+
+func (h nameSchemeUserKeys) OnUserCreated(ctx context.Context, uid string) error {
+	err := h.UserKeysHook.OnUserCreated(ctx, uid)
+	flipErr := h.users.SetNameScheme(ctx, uid, encrypt.NameSchemeNCGOFN1)
+	return errors.Join(err, flipErr)
 }
 
 // openStorage builds the configured storage backend, wrapping it with the

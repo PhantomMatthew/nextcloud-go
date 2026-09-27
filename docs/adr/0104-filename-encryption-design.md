@@ -1,6 +1,6 @@
 # ADR-0104: Server-side filename encryption — parent-keyed deterministic names with ciphertext-materialized paths (design)
 
-- **Status**: Accepted (design; implementation phased as below) (phase 1 landed 2026-09-27 — primitives, migration 0023, folder key minting, share coverage; phases 2–4 pending)
+- **Status**: Accepted (design; implementation phased as below) (phases 1–2 landed 2026-09-27 — primitives, migration 0023, folder key minting, share coverage; store + DAV cutover with the translating decorator, satellite stores, search scan, and the write switch; phases 3–4 pending)
 - **Date**: 2026-09-27
 - **Deciders**: Project lead
 - **Supersedes**: (none)
@@ -233,6 +233,11 @@ log, and that residual is accepted and documented.
   concern — log redaction is a deployment configuration, out of scope). The
   ownerless `appdata_<instance>` system tree keeps plaintext names (its paths
   are pseudonymous fileids already). E2EE pass-through is unaffected.
+  **Storage-backend object keys (localfs paths, S3 keys) stay plaintext** —
+  content is sealed but names are visible to a backend-level attacker,
+  exactly as upstream Nextcloud SSE; obfuscating object keys is a separate
+  design, out of scope. (Residual added same-day with the phase-2 cutover:
+  the filecache is ciphertext while the backend layout is not.)
 
 ### 11. Rollout, migration, rollback
 
@@ -262,7 +267,39 @@ log, and that residual is accepted and documented.
    immediately.)
 2. **Store + DAV cutover**: translation seam, per-request key cache, listing
    sort, search scan, locks/trash/versions string carry, rename/move/copy
-   rules, length-budget enforcement.
+   rules, length-budget enforcement. (Landed 2026-09-27, with these pinned
+   refinements, all same-day:
+   - **One translating decorator** around the files `Store`
+     (`files.TranslatingStore` over `SQLStore`) plus thin wrappers reusing
+     the same core for the path-keyed satellite stores (`file_locks`,
+     `trash_items`, `file_versions`). DAV and every other consumer keep
+     speaking plaintext paths; only DB rows carry ciphertext. Flag off = no
+     wrapper = bit-identical (the untouched golden DAV suite is the pin).
+   - **The key/row caches are strictly per top-level store call** — never a
+     shared or global NK/DK cache. `Resolve` enforces per-ctx authorization
+     (an enrolled reader resolves through their own wrap rows,
+     ADR-0100/0101), so a cross-request cache would let an unauthorized
+     reader decrypt names out of another request's key material.
+   - `shares.file_path` **stays plaintext until phase 3**: the KeySharer
+     flows through the translating store with plaintext share paths (no
+     double-encryption), and incoming-share mounts derive from the plaintext
+     share row as today. Consequence: a sharee cannot name-resolve an
+     *enrolled* owner's tree in phase 2 — the share-root's ancestor DKs are
+     not wrapped for sharees, so the read is `ErrKeyLocked` → 403 (the
+     ADR-0101 boundary, now covering name resolution). Phase 3's ciphertext
+     `shares.file_path` anchors resolution at the share root and lifts this.
+   - **Importer/CLI-created trees stay scheme 0** until the phase-4
+     encrypt-names sweep: only the server wiring flips `users.name_scheme`
+     at user creation. The bootstrap admin (created before the wiring) also
+     stays scheme 0 until the sweep.
+   - **Search unifies case-folding**: scheme-1 search is scan-and-decrypt
+     with a Unicode case-folded contains (`strings.ToLower` on both sides),
+     superseding the sqlite-ASCII/pg-ILIKE divergence; the limit applies
+     after filtering and results sort by (name, id).
+   - The trash listing degrades a trash item whose ancestor rows are gone
+     (a child trashed before its parent) to its stored ciphertext fields —
+     the §9 placeholder philosophy, never fabricated plaintext — while a
+     token that fails authentication stays a hard `ErrIntegrity`.)
 3. **Sharing + activity + uploads**: ListIncoming decryption, activity token
    subjects, upload-session tokenization, public-link boundary tests.
 4. **Tooling**: encrypt-names/decrypt-names sweeps, status/reconcile

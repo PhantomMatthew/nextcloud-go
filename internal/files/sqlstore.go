@@ -74,7 +74,7 @@ func (s *SQLStore) GetByPath(ctx context.Context, userID int64, p string) (*File
 		return nil, err
 	}
 	return s.scanOne(s.db.QueryRow(ctx, `
-SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid
+SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid, name_scheme
 FROM files WHERE user_id = ? AND path = ?`, userID, np))
 }
 
@@ -83,7 +83,7 @@ func (s *SQLStore) GetByID(ctx context.Context, id int64) (*File, error) {
 		return nil, ErrNotFound
 	}
 	return s.scanOne(s.db.QueryRow(ctx, `
-SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid
+SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid, name_scheme
 FROM files WHERE id = ?`, id))
 }
 
@@ -93,7 +93,7 @@ func (s *SQLStore) getByID(ctx context.Context, id int64) (*File, error) {
 
 func (s *SQLStore) ListChildren(ctx context.Context, userID, parentID int64) ([]File, error) {
 	rows, err := s.db.Query(ctx, `
-SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid
+SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid, name_scheme
 FROM files WHERE user_id = ? AND parent_id = ? ORDER BY path`, userID, parentID)
 	if err != nil {
 		return nil, fmt.Errorf("files: list: %w", err)
@@ -181,9 +181,9 @@ func (s *SQLStore) Insert(ctx context.Context, f *File) error {
 		}
 	}
 	_, err = s.db.Exec(ctx, `
-INSERT INTO files (user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		f.UserID, parent, f.Name, f.Path, isDir, f.Size, f.Mtime.UTC().UnixMilli(), f.ETag, checksum, f.MIME, f.Permissions, keyUUID)
+INSERT INTO files (user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid, name_scheme)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		f.UserID, parent, f.Name, f.Path, isDir, f.Size, f.Mtime.UTC().UnixMilli(), f.ETag, checksum, f.MIME, f.Permissions, keyUUID, f.NameScheme)
 	if err != nil {
 		if database.IsUniqueViolation(s.db.Dialect(), err) {
 			return ErrExists
@@ -333,7 +333,7 @@ func (s *SQLStore) RenameSubtree(ctx context.Context, userID int64, srcPath, dst
 	}
 
 	rows, err := s.db.Query(ctx, `
-SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid
+SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid, name_scheme
 FROM files WHERE user_id = ? AND (path = ? OR path LIKE ?)`, userID, src, src+"/%")
 	if err != nil {
 		return fmt.Errorf("files: rename list: %w", err)
@@ -398,7 +398,7 @@ func (s *SQLStore) SearchByName(ctx context.Context, userID int64, term string, 
 		op = "ILIKE"
 	}
 	q := fmt.Sprintf(`
-SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid
+SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid, name_scheme
 FROM files
 WHERE user_id = ? AND path <> '/' AND name %s ? ESCAPE '\'
 ORDER BY name, id
@@ -435,6 +435,33 @@ func likeContains(term string) string {
 	return b.String()
 }
 
+// ListAllByUser returns every filecache row of a user, root included, ordered
+// by id — the scan input of scheme-1 name search (ADR-0104 §8), where SQL
+// LIKE cannot match tokens and matching happens in Go after decryption.
+// Documented bound: ~10k rows scan in tens of milliseconds; the mode is
+// opt-in and personal-cloud sized.
+func (s *SQLStore) ListAllByUser(ctx context.Context, userID int64) ([]File, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid, name_scheme
+FROM files WHERE user_id = ? ORDER BY id`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("files: list all: %w", err)
+	}
+	defer rows.Close()
+	var out []File
+	for rows.Next() {
+		f, err := scanFile(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("files: list all: %w", err)
+	}
+	return out, nil
+}
+
 // ListSealedSubtree returns the v3-sealed files (key_uuid IS NOT NULL) at or
 // below path for a user — the wrap targets of a folder share (ADR-0098).
 // v1/v2-sealed and plaintext files carry NULL and are skipped by
@@ -449,7 +476,7 @@ func (s *SQLStore) ListSealedSubtree(ctx context.Context, userID int64, p string
 		like = "/%"
 	}
 	rows, err := s.db.Query(ctx, `
-SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid
+SELECT id, user_id, parent_id, name, path, is_dir, size, mtime_ms, etag, checksum, mime, permissions, key_uuid, name_scheme
 FROM files WHERE user_id = ? AND (path = ? OR path LIKE ?) AND key_uuid IS NOT NULL ORDER BY path`, userID, np, like)
 	if err != nil {
 		return nil, fmt.Errorf("files: list sealed subtree: %w", err)
@@ -539,7 +566,7 @@ func scanFile(row rowScanner) (*File, error) {
 	var checksum sql.NullString
 	var isDir int
 	var mtimeMs int64
-	if err := row.Scan(&f.ID, &f.UserID, &parent, &f.Name, &f.Path, &isDir, &f.Size, &mtimeMs, &f.ETag, &checksum, &f.MIME, &f.Permissions, &f.KeyUUID); err != nil {
+	if err := row.Scan(&f.ID, &f.UserID, &parent, &f.Name, &f.Path, &isDir, &f.Size, &mtimeMs, &f.ETag, &checksum, &f.MIME, &f.Permissions, &f.KeyUUID, &f.NameScheme); err != nil {
 		return nil, err
 	}
 	if parent.Valid {
