@@ -27,6 +27,44 @@ This directory contains all design and planning artifacts for the `nextcloud-go`
   significant changes in a "Change Log" section at the bottom.
 - Diagrams use Mermaid where possible (renders natively in GitHub).
 
+## Operations
+
+### Filename encryption (ADR-0104)
+
+NCGOFN1 deterministic name tokens keyed by per-user directory keys. Opt-in;
+requires the per-user key hierarchy.
+
+1. **Enable**: set `encryption.enabled: true`, `encryption.per_user_keys: true`,
+   and `encryption.filename_encryption: true`, then restart. Users created from
+   now on start encrypted; existing trees stay plaintext until swept.
+2. **Sweep**: `ncgo-cli encryption encrypt-names [--user uid] [--dry-run]`.
+   Per-user, one DB transaction each; idempotent (scheme-1 users skip). Trash
+   objects move to token-based location ids; locks/versions/trash/share rows
+   whose paths no longer resolve are skipped and counted (retention self-heals
+   them). Run `--dry-run` first for the per-user report.
+3. **Verify**: `ncgo-cli encryption status` prints `filename encryption:
+   N/M users scheme-1, K tokenized rows`; a `scheme-1 folders WITHOUT a
+   directory key` warning means a sweep missed folders (their children's names
+   are unresolvable) — re-run `encrypt-names`; the count exits nonzero.
+4. **Enrolled users** (password-wrapped keys, ADR-0100) are never converted by
+   the offline CLI — their key boxes open only in an unlocked session. They
+   convert **automatically at their next password login** (the server's login
+   hook runs the sweep holding the unlocked key; best-effort, never fails the
+   login). The same hook closes the bootstrap-admin gap: an admin created
+   before the wiring converts at first login.
+5. **Limits**: 255 runes per name, 768 chars per computed ciphertext path
+   (enforced on every dialect; over-budget creates/renames fail with `400`).
+   A sweep hitting an over-budget existing name aborts that user with nothing
+   written — rename the file, then re-run.
+6. **Rollback/decommission**: `ncgo-cli encryption decrypt-names [--user uid]`
+   restores plaintext names per user (same transaction shape; folder key UUIDs
+   and their wrap rows are stripped; file content stays sealed). Enrolled
+   users must **unenroll first** (they log in once with
+   `encryption.password_wrapped_keys` off). An older binary cannot resolve
+   scheme-1 paths — never roll back the binary before `decrypt-names`
+   completes. In-flight chunked uploads spanning a sweep fail loudly at
+   finalize and retry cleanly; run sweeps quiesced if that matters.
+
 ## Status Legend
 
 - 🟢 **Accepted** — current authoritative design

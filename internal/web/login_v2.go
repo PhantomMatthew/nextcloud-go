@@ -1,9 +1,11 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"html"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -40,6 +42,12 @@ type LoginV2 struct {
 	// (ADR-0100), and wraps the unlocked key under a newly issued app
 	// password's token (ADR-0102).
 	Keys LoginKeyHandler
+	// NameSweepRunner, when non-nil (ADR-0104 filename encryption on), runs
+	// the encrypt-names sweep for the user after a successful
+	// basic-authenticated UnlockForLogin — the enrolled-user conversion path
+	// (the only ctx holding their unlocked key). Best-effort: an error is
+	// Warn-logged, never fails the flow.
+	NameSweepRunner func(ctx context.Context, uid string) error
 }
 
 func NewLoginV2(svc *login.Service, verifier auth.Verifier, issuer AppPasswordIssuer) *LoginV2 {
@@ -254,6 +262,17 @@ func (h *LoginV2) requireAuth(w http.ResponseWriter, r *http.Request) (*auth.Pri
 			return nil, false
 		}
 		principal.UnlockedKey = priv
+	}
+	// ADR-0104 phase 4: the password login's unlocked key is the only ctx an
+	// enrolled user's tree can convert under — fire the sweep here too (the
+	// browser-login mirror is BrowserLogin). Best-effort: Warn-logged, never
+	// fails the grant.
+	if principal.AuthMethod == auth.AuthMethodBasic && h.NameSweepRunner != nil {
+		sweepCtx := auth.WithUser(r.Context(), &auth.Principal{UID: principal.UID, Enabled: true, UnlockedKey: principal.UnlockedKey})
+		if err := h.NameSweepRunner(sweepCtx, principal.UID); err != nil {
+			slog.WarnContext(r.Context(), "filename-encryption sweep at login failed",
+				slog.String("uid", principal.UID), slog.Any("error", err))
+		}
 	}
 	return principal, true
 }

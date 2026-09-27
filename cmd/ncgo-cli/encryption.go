@@ -56,7 +56,7 @@ func newEncryption() *cobra.Command {
 			"rotate-keys also re-seals user keys under the current key id\n" +
 			"(ADR-0099), so retired master keys can eventually leave the ring.",
 	}
-	cmd.AddCommand(newEncryptionInit(), newEncryptionStatus(), newEncryptionEncryptAll(), newEncryptionDecryptAll(), newEncryptionRotateKeys(), newEncryptionRekeyV3(), newEncryptionReconcile())
+	cmd.AddCommand(newEncryptionInit(), newEncryptionStatus(), newEncryptionEncryptAll(), newEncryptionDecryptAll(), newEncryptionRotateKeys(), newEncryptionRekeyV3(), newEncryptionReconcile(), newEncryptionNameSweep(true), newEncryptionNameSweep(false))
 	return cmd
 }
 
@@ -369,6 +369,16 @@ func newEncryptionStatus() *cobra.Command {
 			// ADR-0104: directory rows carry directory keys under key_uuid
 			// once filename encryption is on; they inventory like files.
 			fmt.Fprintf(out, "v3-sealed folders: %d\n", inv.V3Folders)
+			// ADR-0104 phase 4: the name-encryption rollout state. The
+			// scheme-1-folders-without-a-DK count is the sweep-miss alarm —
+			// their children's names are unresolvable, so a nonzero count
+			// joins the broken-v3 nonzero-exit rule below.
+			fmt.Fprintf(out, "filename encryption: %d/%d users scheme-1, %d tokenized rows\n",
+				inv.NameSchemeUsers, inv.UsersTotal, inv.NameSchemeFiles)
+			if inv.Scheme1FoldersWithoutDK > 0 {
+				fmt.Fprintf(out, "scheme-1 folders WITHOUT a directory key: %d (their children's names are UNRESOLVABLE — run: ncgo-cli encryption encrypt-names)\n",
+					inv.Scheme1FoldersWithoutDK)
+			}
 			// ADR-0102: app-token key wraps ride the same inventory; tokens
 			// of enrolled users WITHOUT a wrap authenticate but cannot
 			// unlock files until re-issued.
@@ -385,6 +395,9 @@ func newEncryptionStatus() *cobra.Command {
 			fmt.Fprintf(out, "broken v3 folders (owner wrap missing, names UNREADABLE): %d\n", inv.BrokenV3Folders)
 			if broken := inv.BrokenV3Files + inv.BrokenV3Folders; broken > 0 {
 				return fmt.Errorf("ncgo-cli: encryption status: %d v3 file(s)/folder(s) have no owner wrap row and are unreadable (run: ncgo-cli encryption reconcile)", broken)
+			}
+			if inv.Scheme1FoldersWithoutDK > 0 {
+				return fmt.Errorf("ncgo-cli: encryption status: %d scheme-1 folder(s) have no directory key; their children's names are unresolvable (run: ncgo-cli encryption encrypt-names)", inv.Scheme1FoldersWithoutDK)
 			}
 			return nil
 		},
@@ -499,5 +512,169 @@ func newEncryptionReconcile() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "report what reconcile would do without writing anything")
+	return cmd
+}
+
+// newEncryptionNameSweep builds `encryption encrypt-names|decrypt-names`
+// (ADR-0104 phase 4): the per-user name-encryption cutover sweeps.
+// encrypt-names converts existing plaintext trees (users.name_scheme 0 → 1)
+// one DB transaction per user; decrypt-names reverses a user for
+// decommissioning/rollback (folder directory keys and their wraps leave with
+// the mode; file keys stay — content remains sealed). Enrolled users
+// (password-wrapped keys, ADR-0100) can never be converted by this offline
+// tool — their key boxes open only in an unlocked session: encrypt-names
+// skips them (they convert online at their next password login via the
+// server's login hook); decrypt-names fails them loudly (unenroll first).
+func newEncryptionNameSweep(encrypting bool) *cobra.Command {
+	var user string
+	var dryRun bool
+	verb := "decrypt-names"
+	action := "restore plaintext names for"
+	requires := "Requires encryption.enabled and encryption.per_user_keys; encryption.filename_encryption\nmay already be off — that flag-off state is exactly the decommission flow."
+	if encrypting {
+		verb = "encrypt-names"
+		action = "encrypt the names of"
+		requires = "Requires encryption.enabled, encryption.per_user_keys, and\nencryption.filename_encryption."
+	}
+	cmd := &cobra.Command{
+		Use:   verb,
+		Short: "Convert existing trees to/from filename encryption (ADR-0104 phase 4)",
+		Long: "Per-user sweep that rewrites the filecache and the path-keyed satellite\n" +
+			"tables (locks, versions, trash, shares) to " + action + " NCGOFN1\n" +
+			"deterministic name tokens, in one DB transaction per user — a mixed\n" +
+			"tree is unreadable, so the tree rewrite and the users.name_scheme\n" +
+			"write switch flip commit atomically. With --user only that user is\n" +
+			"converted; otherwise every user in the source scheme. Idempotent:\n" +
+			"users already in the target scheme are skipped. Enrolled users\n" +
+			"(password-wrapped keys) are never converted offline: encrypt-names\n" +
+			"skips them with a note (their trees convert at their next password\n" +
+			"login, where the server holds the unlocked key); decrypt-names\n" +
+			"reports them as failures — unenroll them first.\n\n" +
+			"Satellite rows whose paths no longer resolve against the live tree\n" +
+			"(ancestors deleted later) are skipped and counted; trash retention\n" +
+			"and lock expiry self-heal them. In-flight chunked-upload sessions\n" +
+			"spanning the sweep fail loudly at finalize and retry cleanly — run\n" +
+			"the sweep quiesced if that matters.\n\n" + requires,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			if !cfg.Encryption.Enabled || !cfg.Encryption.PerUserKeys {
+				return fmt.Errorf("ncgo-cli: encryption %s: requires encryption.enabled and encryption.per_user_keys (filename encryption wraps names under per-user directory keys)", verb)
+			}
+			if encrypting && !cfg.Encryption.FilenameEncryption {
+				return fmt.Errorf("ncgo-cli: encryption encrypt-names: encryption.filename_encryption is false; enable it first (new users then start encrypted; this sweep converts existing ones)")
+			}
+			user = strings.TrimSpace(user)
+			if strings.ContainsAny(user, `/\`) || user == "." || user == ".." {
+				return fmt.Errorf("ncgo-cli: invalid --user %q", user)
+			}
+			ctx := cmd.Context()
+			current, previous, err := encrypt.LoadKeyring(cfg.Encryption.MasterKeyPath, cfg.Encryption.PreviousKeyPaths)
+			if err != nil {
+				return fmt.Errorf("ncgo-cli: encryption: %w", err)
+			}
+			db, err := openDB(ctx, cfg)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = db.Close() }()
+			resolver, err := perUserResolver(db, cfg, current, previous)
+			if err != nil {
+				return err
+			}
+			// The sweep only renames trash objects (path-level); the raw
+			// backend suffices and needs no key chain of its own.
+			raw, err := openRawBackend(cfg)
+			if err != nil {
+				return err
+			}
+			userStore := users.NewSQLStore(db)
+			sweep := &files.NameSweep{
+				DB:      db,
+				Store:   files.NewSQLStore(db),
+				Keys:    resolver,
+				Users:   userStore,
+				Storage: raw,
+				DryRun:  dryRun,
+			}
+			// Default user set: every user in the SOURCE scheme (0 for
+			// encrypt-names, 1 for decrypt-names) — users already converted
+			// stay silent. --user names exactly one.
+			var targets []users.User
+			if user != "" {
+				u, err := userStore.GetByUID(ctx, user)
+				if err != nil {
+					return fmt.Errorf("ncgo-cli: encryption %s: user %q: %w", verb, user, err)
+				}
+				targets = append(targets, *u)
+			} else {
+				all, err := userStore.List(ctx, 0, 0)
+				if err != nil {
+					return fmt.Errorf("ncgo-cli: encryption %s: list users: %w", verb, err)
+				}
+				for _, u := range all {
+					scheme, err := userStore.UserNameScheme(ctx, u.ID)
+					if err != nil {
+						return fmt.Errorf("ncgo-cli: encryption %s: name scheme of %s: %w", verb, u.UID, err)
+					}
+					if encrypting == (scheme == 0) {
+						targets = append(targets, u)
+					}
+				}
+			}
+			out := cmd.OutOrStdout()
+			converted, skipped, failed := 0, 0, 0
+			for _, u := range targets {
+				var stats files.NameSweepStats
+				var err error
+				if encrypting {
+					stats, err = sweep.EncryptUser(ctx, u.UID)
+				} else {
+					stats, err = sweep.DecryptUser(ctx, u.UID)
+				}
+				switch {
+				case err != nil && errors.Is(err, encrypt.ErrKeyLocked) && encrypting:
+					// Enrolled user without an unlocked session: converts at
+					// their next password login — a skip, never a failure.
+					skipped++
+					fmt.Fprintf(out, "%s: %s: skipped (enrolled in password-wrapped keys — converts at their next password login)\n", verb, u.UID)
+				case err != nil:
+					failed++
+					fmt.Fprintf(out, "%s: %s: FAILED: %v\n", verb, u.UID, err)
+				case stats.Skipped:
+					skipped++
+					fmt.Fprintf(out, "%s: %s: skipped (already in the target scheme)\n", verb, u.UID)
+				case dryRun:
+					converted++
+					fmt.Fprintf(out, "dry-run %s: %s: would convert files=%d folders-keyed=%d locks=%d versions=%d trash=%d trash-objects=%d shares=%d share-wraps=%d skipped-rows=%d\n",
+						verb, u.UID, stats.FilesRows, stats.FoldersKeyed, stats.LocksRows, stats.VersionsRows, stats.TrashRows, stats.TrashMoved, stats.SharesRows, stats.ShareWraps, stats.SkippedRows)
+				default:
+					converted++
+					fmt.Fprintf(out, "%s: %s: converted files=%d folders-keyed=%d locks=%d versions=%d trash=%d trash-objects=%d shares=%d share-wraps=%d skipped-rows=%d\n",
+						verb, u.UID, stats.FilesRows, stats.FoldersKeyed, stats.LocksRows, stats.VersionsRows, stats.TrashRows, stats.TrashMoved, stats.SharesRows, stats.ShareWraps, stats.SkippedRows)
+				}
+			}
+			if dryRun {
+				fmt.Fprintf(out, "dry-run %s: converted=%d skipped=%d failed=%d\n", verb, converted, skipped, failed)
+			} else {
+				fmt.Fprintf(out, "%s: converted=%d skipped=%d failed=%d\n", verb, converted, skipped, failed)
+			}
+			if failed > 0 {
+				return fmt.Errorf("ncgo-cli: encryption %s: %d user(s) failed", verb, failed)
+			}
+			// An explicitly requested user who converted nothing (skip — wrong
+			// scheme or enrolled) exits nonzero: the operator asked for THIS
+			// user and the conversion did not happen.
+			if user != "" && converted == 0 {
+				return fmt.Errorf("ncgo-cli: encryption %s: user %q was skipped (nothing converted)", verb, user)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&user, "user", "", "convert only this user's tree")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "report what the sweep would do without writing anything")
 	return cmd
 }

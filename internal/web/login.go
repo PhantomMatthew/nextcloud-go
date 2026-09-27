@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -51,6 +52,16 @@ type BrowserLogin struct {
 	// a verifier-attached key (app-password login whose token holds a wrap,
 	// ADR-0102) is sealed onto the session the same way.
 	Keys LoginKeyHandler
+	// NameSweepRunner, when non-nil (ADR-0104 filename encryption on), runs
+	// the encrypt-names sweep for the user after a successful password
+	// login's UnlockForLogin — the ONLY conversion path for enrolled users
+	// (their key boxes open only here, where the unlocked key exists), and
+	// the bootstrap-admin gap closure for master-wrapped scheme-0 users. The
+	// sweep self-skips users already at scheme 1. Best-effort: an error is
+	// Warn-logged, never fails the login; concurrent logins racing the same
+	// sweep are safe (the loser's guarded tx rolls back and retries at the
+	// next login).
+	NameSweepRunner func(ctx context.Context, uid string) error
 }
 
 // HandleLogin authenticates a browser form POST. The requesttoken field is
@@ -92,6 +103,16 @@ func (h *BrowserLogin) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			http.Error(w, "login key unlock failed", http.StatusInternalServerError)
 			return
+		}
+	}
+	// ADR-0104 phase 4: a password login is the one moment an enrolled user's
+	// key boxes open — run the name-encryption sweep with the unlocked key
+	// attached to the ctx. Best-effort: the login never fails on it.
+	if principal.AuthMethod == auth.AuthMethodBasic && h.NameSweepRunner != nil {
+		sweepCtx := auth.WithUser(r.Context(), &auth.Principal{UID: principal.UID, Enabled: true, UnlockedKey: priv})
+		if err := h.NameSweepRunner(sweepCtx, principal.UID); err != nil {
+			slog.WarnContext(r.Context(), "filename-encryption sweep at login failed",
+				slog.String("uid", principal.UID), slog.Any("error", err))
 		}
 	}
 	// ADR-0102: an app-password form login whose token holds a key wrap

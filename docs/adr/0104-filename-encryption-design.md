@@ -1,6 +1,6 @@
 # ADR-0104: Server-side filename encryption — parent-keyed deterministic names with ciphertext-materialized paths (design)
 
-- **Status**: Accepted (design; implementation phased as below) (phases 1–2 landed 2026-09-27 — primitives, migration 0023, folder key minting, share coverage; store + DAV cutover with the translating decorator, satellite stores, search scan, and the write switch; phase **3a** landed 2026-09-27 — migration 0024, ciphertext share paths with share-root anchoring, KeySharer ciphertext rewiring, public-link boundary; phase **3b** landed 2026-09-27 — share-notification token subjects with list-time decrypt/rebuild, upload-session destination tokenization; phase 4 pending)
+- **Status**: Accepted (design; implementation phased as below) (phases 1–2 landed 2026-09-27 — primitives, migration 0023, folder key minting, share coverage; store + DAV cutover with the translating decorator, satellite stores, search scan, and the write switch; phase **3a** landed 2026-09-27 — migration 0024, ciphertext share paths with share-root anchoring, KeySharer ciphertext rewiring, public-link boundary; phase **3b** landed 2026-09-27 — share-notification token subjects with list-time decrypt/rebuild, upload-session destination tokenization; phase **4** landed 2026-09-27 — encrypt-names/decrypt-names sweeps with per-user transactional cutover, the login-triggered conversion hook for enrolled users, status/reconcile reporting)
 - **Date**: 2026-09-27
 - **Deciders**: Project lead
 - **Supersedes**: (none)
@@ -304,6 +304,8 @@ tokenized subject displays as the token.
 
 ### 11. Rollout, migration, rollback
 
+(All bullets landed 2026-09-27 with phase 4.)
+
 - `ncgo-cli encryption encrypt-names [--user uid] [--dry-run]`: per-user,
   one transaction per user — load the tree, mint DKs root-first, compute all
   tokens, rewrite rows, flip `users.name_scheme`. Idempotent; users with
@@ -318,6 +320,46 @@ tokenized subject displays as the token.
   safely; once any user's tree is scheme 1, an older binary cannot resolve
   those paths — run `decrypt-names` first. Documented in the command help
   and config reference, same as v2/v3 content.
+
+Pinned realities of the landed phase-4 tooling:
+
+- **Enrolled users convert online at password login, never offline.** Their
+  DKs/FKs are X25519 boxes only an unlocked session opens (ADR-0100/0101), so
+  the CLI sweep refuses them (encrypt-names: a clear skip line; decrypt-names:
+  a failure with the unenroll-first hint). The web login handlers
+  (`internal/web` `NameSweepRunner` on `BrowserLogin` and `LoginV2`) fire
+  `EncryptUser` after a successful password login's `UnlockForLogin`, in a ctx
+  carrying the unlocked key — best-effort (a sweep error is Warn-logged, never
+  fails the login), and safe under concurrent logins (wrap inserts are
+  no-op-on-duplicate; the loser's users-flip guard rolls its tx back and the
+  sweep retries at the next login). The same hook doubles as the
+  bootstrap-admin gap closure: the admin account predates the creation wiring
+  and stays scheme 0 until its first password login (the CLI remains the bulk
+  tool for master-wrapped fleets).
+- **The per-user conversion is one DB transaction.** The tree rewrite (files,
+  file_locks, file_versions, trash_items, shares) and the
+  `users.name_scheme` flip commit atomically — a mid-sweep mixed tree is
+  unreadable because reads key off the same switch the writes consult. The
+  users flip is written LAST, guarded on the old scheme value, so a racing
+  sweep loses loudly. Minted folder key_uuids claim with a
+  `key_uuid IS NULL` guard; every update checks its row count.
+- **Trash objects move before the tx** (their storage keys embed the location
+  id, which embeds the name token); a tx failure compensates the moves back
+  best-effort. Trash/versions/locks rows whose paths no longer resolve against
+  the live tree (ancestors deleted after the row was written) are **skipped
+  and counted** — skipped trash rows keep their plaintext location id and
+  their objects are NOT moved; retention/expiry self-heals the leftovers.
+- **In-flight upload sessions across a sweep fail loudly at finalize** (the
+  stored destination is ciphertext under the new scheme while the client's
+  session predates it) and retry cleanly; uploads rows are deliberately not
+  converted. Run sweeps quiesced if that matters.
+- **decrypt-names strips folder key_uuids and their wrap rows** (owner and
+  recipient) from `file_keys` — decommission cleanliness — while files keep
+  their FKs (content stays sealed; the tree reads plaintext).
+- The sweep also **wraps the subtree directory keys for share recipients**
+  (user/group shares; no-op-on-duplicate) from the DKs it holds in memory —
+  without that, sharees of a converted tree could not resolve in-subtree
+  names, and for enrolled owners nothing else could ever close that gap.
 
 ### 12. Implementation phases (each its own increment, full gates)
 
@@ -388,8 +430,16 @@ tokenized subject displays as the token.
    `TranslatingUploadStore` tokenizes `uploads.destination` (loud failure on
    a missing parent, no plaintext fallback; `uploads.go` unchanged). OCM
    incoming mount names stay plaintext — the phase-3a residual, unchanged.
-4. **Tooling**: encrypt-names/decrypt-names sweeps, status/reconcile
-   reporting, config reference and docs.
+4. **Tooling** (landed 2026-09-27): encrypt-names/decrypt-names sweeps
+   (`internal/files.NameSweep` — in-memory key/token passes over the whole
+   tree, trash storage objects moved first with compensation, one guarded DB
+   transaction per user, skip-and-count for unresolvable satellite rows,
+   share-recipient DK wraps, enrolled users refused offline), the
+   login-triggered conversion hook (`internal/web` `NameSweepRunner` on both
+   password-login paths — the enrolled-user path AND the bootstrap-admin gap
+   closure), status/reconcile reporting (`KeyInventory` gains scheme-1
+   user/row counts and the folders-without-DK sweep-miss alarm feeding
+   status's nonzero-exit rule), and the operator runbook in docs/README.md.
 
 ### Alternatives considered
 

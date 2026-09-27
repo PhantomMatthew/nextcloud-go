@@ -191,6 +191,40 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-27** — SSE **filename encryption phase 4** (ADR-0104 §11/§12):
+  tooling + rollout. New `internal/files.NameSweep` converts existing
+  plaintext trees to NCGOFN1 ciphertext (`EncryptUser`) and reverses it
+  (`DecryptUser`, the decommission/rollback path): in-memory key pass (mint
+  missing folder DKs root-first via `AllocateForUser` — enrolled owners get
+  box wraps with no session; `Resolve` for existing ones) → pure-memory token
+  pass (768-char/255-rune budget aborts name the offending plaintext path,
+  nothing written) → trash storage objects moved to token-based location ids
+  FIRST (`.d<ts>` suffix and 200-char cap preserved; tx failure compensates
+  the moves back) → **one DB tx per user**: files rows (minted folder
+  key_uuids claim with a `key_uuid IS NULL` race guard), file_locks,
+  file_versions, trash_items, shares (`file_path` + `mount_name_enc`/
+  `abs_path_enc` sealed exactly like phase-3a `SealShareMeta`), folder-DK
+  wraps for share recipients, and LAST the `users.name_scheme` flip guarded
+  on the old scheme (a racing sweep loses loudly; every update row-checks).
+  Satellite rows whose paths no longer resolve are **skipped and counted**
+  (retention self-heals); upload sessions deliberately untouched (finalize
+  fails loudly, retries cleanly). decrypt-names strips folder key_uuids +
+  their wrap rows; files keep FKs (content still reads). **Enrolled users
+  can never convert offline** (boxes open only in an unlocked session): the
+  CLI skips them (encrypt) / fails them with the unenroll hint (decrypt), and
+  the new `internal/web` `NameSweepRunner` hook fires `EncryptUser` after a
+  successful `UnlockForLogin` on BOTH password-login paths (browser form +
+  login-v2 grant) with the unlocked key in ctx — best-effort (Warn-logged,
+  never fails the login), doubling as the bootstrap-admin gap closure. CLI:
+  `encryption encrypt-names|decrypt-names [--user uid] [--dry-run]` with
+  encrypt-all-style per-user lines + summary; flag guards (encrypt-names
+  requires `filename_encryption`; decrypt-names doesn't — that IS the
+  decommission flow); exit nonzero on any failure or an explicitly requested
+  user who skipped. `encryption status` gains the rollout line
+  (`filename encryption: N/M users scheme-1, K tokenized rows`) and the
+  **scheme-1-folders-without-DK sweep-miss alarm**, which joins the
+  broken-v3 nonzero-exit rule. Gates: full suite + race + lint green, zero
+  new deps.
 - **2026-09-27** — SSE **filename encryption phase 3b** (ADR-0104 §9/§6/§12):
   notification token subjects + upload-session destination tokenization.
   **Finding**: the activities table has NO production writer (store + OCS read

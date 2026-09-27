@@ -550,6 +550,10 @@ func TestNewAppPerUserKeysWiresKeySharer(t *testing.T) {
 	if a.notifSubjects != nil {
 		t.Error("notification subject decryptor wired without filename_encryption")
 	}
+	// ADR-0104 phase 4, flag off: no name sweep, so no login-conversion hook.
+	if a.nameSweep != nil {
+		t.Error("name sweep built without filename_encryption")
+	}
 }
 
 // TestNewAppFilenameEncryptionWiresDirKeys pins the ADR-0104 phase-1 app
@@ -642,6 +646,11 @@ func TestNewAppFilenameEncryptionWiresDirKeys(t *testing.T) {
 	}
 	if a.notifSubjects == nil {
 		t.Error("notification subject decryptor not wired with filename_encryption on")
+	}
+	// Phase 4: the per-user name sweep exists so the login-conversion hook
+	// (enrolled users, bootstrap admin) can close over it.
+	if a.nameSweep == nil {
+		t.Error("name sweep not built with filename_encryption on")
 	}
 	// One shared core: the satellite wrappers and the files decorator hold
 	// the same translator (per-call caches only — no cross-request key

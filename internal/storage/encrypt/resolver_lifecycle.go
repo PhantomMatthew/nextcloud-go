@@ -221,6 +221,17 @@ type KeyInventory struct {
 	// cannot unlock files until re-issued from a password login or an
 	// unlocked session.
 	UnwrappedEnrolledTokens int64
+	// NameSchemeUsers counts users rows at name_scheme = 1 (the ADR-0104
+	// filename-encryption write switch is on for them).
+	NameSchemeUsers int64
+	// NameSchemeFiles counts files rows at name_scheme = 1 (NCGOFN1-tokenized
+	// names).
+	NameSchemeFiles int64
+	// Scheme1FoldersWithoutDK counts directory rows carrying no key_uuid under
+	// a scheme-1 user (files JOIN users) — a sweep-miss alarm: those folders'
+	// children cannot name-resolve. The bare is_dir predicate is dialect-safe
+	// (phase-1 precedent).
+	Scheme1FoldersWithoutDK int64
 }
 
 // Inventory computes the KeyInventory against the live database. All queries
@@ -257,6 +268,13 @@ func (r *SQLResolver) Inventory(ctx context.Context) (KeyInventory, error) {
 		{`SELECT COUNT(*) FROM app_token_keys`, nil, &inv.TokenWraps},
 		{`SELECT COUNT(*) FROM app_passwords p JOIN user_key_pw e ON e.user_id = p.user_id
 	WHERE NOT EXISTS (SELECT 1 FROM app_token_keys k WHERE k.app_password_id = p.id)`, nil, &inv.UnwrappedEnrolledTokens},
+		// ADR-0104 phase 4: name-encryption rollout state — scheme-1 users,
+		// tokenized rows, and the sweep-miss alarm (a scheme-1 user's folder
+		// without a directory key leaves its children's names unresolvable).
+		{`SELECT COUNT(*) FROM users WHERE name_scheme = 1`, nil, &inv.NameSchemeUsers},
+		{`SELECT COUNT(*) FROM files WHERE name_scheme = 1`, nil, &inv.NameSchemeFiles},
+		{`SELECT COUNT(*) FROM files f JOIN users u ON u.id = f.user_id
+	WHERE u.name_scheme = 1 AND f.is_dir AND f.key_uuid IS NULL`, nil, &inv.Scheme1FoldersWithoutDK},
 	}
 	for _, q := range queries {
 		if err := r.db.QueryRow(ctx, q.q, q.args...).Scan(q.dst); err != nil {

@@ -70,6 +70,7 @@ type App struct {
 	memCache      *cache.Memory
 	redisCache    *cache.Redis
 	fileMeta      files.Store
+	nameSweep     *files.NameSweep
 	davFS         webdav.FS
 	uploadsFS     webdav.FS
 	trashFS       *files.Trash
@@ -273,6 +274,20 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 			// CLI/importer does not set it; imported trees stay scheme 0
 			// until the phase-4 encrypt-names sweep.
 			userStore.UserKeys = nameSchemeUserKeys{UserKeysHook: keyResolver, users: userStore}
+			// ADR-0104 phase 4: the per-user conversion sweep. The CLI
+			// encrypt-names is the bulk tool; this server's sweep closes the
+			// two gaps the CLI cannot reach — enrolled users (their key boxes
+			// open only in an unlocked-session ctx, so the login hook runs
+			// the sweep at password login) and the bootstrap admin (created
+			// before this wiring, master-wrapped, converts at first login).
+			a.nameSweep = &files.NameSweep{
+				DB:      db,
+				Store:   meta,
+				Keys:    keyResolver,
+				Users:   userStore,
+				Storage: st,
+				Logger:  logger,
+			}
 		}
 	}
 	a.notifStore = notifications.NewSQLStore(db)

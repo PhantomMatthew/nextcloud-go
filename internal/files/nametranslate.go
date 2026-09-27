@@ -385,11 +385,7 @@ func (t *NameTranslator) TrashLocationBase(ctx context.Context, userID int64, pl
 	if err != nil {
 		return "", err
 	}
-	base := path.Base(cp)
-	if len(base) > trashLocationBaseMax {
-		base = base[:trashLocationBaseMax]
-	}
-	return base, nil
+	return capTrashBase(path.Base(cp)), nil
 }
 
 // checkNameBudget enforces the ADR-0104 §3 plaintext name budget (255 runes

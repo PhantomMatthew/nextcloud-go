@@ -140,6 +140,18 @@ func (a *App) mountRoutes() error {
 		tokenKeys = a.keyResolver
 		tokenWrapper = a.keyResolver
 	}
+	// ADR-0104 phase 4: with filename encryption on, password logins run the
+	// name-encryption sweep holding the unlocked key — the enrolled-user
+	// conversion path and the bootstrap-admin gap closure. Nil when the flag
+	// is off (no sweep exists).
+	var nameSweepRunner func(ctx context.Context, uid string) error
+	if a.nameSweep != nil {
+		sweep := a.nameSweep
+		nameSweepRunner = func(ctx context.Context, uid string) error {
+			_, err := sweep.EncryptUser(ctx, uid)
+			return err
+		}
+	}
 	appPasswordVerifier.Keys = tokenKeys
 	authCfg := auth.MiddlewareConfig{
 		Verifier:     verifier,
@@ -221,6 +233,7 @@ func (a *App) mountRoutes() error {
 	lv2.Sessions = a.sessions
 	lv2.Users = a.Users
 	lv2.Keys = loginKeys
+	lv2.NameSweepRunner = nameSweepRunner
 	router.Handle(http.MethodPost, "/index.php/login/v2", http.HandlerFunc(lv2.HandleInit))
 	router.Handle(http.MethodPost, "/index.php/login/v2/poll", http.HandlerFunc(lv2.HandlePoll))
 	router.HandlePrefix(http.MethodGet, "/index.php/login/v2/flow/", http.HandlerFunc(lv2.HandleFlowToken))
@@ -228,12 +241,13 @@ func (a *App) mountRoutes() error {
 	router.Handle(http.MethodPost, "/index.php/login/v2/grant", http.HandlerFunc(lv2.HandleGrant))
 
 	browserLogin := &web.BrowserLogin{
-		Verifier: verifier,
-		Users:    a.Users,
-		Sessions: a.sessions,
-		Tokens:   requestTokens,
-		Throttle: authCfg.Throttle,
-		Keys:     loginKeys,
+		Verifier:        verifier,
+		Users:           a.Users,
+		Sessions:        a.sessions,
+		Tokens:          requestTokens,
+		Throttle:        authCfg.Throttle,
+		Keys:            loginKeys,
+		NameSweepRunner: nameSweepRunner,
 	}
 	router.Handle(http.MethodPost, "/index.php/login", http.HandlerFunc(browserLogin.HandleLogin))
 	router.Handle(http.MethodGet, "/index.php/logout", http.HandlerFunc(browserLogin.HandleLogout))
