@@ -488,6 +488,28 @@ func ownerUID(storageKey string) string {
 	}
 }
 
+// OwnableStorageKey reports whether a storage key names an owning user — the
+// syntactic half of ownerUID's derivation (ADR-0105 §1): uid/… trees and the
+// uploads/versions/trash <uid>-nested namespaces are ownable; the
+// appdata_<instanceID> system trees (and empty/rootless keys) are not. The
+// encrypt decorator uses it to fall back to master-key (v2) sealing for
+// ownerless keys when a resolver is configured, so per-user mode stops
+// breaking appdata writes; Allocate keeps rejecting them loudly.
+func OwnableStorageKey(storageKey string) bool {
+	head, rest, _ := strings.Cut(storageKey, "/")
+	switch head {
+	case "uploads", "versions", "trash":
+		uid, _, _ := strings.Cut(rest, "/")
+		return ownableUID(uid)
+	default:
+		return ownableUID(head)
+	}
+}
+
+func ownableUID(uid string) bool {
+	return uid != "" && uid != "." && uid != ".." && !strings.HasPrefix(uid, "appdata_")
+}
+
 // userID resolves a uid to its users.id; an unknown uid is an error (the
 // resolver never invents users).
 func (r *SQLResolver) userID(ctx context.Context, uid string) (int64, error) {

@@ -198,7 +198,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	} else {
 		a.Cache = mem
 	}
-	st, keyResolver, err := openStorage(cfg, db)
+	st, rawStorage, keyResolver, err := openStorage(cfg, db)
 	if err != nil {
 		mem.Close()
 		if a.redisCache != nil {
@@ -368,9 +368,23 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	}
 	if cfg.Previews.Enabled {
 		a.previewGen = preview.NewGenerator(dav, st, "appdata_"+a.instanceID+"/previews", cfg.Previews.MaxDimension, logger)
+		var gcRaw storage.Storage
+		var gcEncPrefix string
+		if keyResolver != nil {
+			// ADR-0105: previews of v3-sealed sources self-seal under the
+			// source file key (NCGOPV1) into the previews_enc prefix on the
+			// RAW backend — the decorator never sees them — and GC sweeps
+			// both prefixes. Per-user mode off leaves nil seams: the
+			// decorated path stays bit-identical.
+			a.previewGen.CacheRaw = rawStorage
+			a.previewGen.SourceKeys = dav
+			a.previewGen.Keys = keyResolver
+			gcRaw = rawStorage
+			gcEncPrefix = a.previewGen.EncPrefix()
+		}
 		// preview.gc is periodic, and Start seeds periodic jobs only for
 		// names already registered — so this must precede jr.Start.
-		if err := jr.Register(preview.NewGCJob(st, a.previewGen.CachePrefix, cfg.Previews.CacheMaxAge, time.Now, logger)); err != nil {
+		if err := jr.Register(preview.NewGCJobSealed(st, a.previewGen.CachePrefix, gcRaw, gcEncPrefix, cfg.Previews.CacheMaxAge, time.Now, logger)); err != nil {
 			if cerr := a.closeResources(ctx); cerr != nil {
 				return nil, errors.Join(err, cerr)
 			}
@@ -642,35 +656,36 @@ func (h nameSchemeUserKeys) OnUserCreated(ctx context.Context, uid string) error
 // openStorage builds the configured storage backend, wrapping it with the
 // encryption decorator when enabled. The returned resolver is non-nil
 // exactly when encryption.per_user_keys is on (ADR-0097); the caller reuses
-// it as the ADR-0098 KeyWrapper for the share key hooks.
-func openStorage(cfg *config.Config, db database.DB) (storage.Storage, *encrypt.SQLResolver, error) {
+// it as the ADR-0098 KeyWrapper for the share key hooks. raw is the
+// undecorated backend (the same handle as st when encryption is off), kept
+// for the ADR-0105 previews_enc self-sealed cache, which the decorator must
+// never see.
+func openStorage(cfg *config.Config, db database.DB) (st, raw storage.Storage, resolver *encrypt.SQLResolver, err error) {
 	name := cfg.Storage.DefaultBackend
 	if name == "" {
 		name = "local"
 	}
 	b, ok := cfg.Storage.Backends[name]
 	if !ok {
-		return nil, nil, fmt.Errorf("app: storage backend %q not configured", name)
+		return nil, nil, nil, fmt.Errorf("app: storage backend %q not configured", name)
 	}
-	var st storage.Storage
-	var err error
 	switch b.Type {
 	case "localfs":
 		st, err = localfs.New(b.Root)
 	case "s3":
 		st, err = s3store.New(b)
 	default:
-		return nil, nil, fmt.Errorf("app: storage backend %q type %q unsupported", name, b.Type)
+		return nil, nil, nil, fmt.Errorf("app: storage backend %q type %q unsupported", name, b.Type)
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
+	raw = st
 	if cfg.Encryption.Enabled {
 		current, previous, err := encrypt.LoadKeyring(cfg.Encryption.MasterKeyPath, cfg.Encryption.PreviousKeyPaths)
 		if err != nil {
-			return nil, nil, fmt.Errorf("app: encryption: %w", err)
+			return nil, nil, nil, fmt.Errorf("app: encryption: %w", err)
 		}
-		var resolver *encrypt.SQLResolver
 		if cfg.Encryption.PerUserKeys {
 			// Ring order: previous keys first, current last — positions
 			// are the key IDs UK rows reference (ADR-0097).
@@ -679,7 +694,7 @@ func openStorage(cfg *config.Config, db database.DB) (storage.Storage, *encrypt.
 			ring = append(ring, current)
 			resolver, err = encrypt.NewSQLResolver(db, ring)
 			if err != nil {
-				return nil, nil, fmt.Errorf("app: encryption: %w", err)
+				return nil, nil, nil, fmt.Errorf("app: encryption: %w", err)
 			}
 			// ADR-0100: password-wrapped enrollment is driven from the
 			// password-login path; the KDF follows the password-hash params.
@@ -699,9 +714,8 @@ func openStorage(cfg *config.Config, db database.DB) (storage.Storage, *encrypt.
 		}
 		st, err = encrypt.NewWithResolver(current, previous, st, keyResolver)
 		if err != nil {
-			return nil, nil, fmt.Errorf("app: encryption: %w", err)
+			return nil, nil, nil, fmt.Errorf("app: encryption: %w", err)
 		}
-		return st, resolver, nil
 	}
-	return st, nil, nil
+	return st, raw, resolver, nil
 }

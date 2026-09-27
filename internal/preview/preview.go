@@ -17,6 +17,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp" // register WebP decoding (VP8/VP8L, ADR-0087)
@@ -25,6 +26,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
 	"github.com/PhantomMatthew/nextcloud-go/internal/files"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage"
+	"github.com/PhantomMatthew/nextcloud-go/internal/storage/encrypt"
 	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
 )
 
@@ -65,13 +67,38 @@ type Source interface {
 	Read(ctx context.Context, user, p string) (io.ReadCloser, *webdav.Entry, error)
 }
 
+// SourceKeys is the narrow seam naming the source file's v3 key UUID
+// (ADR-0105 §2): ok is false for plaintext/v1/v2 sources, remote mounts,
+// and absent rows. *files.DAV implements it (Meta.GetByPath → key_uuid,
+// with incoming-share resolution mirroring Read).
+type SourceKeys interface {
+	KeyUUIDAt(ctx context.Context, uid, path string) (keyUUID [16]byte, ok bool, err error)
+}
+
+// KeyResolver unwraps a per-user file key by UUID in the caller's ctx
+// (owner session, sharee wrap, or master-mode anonymous — the identity
+// paths a content read honors). *encrypt.SQLResolver satisfies it.
+type KeyResolver interface {
+	Resolve(ctx context.Context, keyUUID [16]byte) (fk []byte, err error)
+}
+
 // Generator serves scaled image previews with an on-disk cache.
 type Generator struct {
 	Source      Source
 	Cache       storage.Storage
 	CachePrefix string
-	MaxDim      int
-	Logger      *slog.Logger
+	// CacheRaw, SourceKeys, and Keys are the ADR-0105 §2 self-sealing seams,
+	// wired together when per-user encryption is on: previews of v3-sealed
+	// sources render into NCGOPV1 blobs (sealed under the source file key)
+	// stored under the previews_enc sibling prefix on CacheRaw — the
+	// undecorated backend, so the encrypt decorator never sees them. Any nil
+	// seam keeps every read and write on the decorated Cache, bit-identical
+	// to pre-ADR-0105 behavior.
+	CacheRaw   storage.Storage
+	SourceKeys SourceKeys
+	Keys       KeyResolver
+	MaxDim     int
+	Logger     *slog.Logger
 
 	group singleflight.Group
 }
@@ -165,32 +192,45 @@ func (g *Generator) serve(w http.ResponseWriter, r *http.Request, uid, np string
 	defer rc.Close()
 
 	key := cacheKey(uid, np, entry.ETag, x, y, fill)
-	if f, info, ct := g.openCached(ctx, key); f != nil {
+	f, info, ct, cerr := g.openCached(ctx, key)
+	if cerr != nil {
+		g.writeSealedError(w, r, np, cerr)
+		return
+	}
+	if f != nil {
 		defer f.Close()
 		writeHeaders(w, ct, key, info.Size)
 		_, _ = io.Copy(w, f)
 		return
 	}
 
+	src := g.sourceSeal(ctx, uid, np)
 	res, err, _ := g.group.Do(key, func() (any, error) {
 		// A concurrent request may have filled the cache while this one
 		// waited on the flight.
-		if f, _, ct := g.openCached(ctx, key); f != nil {
+		if f, _, ct, cerr := g.openCached(ctx, key); f != nil {
 			data, rerr := io.ReadAll(f)
 			_ = f.Close()
 			if rerr == nil {
 				return &generated{data: data, contentType: ct}, nil
 			}
+		} else if cerr != nil {
+			return nil, cerr
 		}
-		return g.generate(ctx, rc, key, x, y, fill)
+		return g.generate(ctx, rc, key, x, y, fill, src)
 	})
 	if err != nil {
-		if errors.Is(err, errNotPreviewable) {
+		switch {
+		case errors.Is(err, errNotPreviewable):
 			http.Error(w, "not found", http.StatusNotFound)
-			return
+		case errors.Is(err, encrypt.ErrKeyLocked), errors.Is(err, encrypt.ErrUnresolvableKey):
+			// Content-equivalent failure (ADR-0105 §2): the source read of a
+			// locked enrolled file fails identically.
+			http.Error(w, "not found", http.StatusNotFound)
+		default:
+			g.logger().ErrorContext(ctx, "preview generation failed", slog.String("path", np), slog.Any("error", err))
+			http.Error(w, "internal error", http.StatusInternalServerError)
 		}
-		g.logger().ErrorContext(ctx, "preview generation failed", slog.String("path", np), slog.Any("error", err))
-		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	out, ok := res.(*generated)
@@ -202,6 +242,20 @@ func (g *Generator) serve(w http.ResponseWriter, r *http.Request, uid, np string
 	_, _ = w.Write(out.data)
 }
 
+// writeSealedError maps a sealed-cache (NCGOPV1) read failure like the
+// equivalent content failure (ADR-0105 §2): an unresolvable or locked file
+// key 404s exactly as the source read would (the webdav boundary maps
+// ErrKeyLocked to 403/404); integrity and infrastructure failures are
+// logged and 500.
+func (g *Generator) writeSealedError(w http.ResponseWriter, r *http.Request, np string, err error) {
+	if errors.Is(err, encrypt.ErrKeyLocked) || errors.Is(err, encrypt.ErrUnresolvableKey) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	g.logger().ErrorContext(r.Context(), "preview sealed cache read failed", slog.String("path", np), slog.Any("error", err))
+	http.Error(w, "internal error", http.StatusInternalServerError)
+}
+
 // generated is one rendered preview, shared with singleflight followers so
 // they serve the identical bytes that were written to the cache.
 type generated struct {
@@ -209,7 +263,36 @@ type generated struct {
 	contentType string
 }
 
-func (g *Generator) generate(ctx context.Context, rc io.Reader, key string, x, y int, fill bool) (*generated, error) {
+// sealRef carries the source file's v3 sealing state for one request: v3
+// when the filecache row names a file key, noStore when the lookup itself
+// failed — fail-closed, since writing the decorated cache for an
+// unrecognized v3 source would leak its plaintext under a server-held key.
+type sealRef struct {
+	keyUUID [16]byte
+	v3      bool
+	noStore bool
+}
+
+// sealing reports whether the ADR-0105 self-sealing seams are all wired.
+func (g *Generator) sealing() bool {
+	return g.CacheRaw != nil && g.SourceKeys != nil && g.Keys != nil
+}
+
+// sourceSeal looks up the source's key UUID once per request. With any seam
+// nil it is the zero sealRef — today's behavior verbatim.
+func (g *Generator) sourceSeal(ctx context.Context, uid, np string) sealRef {
+	if !g.sealing() {
+		return sealRef{}
+	}
+	keyUUID, ok, err := g.SourceKeys.KeyUUIDAt(ctx, uid, np)
+	if err != nil {
+		g.logger().WarnContext(ctx, "preview source key lookup failed; skipping cache write", slog.String("path", np), slog.Any("error", err))
+		return sealRef{noStore: true}
+	}
+	return sealRef{keyUUID: keyUUID, v3: ok}
+}
+
+func (g *Generator) generate(ctx context.Context, rc io.Reader, key string, x, y int, fill bool, src sealRef) (*generated, error) {
 	data, err := io.ReadAll(io.LimitReader(rc, maxSourceBytes+1))
 	if err != nil || len(data) > maxSourceBytes {
 		return nil, errNotPreviewable
@@ -218,7 +301,7 @@ func (g *Generator) generate(ctx context.Context, rc io.Reader, key string, x, y
 	if err != nil {
 		return nil, err
 	}
-	if err := g.store(ctx, key, out); err != nil {
+	if err := g.store(ctx, key, out, src); err != nil {
 		// The preview is still served; only reuse is lost.
 		g.logger().WarnContext(ctx, "preview cache write failed", slog.Any("error", err))
 	}
@@ -327,16 +410,19 @@ func (g *Generator) Pregenerate(ctx context.Context, uid, path string, boxes []i
 		return nil
 	}
 
+	src := g.sourceSeal(ctx, uid, np)
 	for _, b := range boxes {
 		key := cacheKey(uid, np, entry.ETag, b, b, false)
-		if f, _, _ := g.openCached(ctx, key); f != nil {
+		// A sealed-cache error degrades to a miss here: store's Resolve
+		// hits the same boundary and skips the box (debug-logged, below).
+		if f, _, _, cerr := g.openCached(ctx, key); cerr == nil && f != nil {
 			_ = f.Close()
 			continue
 		}
 		_, err, _ := g.group.Do(key, func() (any, error) {
 			// A concurrent run (or a serve request) may have filled the
 			// cache while this one waited on the flight.
-			if f, _, _ := g.openCached(ctx, key); f != nil {
+			if f, _, _, cerr := g.openCached(ctx, key); cerr == nil && f != nil {
 				_ = f.Close()
 				return nil, nil
 			}
@@ -345,7 +431,15 @@ func (g *Generator) Pregenerate(ctx context.Context, uid, path string, boxes []i
 			if rerr != nil {
 				return nil, rerr
 			}
-			if serr := g.store(ctx, key, out); serr != nil {
+			if serr := g.store(ctx, key, out, src); serr != nil {
+				if errors.Is(serr, encrypt.ErrKeyLocked) || errors.Is(serr, encrypt.ErrUnresolvableKey) {
+					// ADR-0105 §2: a v3 source whose file key does not
+					// resolve in the job's principal-less ctx (an enrolled
+					// user) is skipped, never an error — the first
+					// interactive request pays the render instead.
+					g.logger().DebugContext(ctx, "preview pregeneration: source key unresolvable; skipping", slog.String("path", np), slog.Any("error", serr))
+					return nil, nil
+				}
 				// Reuse is lost, but the next run rebuilds; never fatal.
 				g.logger().WarnContext(ctx, "preview cache write failed", slog.Any("error", serr))
 			}
@@ -406,8 +500,35 @@ func scaleFill(src image.Image, x, y int) image.Image {
 	return dst
 }
 
-func (g *Generator) store(ctx context.Context, key string, out *generated) error {
-	wc, err := g.Cache.Create(ctx, g.cachedPath(key, extFor(out.contentType)), int64(len(out.data)))
+func (g *Generator) store(ctx context.Context, key string, out *generated, src sealRef) error {
+	if src.noStore {
+		return nil
+	}
+	ext := extFor(out.contentType)
+	if src.v3 {
+		// NCGOPV1 (ADR-0105 §2): seal under the source file key resolved in
+		// the caller's ctx, written to previews_enc via the RAW backend — the
+		// encrypt decorator never sees the blob.
+		fk, err := g.Keys.Resolve(ctx, src.keyUUID)
+		if err != nil {
+			return err
+		}
+		blob, err := sealPreview(fk, src.keyUUID, key, out.data)
+		if err != nil {
+			return err
+		}
+		wc, err := g.CacheRaw.Create(ctx, g.encCachedPath(key, ext), int64(len(blob)))
+		if err != nil {
+			return err
+		}
+		_, werr := wc.Write(blob)
+		cerr := wc.Close()
+		if werr != nil {
+			return werr
+		}
+		return cerr
+	}
+	wc, err := g.Cache.Create(ctx, g.cachedPath(key, ext), int64(len(out.data)))
 	if err != nil {
 		return err
 	}
@@ -419,9 +540,25 @@ func (g *Generator) store(ctx context.Context, key string, out *generated) error
 	return cerr
 }
 
-// openCached returns an open cached preview for key, trying both output
-// extensions; the etag-keyed cache name makes either one authoritative.
-func (g *Generator) openCached(ctx context.Context, key string) (io.ReadSeekCloser, *storage.FileInfo, string) {
+// openCached returns an open cached preview for key. With the ADR-0105 seams
+// wired it tries the NCGOPV1 previews_enc prefix first (a hit opens in the
+// caller's ctx; a resolve or open failure maps like the equivalent content
+// failure and is returned), then falls through to today's decorated
+// previews/ path — misses and legacy entries keep working either way. Both
+// output extensions are tried; the etag-keyed cache name makes either one
+// authoritative.
+func (g *Generator) openCached(ctx context.Context, key string) (io.ReadSeekCloser, *storage.FileInfo, string, error) {
+	if g.sealing() {
+		for _, ext := range []string{extJPEG, extPNG} {
+			f, info, err := g.openSealed(ctx, key, ext)
+			if err != nil {
+				return nil, nil, "", err
+			}
+			if f != nil {
+				return f, info, mimeForExt(ext), nil
+			}
+		}
+	}
 	for _, ext := range []string{extJPEG, extPNG} {
 		p := g.cachedPath(key, ext)
 		info, err := g.Cache.Stat(ctx, p)
@@ -432,13 +569,64 @@ func (g *Generator) openCached(ctx context.Context, key string) (io.ReadSeekClos
 		if err != nil {
 			continue
 		}
-		return f, info, mimeForExt(ext)
+		return f, info, mimeForExt(ext), nil
 	}
-	return nil, nil, ""
+	return nil, nil, "", nil
+}
+
+// openSealed returns the decrypted NCGOPV1 blob for key/ext, or (nil, nil,
+// nil) on a miss, a legacy (magic-less) blob, or a flaky raw read — all of
+// which fall through to the decorated path. Oversize blobs are rejected
+// before decrypting; a resolve or authentication failure is a real error.
+func (g *Generator) openSealed(ctx context.Context, key, ext string) (io.ReadSeekCloser, *storage.FileInfo, error) {
+	p := g.encCachedPath(key, ext)
+	info, err := g.CacheRaw.Stat(ctx, p)
+	if err != nil {
+		return nil, nil, nil //nolint:nilerr // any Stat failure is a cache miss: fall through to the decorated path
+	}
+	if info.Size > maxSealedBlob {
+		return nil, nil, fmt.Errorf("preview: sealed blob %s over the %d-byte cap (%d bytes): %w", p, maxSealedBlob, info.Size, encrypt.ErrIntegrity)
+	}
+	rc, err := g.CacheRaw.Open(ctx, p)
+	if err != nil {
+		return nil, nil, nil //nolint:nilerr // a vanished blob is a cache miss: fall through to the decorated path
+	}
+	blob, rerr := io.ReadAll(io.LimitReader(rc, maxSealedBlob+1))
+	_ = rc.Close()
+	if rerr != nil {
+		return nil, nil, nil //nolint:nilerr // a flaky raw read degrades to a miss; the cache self-heals by regeneration
+	}
+	if len(blob) > maxSealedBlob {
+		// A backend that underreports size still trips the cap pre-decrypt.
+		return nil, nil, fmt.Errorf("preview: sealed blob %s over the %d-byte cap: %w", p, maxSealedBlob, encrypt.ErrIntegrity)
+	}
+	if _, _, _, ok := sealKeyUUID(blob); !ok {
+		// Legacy/foreign blob in the enc prefix: not ours to open.
+		return nil, nil, nil
+	}
+	plain, err := openPreview(ctx, blob, key, g.Keys.Resolve)
+	if err != nil {
+		return nil, nil, err
+	}
+	return sealedRSC{bytes.NewReader(plain)}, &storage.FileInfo{Path: p, Size: int64(len(plain)), ModTime: info.ModTime}, nil
 }
 
 func (g *Generator) cachedPath(key, ext string) string {
 	return g.CachePrefix + "/" + key + ext
+}
+
+// EncPrefix is the sibling prefix holding NCGOPV1 self-sealed blobs
+// (ADR-0105 §2): CachePrefix's trailing "previews" becomes "previews_enc".
+func (g *Generator) EncPrefix() string {
+	const dir = "previews"
+	if strings.HasSuffix(g.CachePrefix, "/"+dir) {
+		return strings.TrimSuffix(g.CachePrefix, dir) + dir + "_enc"
+	}
+	return g.CachePrefix + "_enc"
+}
+
+func (g *Generator) encCachedPath(key, ext string) string {
+	return g.EncPrefix() + "/" + key + ext
 }
 
 // cacheKey fingerprints user, path, source etag, and box so any content

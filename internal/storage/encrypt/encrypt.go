@@ -8,7 +8,7 @@
 // plaintext files pass through untouched. See ADR-0052 for the threat
 // model and the v1 format, ADR-0074 for the v2 key-ID header and master-key
 // rotation, ADR-0097 for the v3 per-user-key envelope and the KeyResolver
-// seam.
+// seam, and ADR-0105 for the ownerless-key (appdata_*) master-seal fallback.
 package encrypt
 
 import (
@@ -74,8 +74,10 @@ var ErrUnknownKeyID = errors.New("encrypt: unknown key id")
 // FS is a storage.Storage decorator sealing file contents at rest. keys is
 // the keyring: positional key IDs 0..n-1 are previous (read-only) keys and
 // the last entry is the current key, which seals all new writes. resolver,
-// when non-nil, switches writes to the v3 per-user-key envelope (ADR-0097);
-// a nil resolver keeps the FS v1/v2-only and bit-identical.
+// when non-nil, switches writes on user-owned keys to the v3 per-user-key
+// envelope (ADR-0097) while ownerless keys (appdata_* system trees) fall
+// back to master-key sealing (ADR-0105); a nil resolver keeps the FS
+// v1/v2-only and bit-identical.
 type FS struct {
 	inner    storage.Storage
 	keys     [][]byte
@@ -102,10 +104,11 @@ func NewWithPrevious(current []byte, previous [][]byte, inner storage.Storage) (
 }
 
 // NewWithResolver is NewWithPrevious plus a per-user KeyResolver
-// (ADR-0097): with a non-nil resolver, Create seals new files with the v3
-// envelope (a random per-file key wrapped for the storage key's owner) and
-// Open resolves v3 headers through it. A nil resolver keeps the v1/v2
-// behavior bit-identical.
+// (ADR-0097): with a non-nil resolver, Create seals new files on
+// user-owned keys with the v3 envelope (a random per-file key wrapped for
+// the storage key's owner) and Open resolves v3 headers through it;
+// ownerless keys seal v1/v2 as if no resolver were configured (ADR-0105).
+// A nil resolver keeps the v1/v2 behavior bit-identical.
 func NewWithResolver(current []byte, previous [][]byte, inner storage.Storage, res KeyResolver) (*FS, error) {
 	if inner == nil {
 		return nil, fmt.Errorf("encrypt: inner storage is nil")
@@ -364,10 +367,13 @@ func (f *FS) Open(ctx context.Context, p string) (io.ReadSeekCloser, error) {
 // preallocation hint only. With a KeyResolver configured, Create seals with
 // the v3 envelope: Allocate supplies a fresh wrapped file key whose UUID
 // goes into the header, and the writer exposes it via
-// storage.KeyUUIDWriter (ADR-0097). Without a resolver, single-key rings
-// write the v1 header bit-identically to pre-keyring deployments
-// (rollback-safe) and multi-key rings write the v2 header with the current
-// key's ID byte (ADR-0074).
+// storage.KeyUUIDWriter (ADR-0097) — but only for keys that name an owner
+// (OwnableStorageKey): ownerless keys (the appdata_<instanceID> system
+// trees) fall back to master-key sealing under the current keyring key
+// (ADR-0105 §1), byte-identical to a resolver-less ring's write. Without a
+// resolver, single-key rings write the v1 header bit-identically to
+// pre-keyring deployments (rollback-safe) and multi-key rings write the v2
+// header with the current key's ID byte (ADR-0074).
 func (f *FS) Create(ctx context.Context, p string, _ int64) (io.WriteCloser, error) {
 	wc, err := f.inner.Create(ctx, p, 0)
 	if err != nil {
@@ -381,7 +387,7 @@ func (f *FS) Create(ctx context.Context, p string, _ int64) (io.WriteCloser, err
 	var header []byte
 	var key []byte
 	var keyUUID [keyUUIDSize]byte
-	v3 := f.resolver != nil
+	v3 := f.resolver != nil && OwnableStorageKey(p)
 	if v3 {
 		uuid, fk, err := f.resolver.Allocate(ctx, p)
 		if err != nil {

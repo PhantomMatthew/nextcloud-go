@@ -191,6 +191,27 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-27** — SSE **appdata under per-user encryption** (ADR-0105).
+  Ownerless storage keys (the `appdata_<instanceID>/` trees — preview cache,
+  plugin system storage) no longer hit the resolver's loud Allocate failure:
+  the encrypt decorator's `Create` falls back to master-key sealing for them
+  via the new exported `encrypt.OwnableStorageKey` predicate (v2 header under
+  the current keyring key, byte-exact against a resolver-less multi-key
+  ring's write; user keys still seal v3). Previews of v3-sealed sources
+  self-seal under the source file key (**NCGOPV1**: HKDF-SHA256(FK, "",
+  "NCGOPV1"‖keyUUID) + single-shot AES-256-GCM with the cacheKey in the AD,
+  binding blob to variant) into a NEW `previews_enc` prefix on the RAW
+  backend — a separate prefix keeps rollback clean (an old binary sees a
+  clean cache miss and regenerates into the legacy path; it never sniffs an
+  unknown magic). New narrow seams on the preview Generator (`CacheRaw`,
+  `SourceKeys` = `files.DAV.KeyUUIDAt`, `Keys` = the resolver's `Resolve`);
+  nil seams keep master-mode bit-identical. The pregeneration job skips v3
+  sources whose FK won't resolve in its principal-less ctx (debug-logged,
+  never an error — enrolled users' previews render on first interactive
+  request). Preview GC sweeps both prefixes (`preview.NewGCJobSealed`).
+  Rotate-sweep coverage verified: the sweep walks from the storage root, so
+  v2 appdata blobs re-seal on rotation like any other v1/v2 (pinned by
+  `TestSweepRotateCoversAppdata`).
 - **2026-09-27** — SSE **filename encryption phase 4** (ADR-0104 §11/§12):
   tooling + rollout. New `internal/files.NameSweep` converts existing
   plaintext trees to NCGOFN1 ciphertext (`EncryptUser`) and reverses it

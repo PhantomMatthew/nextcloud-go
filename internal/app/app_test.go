@@ -6,6 +6,9 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"log/slog"
 	"net/http"
@@ -323,7 +326,7 @@ func TestOpenStorageS3(t *testing.T) {
 			Region:          "us-east-1",
 		},
 	}
-	st, _, err := openStorage(cfg, nil)
+	st, _, _, err := openStorage(cfg, nil)
 	if err != nil || st == nil {
 		t.Fatalf("openStorage s3 = %v %v", st, err)
 	}
@@ -335,7 +338,7 @@ func TestOpenStorageUnknown(t *testing.T) {
 	cfg.Storage.Backends = map[string]config.BackendConfig{
 		"mystery": {Type: "mystery"},
 	}
-	if _, _, err := openStorage(cfg, nil); err == nil {
+	if _, _, _, err := openStorage(cfg, nil); err == nil {
 		t.Fatal("expected unsupported type")
 	}
 }
@@ -446,7 +449,7 @@ func TestOpenStorageEncryptionNoResolver(t *testing.T) {
 	}
 	cfg.Encryption.Enabled = true
 	cfg.Encryption.MasterKeyPath = writeTestMasterKey(t)
-	st, res, err := openStorage(cfg, nil)
+	st, _, res, err := openStorage(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -679,5 +682,117 @@ func TestNewAppFilenameEncryptionWiresDirKeys(t *testing.T) {
 	}
 	if scheme, err := a.Users.(*users.SQLStore).UserNameScheme(ctx, admin.ID); err != nil || scheme != 0 {
 		t.Errorf("bootstrap admin name_scheme = %d %v, want 0 (pre-wiring creation)", scheme, err)
+	}
+}
+
+// TestNewAppPerUserKeysPreviewAndAppdata is the ADR-0105 end-to-end pin:
+// with per-user keys on, (1) the preview generator carries the self-sealing
+// seams, (2) a preview request on a v3 file works through the HTTP layer and
+// lands an NCGOPV1 blob under previews_enc on the raw backend, and (3) an
+// appdata (plugin-storage-shaped) write succeeds — pre-ADR-0105 it failed
+// loudly with "user not found".
+func TestNewAppPerUserKeysPreviewAndAppdata(t *testing.T) {
+	ctx := context.Background()
+	cfg := DevConfig()
+	cfg.Database.DSN = "file:ncgo-appdata-e2e?mode=memory&cache=shared"
+	root := t.TempDir()
+	cfg.Storage.Backends = map[string]config.BackendConfig{
+		"local": {Type: "localfs", Root: root},
+	}
+	cfg.Encryption.Enabled = true
+	cfg.Encryption.MasterKeyPath = writeTestMasterKey(t)
+	cfg.Encryption.PerUserKeys = true
+	cfg.Previews.Enabled = true
+	a, err := New(ctx, cfg, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Close(ctx) })
+
+	if a.previewGen == nil {
+		t.Fatal("preview generator not built")
+	}
+	if a.previewGen.CacheRaw == nil || a.previewGen.SourceKeys == nil || a.previewGen.Keys == nil {
+		t.Error("ADR-0105 self-sealing seams not wired in per-user mode")
+	}
+
+	// (3) appdata write + read round trip through the decorated storage.
+	dav, ok := a.davFS.(*files.DAV)
+	if !ok {
+		t.Fatal("davFS is not *files.DAV")
+	}
+	wc, err := dav.Storage.Create(ctx, "appdata_"+a.instanceID+"/plugins/p1/state.bin", 0)
+	if err != nil {
+		t.Fatalf("appdata create: %v", err)
+	}
+	if _, err := wc.Write([]byte("plugin state")); err != nil {
+		t.Fatal(err)
+	}
+	if err := wc.Close(); err != nil {
+		t.Fatalf("appdata write: %v", err)
+	}
+	rc, err := dav.Storage.Open(ctx, "appdata_"+a.instanceID+"/plugins/p1/state.bin")
+	if err != nil {
+		t.Fatalf("appdata open: %v", err)
+	}
+	body, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil || string(body) != "plugin state" {
+		t.Fatalf("appdata round trip = %q, %v", body, err)
+	}
+
+	// (2) upload a PNG and request its preview, both through the HTTP layer.
+	img := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	for y := 0; y < 64; y++ {
+		for x := 0; x < 64; x++ {
+			img.SetRGBA(x, y, color.RGBA{R: uint8(x), G: uint8(y), B: 128, A: 255})
+		}
+	}
+	var pngBuf bytes.Buffer
+	if err := png.Encode(&pngBuf, img); err != nil {
+		t.Fatal(err)
+	}
+	put := httptest.NewRequestWithContext(ctx, http.MethodPut, "/remote.php/dav/files/admin/photo.png", &pngBuf)
+	put.SetBasicAuth("admin", "admin")
+	putRec := httptest.NewRecorder()
+	a.Router.ServeHTTP(putRec, put)
+	if putRec.Code != http.StatusCreated && putRec.Code != http.StatusNoContent {
+		t.Fatalf("PUT status = %d, body %q", putRec.Code, putRec.Body.String())
+	}
+
+	get := httptest.NewRequestWithContext(ctx, http.MethodGet, "/index.php/core/preview?file=/photo.png&x=32&y=32", nil)
+	get.SetBasicAuth("admin", "admin")
+	getRec := httptest.NewRecorder()
+	a.Router.ServeHTTP(getRec, get)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("preview status = %d, body %q", getRec.Code, getRec.Body.String())
+	}
+	if ct := getRec.Header().Get("Content-Type"); ct != "image/png" {
+		t.Errorf("preview Content-Type = %q", ct)
+	}
+
+	// The sealed blob lives under previews_enc on the raw backend and names
+	// the source file's key UUID.
+	encDir := filepath.Join(root, "appdata_"+a.instanceID, "previews_enc")
+	entries, err := os.ReadDir(encDir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("previews_enc entries = %v, %v", len(entries), err)
+	}
+	blob, err := os.ReadFile(filepath.Join(encDir, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(blob), "NCGOPV1") {
+		t.Error("previews_enc blob lacks the NCGOPV1 magic")
+	}
+	adminRow, err := a.fileMeta.GetByPath(ctx, 1, "/photo.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(adminRow.KeyUUID) != 16 || !bytes.Contains(blob, adminRow.KeyUUID) {
+		t.Error("previews_enc blob does not name the source file's key UUID")
+	}
+	if _, err := os.ReadDir(filepath.Join(root, "appdata_"+a.instanceID, "previews")); !os.IsNotExist(err) {
+		t.Errorf("v3-source preview leaked into the decorated previews/ prefix (err = %v)", err)
 	}
 }

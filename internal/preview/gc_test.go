@@ -200,6 +200,56 @@ func TestGCJobListError(t *testing.T) {
 	}
 }
 
+// TestGCJobSealedSweepsBothPrefixes pins ADR-0105 §2 GC coverage: the
+// legacy decorated prefix and the NCGOPV1 previews_enc prefix on the raw
+// backend are swept with identical TTL semantics.
+func TestGCJobSealedSweepsBothPrefixes(t *testing.T) {
+	st, root := newGCStorage(t)
+	const encPrefix = "appdata_ocTestInstance/previews_enc"
+	oldLegacy := writeGCEntry(t, st, "old.jpg")
+	freshLegacy := writeGCEntry(t, st, "fresh.jpg")
+	// Entries under previews_enc live on the raw backend (the decorator
+	// never sees them); localfs is its own raw handle here.
+	writeRaw := func(name string) string {
+		t.Helper()
+		p := encPrefix + "/" + name
+		wc, err := st.Create(context.Background(), p, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := wc.Write([]byte("x")); err != nil {
+			t.Fatal(err)
+		}
+		_ = wc.Close()
+		return p
+	}
+	oldEnc := writeRaw("old.jpg")
+	freshEnc := writeRaw("fresh.jpg")
+	ageGCEntry(t, root, oldLegacy)
+	ageGCEntry(t, root, oldEnc)
+
+	job := NewGCJobSealed(st, gcTestPrefix, st, encPrefix, 0, nil, slog.New(slog.DiscardHandler))
+	if err := job.Run(context.Background(), nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	requireGone(t, st, oldLegacy)
+	requireGone(t, st, oldEnc)
+	requirePresent(t, st, freshLegacy)
+	requirePresent(t, st, freshEnc)
+}
+
+// TestGCJobSealedMissingEncPrefix: a missing previews_enc tree is an empty
+// pass, not an error (the throttle still starts — pinned by the second run
+// not sweeping).
+func TestGCJobSealedMissingEncPrefix(t *testing.T) {
+	st, _ := newGCStorage(t)
+	now := time.Now().UTC()
+	job := NewGCJobSealed(st, gcTestPrefix, st, "appdata_ocTestInstance/previews_enc", 0, func() time.Time { return now }, nil)
+	if err := job.Run(context.Background(), nil); err != nil {
+		t.Fatalf("Run with missing enc prefix: %v", err)
+	}
+}
+
 func TestGCJobGuards(t *testing.T) {
 	if job := NewGCJob(nil, gcTestPrefix, 0, nil, nil); job.Name() != jobs.JobPreviewGC {
 		t.Errorf("Name() = %q, want %q", job.Name(), jobs.JobPreviewGC)

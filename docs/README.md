@@ -65,6 +65,32 @@ requires the per-user key hierarchy.
    completes. In-flight chunked uploads spanning a sweep fail loudly at
    finalize and retry cleanly; run sweeps quiesced if that matters.
 
+### appdata and previews under per-user encryption (ADR-0105)
+
+`encryption.per_user_keys` covers system trees too; nothing to enable
+beyond the mode itself.
+
+- **appdata content is master-sealed in every mode.** The preview cache and
+  plugin system storage under `appdata_<instanceID>/` seal under the current
+  keyring key (v2 fallback; v1 on a single-key ring) instead of failing with
+  "user not found". `ncgo-cli encryption rotate-keys` covers these blobs —
+  the sweep walks from the storage root.
+- **Previews of per-user (v3) files self-seal under the source file's key**
+  (NCGOPV1) and live in a separate `appdata_<id>/previews_enc/` prefix,
+  written and read via the raw backend. Serving resolves the file key in the
+  requester's ctx — owner session, sharee wrap, or master-mode anonymous —
+  so a locked enrolled file's preview 404s exactly like its content.
+  Previews of non-v3 files keep the legacy decorated `previews/` path, and
+  pre-existing cache entries keep working.
+- **Enrolled users** (password-wrapped keys, ADR-0100): the upload-time
+  pregeneration job cannot resolve their file keys (principal-less ctx) and
+  skips those files (debug-logged, never an error) — the first interactive
+  preview request pays the render. Master-wrapped users pregenerate
+  normally.
+- **Rollback**: an older binary never sees `previews_enc/` (clean cache
+  miss → regenerate into `previews/`); the cache is self-healing. Preview GC
+  sweeps both prefixes.
+
 ## Status Legend
 
 - 🟢 **Accepted** — current authoritative design
