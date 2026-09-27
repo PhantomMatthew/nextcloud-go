@@ -157,13 +157,18 @@ DAV/files/trash/versions write is sealed without touching callers.
 - ~~**Key rotation** (header gains a key-ID/generation byte; re-seal
   sweep).~~ **Resolved by ADR-0074** (Phase 5b): v2 key-ID header,
   append-only keyring, `ncgo-cli encryption rotate-keys`.
-- **Per-user keys** (PHP Nextcloud parity; requires recovery-key design).
+- ~~**Per-user keys** (PHP Nextcloud parity; requires recovery-key
+  design).~~ (**design landed in ADR-0096**, implemented through
+  ADR-0097…0102 — key hierarchy, per-recipient wrapping, recovery chain,
+  password/app-token unlock)
 - ~~**`encryption encrypt-all` CLI sweep** to seal legacy plaintext files
   in place without waiting for organic rewrites (and a matching
   `decrypt-all` for decommissioning).~~ **Resolved by ADR-0070** (Phase
   4x): `ncgo-cli encryption encrypt-all|decrypt-all [--user uid]
   [--dry-run]`.
-- **Filename encryption** to close the metadata-leakage gap.
+- ~~**Filename encryption** to close the metadata-leakage gap.~~
+  (**design landed in ADR-0104** — NCGOFN1 parent-keyed deterministic
+  names with ciphertext-materialized paths; code per phase)
 - ~~**SSE-C for the S3 backend** as an alternative/complement.~~
   (**Rejected by ADR-0074**: a server-held SSE-C key shares the decorator's
   threat model exactly — per-request header plumbing for no security gain.)

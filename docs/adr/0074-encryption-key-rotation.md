@@ -176,9 +176,11 @@ Verified facts that shape the design:
 
 ### Disposition of remaining encryption follow-ups (Deferred)
 
-- **Filename encryption** — deferred: it changes every storage consumer
+- ~~**Filename encryption** — deferred: it changes every storage consumer
   (filecache paths, DAV listings, search, shares) and needs its own
-  design phase.
+  design phase.~~ (**design landed in ADR-0104** — NCGOFN1 parent-keyed
+  deterministic name encryption with ciphertext-materialized paths; code
+  per phase)
 - ~~**Per-user keys** — deferred: sharing requires per-recipient key
   wrapping and an admin-recovery design.~~ (**design landed in ADR-0096** —
   key hierarchy, per-recipient wrapping, recovery chain, and phased

@@ -191,6 +191,39 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-27** — SSE **filename encryption design** (ADR-0104, design
+  only, zero code): closes the last large at-rest metadata leak (ADR-0052
+  §6's accepted plaintext names/structure) now that 5w's wrapping
+  infrastructure exists. **NCGOFN1**: directories gain random 32-byte
+  directory keys addressed by `files.key_uuid` and wrapped per recipient in
+  the existing `file_keys` machinery; names are deterministic AEAD tokens —
+  `NK = HKDF-SHA256(DK_parent, info "NCGONK1"||parentKeyUUID)`, synthetic
+  nonce `HMAC-SHA256(NK, "NCGOFN1"||name)[:12]`, `base64url(nonce‖GCM ct‖tag)`
+  — and `files.path` keeps storing the joined segments as **ciphertext-
+  materialized paths**, so every path-prefix mechanism (subtree
+  rename/delete, locks, trash, versions, shares, sealed-subtree listing,
+  `UNIQUE(user_id,path)` collision semantics) works verbatim on opaque
+  tokens, and the plaintext-URL wire contract resolves by request-time
+  re-encryption through the requester's own wrap rows. Parent-keying makes
+  rename/move O(1) in crypto (descendant tokens unchanged); copy re-keys
+  the subtree. Pinned boundaries: 255 runes per name + 768 ciphertext chars
+  per path (MySQL InnoDB ceiling, 400 on violation); byte-exact case
+  sensitivity unified across dialects; post-decryption Go sort; search
+  becomes scan-and-decrypt with Unicode casefold (blind indexes rejected);
+  trash wrap retention becomes an explicit contract with permanent-delete
+  pruning (closing today's wrap-orphan leak); sharee mount names decrypt at
+  request time; public links keep the ADR-0101 enrolled-lock 403 boundary;
+  activity subjects store ciphertext tokens with placeholder fallback.
+  Opt-in `encryption.filename_encryption` (requires `per_user_keys`),
+  per-user transactional `encrypt-names`/`decrypt-names` sweeps
+  (migration 0023: `files.name_scheme`, `users.name_scheme`), v2/v3-style
+  rollback strand warning. Four implementation phases, each its own
+  increment. ADR-0074's filename deferral and ADR-0052's follow-up bullets
+  (filename → 0104, per-user keys → 0096…0102, the latter backfilled) are
+  strike-annotated. Alternatives rejected: scan-resolve, blind-index
+  column, parent_id recursion (documented revisit trigger for deep MySQL
+  trees), upstream E2EE metadata files, AES-SIV new dependency,
+  whole-tree keys, name-only encryption.
 - **2026-09-27** — Plugin fuel enforcement as wasm function-call metering
   (ADR-0103): `runtime.fuel_per_call` — parsed since Phase 0, documented as
   unenforced ("wazero v1 has no fuel") — now kills any plugin call that
