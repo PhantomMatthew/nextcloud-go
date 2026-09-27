@@ -61,8 +61,12 @@ the SOURCE file is v3 (its filecache row carries `key_uuid`):
 
   ```
   NK_pv = HKDF-SHA256(FK, salt="", info="NCGOPV1" || keyUUID)
-  blob  = "NCGOPV1"(8) || keyUUID(16) || nonce(12) ||
+  blob  = ~~"NCGOPV1"(8)~~ "NCGOPV1"(7) || keyUUID(16) || nonce(12) ||
           AES-256-GCM(NK_pv, nonce, rendered, ad="NCGOPV1" || keyUUID || cacheKey)
+
+  (Corrected 2026-09-28: the magic is the literal 7-byte string — the "(8)"
+  was a typo carried over from the NCGOENCn magics; the implementation and
+  its pinned tests use 7.)
   ```
 
   The cacheKey in the AD binds the blob to its exact variant (source etag,
