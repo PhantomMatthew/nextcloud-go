@@ -163,7 +163,13 @@ name.
 ### 6. Trash, versions, locks, uploads
 
 - **Trash**: `trash_items.original_path`/`name` store ciphertext strings
-  (computed with the deleter's wraps at delete time). Deleting to trash
+  (computed with the deleter's wraps at delete time). `location_id` embeds
+  only the (200-char-capped) name token — the translator supplies it through
+  a `Trash.LocationNamer` seam consulted *before* the storage move, so the
+  row id and the trash object keys agree and neither carries the plaintext
+  name; the `.d<ts>` suffix and `-N` dedup contract is unchanged, and the
+  cap keeps the id within `ValidLocationID`'s 255 chars. (Same-day phase-2
+  addition: the leak was found at phase-2 acceptance.) Deleting to trash
   **retains** the subtree's `file_keys` wrap rows — today's implicit
   orphan-survival becomes an explicit contract — so trash listing and restore
   resolve. Restore re-tokens the basename under the *current* parent DK.
@@ -299,7 +305,12 @@ log, and that residual is accepted and documented.
    - The trash listing degrades a trash item whose ancestor rows are gone
      (a child trashed before its parent) to its stored ciphertext fields —
      the §9 placeholder philosophy, never fabricated plaintext — while a
-     token that fails authentication stays a hard `ErrIntegrity`.)
+     token that fails authentication stays a hard `ErrIntegrity`.
+   - `trash_items.location_id` embeds the (200-char-capped) name token via a
+     `Trash.LocationNamer` seam consulted before the storage move — the row
+     id and trash object keys carry no plaintext name, and the cap keeps the
+     id within `ValidLocationID`'s 255 chars. Scheme-0 users keep the
+     plaintext basename form bit-identically.)
 3. **Sharing + activity + uploads**: ListIncoming decryption, activity token
    subjects, upload-session tokenization, public-link boundary tests.
 4. **Tooling**: encrypt-names/decrypt-names sweeps, status/reconcile

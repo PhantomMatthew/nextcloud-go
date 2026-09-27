@@ -27,6 +27,7 @@ import (
 type nameE2EEnv struct {
 	*keyShareEnv
 	tmeta *files.TranslatingStore
+	xlate *files.NameTranslator
 }
 
 func upgradeNameCrypt(t *testing.T, env *keyShareEnv, res *encrypt.SQLResolver) *nameE2EEnv {
@@ -38,8 +39,9 @@ func upgradeNameCrypt(t *testing.T, env *keyShareEnv, res *encrypt.SQLResolver) 
 	env.dav.Locks = files.NewTranslatingLockStore(files.NewSQLLockStore(env.db), xlate)
 	env.keys.Meta = tmeta
 	env.dav.Trash = files.NewTrash(env.dav.Storage, files.NewTranslatingTrashStore(files.NewSQLTrashStore(env.db), xlate), env.dav, env.users)
+	env.dav.Trash.LocationNamer = xlate.TrashLocationBase
 	env.dav.Versions = files.NewVersions(env.dav.Storage, files.NewTranslatingVersionStore(files.NewSQLVersionStore(env.db), xlate), env.dav, env.users)
-	return &nameE2EEnv{keyShareEnv: env, tmeta: tmeta}
+	return &nameE2EEnv{keyShareEnv: env, tmeta: tmeta, xlate: xlate}
 }
 
 func newNameE2EEnv(t *testing.T, uids ...string) *nameE2EEnv {
@@ -683,5 +685,116 @@ func TestNameCryptEnrolledShareeLocked(t *testing.T) {
 	}
 	if row := e2e.rawRowAs(t, actx, "alice", "/secret/plans.xlsx"); strings.Contains(rr.Body.String(), row.Name) {
 		t.Error("owner PROPFIND body leaks the name token")
+	}
+}
+
+// TestNameCryptTrashLocationIDTokenized pins ADR-0104 §6's location-id rule:
+// for a scheme-1 user the location id embeds the (capped) name token, so the
+// DB row AND the trash storage object key carry no plaintext name, while the
+// wire listing still decrypts and restore by the token id round-trips.
+func TestNameCryptTrashLocationIDTokenized(t *testing.T) {
+	ctx := context.Background()
+	env := newNameE2EEnv(t, "alice")
+	env.encryptUser(t, "alice")
+
+	env.write(t, "/payroll-2026.xlsx", "secret")
+	if err := env.dav.Remove(ctx, "alice", "/payroll-2026.xlsx"); err != nil {
+		t.Fatal(err)
+	}
+
+	var loc, name, origPath string
+	if err := env.db.QueryRow(ctx, `SELECT location_id, name, original_path FROM trash_items`).Scan(&loc, &name, &origPath); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{loc, name, origPath} {
+		if strings.Contains(field, "payroll") {
+			t.Errorf("trash row field %q leaks the plaintext name", field)
+		}
+	}
+	if !files.ValidLocationID(loc) || !strings.Contains(loc, ".d") {
+		t.Errorf("location id %q broke the .d<ts> contract", loc)
+	}
+
+	// The storage object sits under the token location id — the MoveToTrash
+	// rename and the row agree (the namer runs before the storage move).
+	if _, err := env.dav.Storage.Stat(ctx, "trash/alice/"+loc); err != nil {
+		t.Fatalf("trash object not under its token location id: %v", err)
+	}
+
+	ents, err := env.dav.Trash.List(ctx, "alice", "/trash")
+	if err != nil || len(ents) != 1 {
+		t.Fatalf("trash list = %v %v", ents, err)
+	}
+	if ents[0].TrashOriginal != "payroll-2026.xlsx" {
+		t.Errorf("wire original = %q, want plaintext payroll-2026.xlsx", ents[0].TrashOriginal)
+	}
+	if _, _, err := env.dav.Trash.Restore(ctx, "alice", loc, "alice", "", false); err != nil {
+		t.Fatal(err)
+	}
+	rc, _, err := env.dav.Read(ctx, "alice", "/payroll-2026.xlsx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "secret" {
+		t.Errorf("restored content = %q, want secret", body)
+	}
+}
+
+// TestNameCryptTrashLocationIDScheme0Unchanged pins the bit-compat carve-out:
+// with the namer wired but the user still scheme 0, the location id is the
+// plaintext basename form exactly as before the feature.
+func TestNameCryptTrashLocationIDScheme0Unchanged(t *testing.T) {
+	ctx := context.Background()
+	env := newNameE2EEnv(t, "alice")
+
+	env.write(t, "/plain.txt", "x")
+	if err := env.dav.Remove(ctx, "alice", "/plain.txt"); err != nil {
+		t.Fatal(err)
+	}
+	var loc string
+	if err := env.db.QueryRow(ctx, `SELECT location_id FROM trash_items`).Scan(&loc); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(loc, "plain.txt.d") {
+		t.Errorf("scheme-0 location id = %q, want plain.txt.d<ts>", loc)
+	}
+}
+
+// TestNameCryptTrashLocationIDLongName pins the 200-char base cap: a 204-byte
+// name is within the creation budgets (255 runes, 768-char ciphertext path)
+// but its ~300-char token would overflow ValidLocationID's 255-char limit
+// without the cap. The item must still trash and restore.
+func TestNameCryptTrashLocationIDLongName(t *testing.T) {
+	ctx := context.Background()
+	env := newNameE2EEnv(t, "alice")
+	env.encryptUser(t, "alice")
+
+	long := "/" + strings.Repeat("n", 200) + ".txt" // 204 runes, ~300-char token
+	env.write(t, long, "x")
+	if err := env.dav.Remove(ctx, "alice", long); err != nil {
+		t.Fatal(err)
+	}
+	var loc string
+	if err := env.db.QueryRow(ctx, `SELECT location_id FROM trash_items`).Scan(&loc); err != nil {
+		t.Fatal(err)
+	}
+	if !files.ValidLocationID(loc) {
+		t.Errorf("location id of %d chars rejected", len(loc))
+	}
+	if strings.Contains(loc, "nnnn") {
+		t.Errorf("location id %q leaks the plaintext name", loc)
+	}
+	if _, _, err := env.dav.Trash.Restore(ctx, "alice", loc, "alice", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := env.dav.Read(ctx, "alice", long); err != nil {
+		t.Fatalf("restored long-name file unreadable: %v", err)
 	}
 }

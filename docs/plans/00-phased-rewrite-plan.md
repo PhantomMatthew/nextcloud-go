@@ -191,6 +191,21 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-27** — Filename encryption phase-2 acceptance fix (ADR-0104 §6,
+  same-day note): `trash_items.location_id` embedded the **plaintext**
+  basename — computed by the Trash service before the translating store saw
+  the row, and used for the storage move before the insert, so a store-level
+  rewrite would have desynced the row id from the object key. New nil-ok
+  `Trash.LocationNamer` seam, consulted before the storage move and wired to
+  `NameTranslator.TrashLocationBase` when filename encryption is on: scheme-1
+  users embed the NCGOFN1 name token (200-char capped to stay inside
+  `ValidLocationID`'s 255-char limit; `.d<ts>`/`-N` contract unchanged),
+  scheme-0 users keep the plaintext basename bit-identically. Neither the DB
+  row nor the trash object keys carry plaintext names anymore. E2E pins:
+  tokenized id + object-key agreement + restore round-trip, scheme-0
+  bit-compat, and a 204-byte name whose ~300-char token would overflow the
+  id without the cap (the first attempt with a 720-byte CJK name proved the
+  768-char ciphertext-path budget instead — creation correctly 400s).
 - **2026-09-27** — SSE **filename encryption phase 2** (ADR-0104 §12): store +
   DAV cutover behind `encryption.filename_encryption`. **Architecture: one
   translating decorator** (`files.TranslatingStore`) around the files `Store`,

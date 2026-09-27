@@ -345,6 +345,42 @@ func (t *NameTranslator) PlainPath(ctx context.Context, userID int64, cipherPath
 	return plain, nil
 }
 
+// trashLocationBaseMax caps the basename a trash location id embeds so the id
+// (base + ".d<unix>" + optional "-N" dedup suffix) stays within
+// ValidLocationID's 255-char limit for maximum-length names. Truncation is
+// safe: the id is opaque (the full name lives in original_path/name) and the
+// service's "-N" dedup absorbs the extra collisions.
+const trashLocationBaseMax = 200
+
+// TrashLocationBase returns the basename to embed in a trash location id for
+// plainPath (ADR-0104 §6): the NCGOFN1 name token for scheme-1 users, so
+// neither trash_items.location_id nor the trash storage object keys carry the
+// plaintext name; the plaintext basename for scheme-0 users, bit-identical to
+// the pre-feature behavior. The Trash service consults it BEFORE moving the
+// storage object, so the row id and the object key agree.
+func (t *NameTranslator) TrashLocationBase(ctx context.Context, userID int64, plainPath string) (string, error) {
+	np, err := NormalizePath(plainPath)
+	if err != nil {
+		return "", err
+	}
+	scheme, err := t.schemeFor(ctx, newTranslateCache(), userID)
+	if err != nil {
+		return "", err
+	}
+	if scheme != encrypt.NameSchemeNCGOFN1 {
+		return path.Base(np), nil
+	}
+	cp, err := t.cipherPath(ctx, newTranslateCache(), userID, np)
+	if err != nil {
+		return "", err
+	}
+	base := path.Base(cp)
+	if len(base) > trashLocationBaseMax {
+		base = base[:trashLocationBaseMax]
+	}
+	return base, nil
+}
+
 // checkNameBudget enforces the ADR-0104 §3 plaintext name budget (255 runes
 // per segment) for scheme-1 users, for paths that have not been written yet
 // (mkdir, move destination). It intentionally does NOT walk rows: the leaf

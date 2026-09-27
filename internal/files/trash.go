@@ -25,6 +25,12 @@ type Trash struct {
 	Users     users.Store
 	Clock     func() time.Time
 	Retention time.Duration
+	// LocationNamer, when set (filename encryption, ADR-0104 §6), maps the
+	// trashed path to the basename embedded in the location id — the NCGOFN1
+	// name token for scheme-1 users — so neither trash_items.location_id nor
+	// the trash storage object keys carry the plaintext name. Nil keeps the
+	// plaintext basename (pre-feature behavior).
+	LocationNamer func(ctx context.Context, userID int64, plainPath string) (string, error)
 }
 
 // NewTrash returns a trashbin adapter.
@@ -210,7 +216,14 @@ func (t *Trash) MoveToTrash(ctx context.Context, user, p, deletedBy string) erro
 	}
 	parent := f.ParentID
 	now := t.now()
-	loc, err := t.uniqueLocationID(ctx, usr.ID, f.Name, now)
+	locName := f.Name
+	if t.LocationNamer != nil {
+		locName, err = t.LocationNamer(ctx, usr.ID, np)
+		if err != nil {
+			return err
+		}
+	}
+	loc, err := t.uniqueLocationID(ctx, usr.ID, locName, now)
 	if err != nil {
 		return err
 	}

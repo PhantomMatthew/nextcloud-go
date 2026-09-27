@@ -296,6 +296,9 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		versionStore = files.NewTranslatingVersionStore(versionStore, nameTranslator)
 	}
 	tr := files.NewTrash(st, trashStore, dav, a.Users)
+	if nameTranslator != nil {
+		tr.LocationNamer = nameTranslator.TrashLocationBase
+	}
 	dav.Trash = tr
 	a.trashFS = tr
 	ver := files.NewVersions(st, versionStore, dav, a.Users)
