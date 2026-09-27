@@ -94,26 +94,36 @@ func (t *NameTranslator) schemeFor(ctx context.Context, c *translateCache, userI
 	return scheme, nil
 }
 
-// nkFor resolves the directory key named by keyUUID and derives its name key,
-// both cached by key UUID for the call. The 16-byte key UUID comes from a
-// folder row's key_uuid.
-func (t *NameTranslator) nkFor(ctx context.Context, c *translateCache, keyUUID []byte) ([]byte, [keyUUIDSize]byte, error) {
+// dkFor resolves the 32-byte key named by keyUUID — a directory key, or a
+// file key playing the directory-key role for a file share target (ADR-0104
+// §7) — cached by key UUID for the call.
+func (t *NameTranslator) dkFor(ctx context.Context, c *translateCache, keyUUID []byte) ([]byte, [keyUUIDSize]byte, error) {
 	var id [keyUUIDSize]byte
 	if len(keyUUID) != keyUUIDSize {
 		return nil, id, fmt.Errorf("files: folder key uuid is %d bytes, want %d (directory key missing)", len(keyUUID), keyUUIDSize)
 	}
 	copy(id[:], keyUUID)
+	if dk, ok := c.dk[id]; ok {
+		return dk, id, nil
+	}
+	dk, err := t.keys.Resolve(ctx, id)
+	if err != nil {
+		return nil, id, err
+	}
+	c.dk[id] = dk
+	return dk, id, nil
+}
+
+// nkFor resolves the directory key named by keyUUID and derives its name key,
+// both cached by key UUID for the call. The 16-byte key UUID comes from a
+// folder row's key_uuid.
+func (t *NameTranslator) nkFor(ctx context.Context, c *translateCache, keyUUID []byte) ([]byte, [keyUUIDSize]byte, error) {
+	dk, id, err := t.dkFor(ctx, c, keyUUID)
+	if err != nil {
+		return nil, id, err
+	}
 	if nk, ok := c.nk[id]; ok {
 		return nk, id, nil
-	}
-	dk, ok := c.dk[id]
-	if !ok {
-		resolved, err := t.keys.Resolve(ctx, id)
-		if err != nil {
-			return nil, id, err
-		}
-		dk = resolved
-		c.dk[id] = dk
 	}
 	nk, err := encrypt.DeriveNameKey(dk, id)
 	if err != nil {
@@ -409,6 +419,260 @@ func (t *NameTranslator) checkNameBudget(ctx context.Context, userID int64, p st
 		}
 	}
 	return nil
+}
+
+// ShareCipherPath maps a plaintext owner path to the ciphertext form the
+// shares table carries (ADR-0104 phase 3a), reporting whether the user is
+// scheme 1 at all (scheme-0 users store plaintext paths — encrypted=false,
+// ct is the normalized plaintext).
+func (t *NameTranslator) ShareCipherPath(ctx context.Context, userID int64, plainPath string) (ct string, encrypted bool, err error) {
+	c := newTranslateCache()
+	np, err := NormalizePath(plainPath)
+	if err != nil {
+		return "", false, err
+	}
+	scheme, err := t.schemeFor(ctx, c, userID)
+	if err != nil {
+		return "", false, err
+	}
+	if scheme != encrypt.NameSchemeNCGOFN1 {
+		return np, false, nil
+	}
+	cp, err := t.cipherPath(ctx, c, userID, np)
+	if err != nil {
+		return "", false, err
+	}
+	return cp, true, nil
+}
+
+// SealShareMeta computes the grant-time share row for a plaintext owner path
+// (ADR-0104 §7): the ciphertext file_path plus the two share-scoped metadata
+// copies sealed under the share target's OWN key (which share wrap holders —
+// and the server — can open):
+//
+//   - mountNameEnc: the mount basename as an NCGOFN1 token under the target's
+//     key. The basename's tree token lives under the share root's PARENT
+//     directory key, which sharees never hold — hence this share-scoped copy.
+//   - absPathEnc: the plaintext absolute path under SealPath (NCGOSP1).
+//     Content ops through the mount derive storage keys from the plaintext
+//     path, and for an enrolled offline owner nobody can decrypt the ancestor
+//     chain — hence this sealed copy, readable by exactly the wrap holders.
+//
+// The target row must exist (Create stats it first); a directory target seals
+// under its DK, a file target under its FK (which plays the DK role here). A
+// scheme-0 user returns (plainPath, "", "", nil) — callers store plaintext
+// rows with empty enc fields, bit-identical to pre-phase-3a. A seal failure
+// (an unresolvable key in the grant ctx — e.g. an enrolled owner without an
+// unlocked session) is a LOUD error, never a plaintext fallback.
+func (t *NameTranslator) SealShareMeta(ctx context.Context, userID int64, plainPath string) (ctPath, mountNameEnc, absPathEnc string, err error) {
+	c := newTranslateCache()
+	np, err := NormalizePath(plainPath)
+	if err != nil {
+		return "", "", "", err
+	}
+	scheme, err := t.schemeFor(ctx, c, userID)
+	if err != nil {
+		return "", "", "", err
+	}
+	if scheme != encrypt.NameSchemeNCGOFN1 {
+		return np, "", "", nil
+	}
+	cp, err := t.cipherPath(ctx, c, userID, np)
+	if err != nil {
+		return "", "", "", err
+	}
+	row, err := t.raw.GetByPath(ctx, userID, cp)
+	if err != nil {
+		return "", "", "", err
+	}
+	dk, uuid, err := t.dkFor(ctx, c, row.KeyUUID)
+	if err != nil {
+		return "", "", "", err
+	}
+	nk, err := encrypt.DeriveNameKey(dk, uuid)
+	if err != nil {
+		return "", "", "", err
+	}
+	mountEnc, err := encrypt.EncryptName(nk, uuid, path.Base(np))
+	if err != nil {
+		return "", "", "", err
+	}
+	absEnc, err := encrypt.SealPath(dk, uuid, np)
+	if err != nil {
+		return "", "", "", err
+	}
+	return cp, mountEnc, absEnc, nil
+}
+
+// OpenShareMeta reverses SealShareMeta for a share row (ADR-0104 §7): the
+// sealed absolute plaintext path and the mount basename. A plaintext share
+// (AbsPathEnc empty) passes through with (Path, basename). Otherwise the
+// target row is fetched by the ciphertext Path and its key resolved in the
+// CALLER's ctx — a sharee resolves through their own wrap row (this is what
+// lifts the phase-2 enrolled-sharee 403), while an enrolled owner with no
+// unlocked session surfaces ErrKeyLocked (the pinned public-link boundary).
+// Tampered enc fields surface ErrIntegrity — never a plaintext fallback.
+func (t *NameTranslator) OpenShareMeta(ctx context.Context, ownerUserID int64, sh *Share) (plainAbsPath, mountName string, err error) {
+	if sh == nil {
+		return "", "", fmt.Errorf("files: open share meta: nil share")
+	}
+	if sh.AbsPathEnc == "" {
+		return sh.Path, path.Base(sh.Path), nil
+	}
+	row, err := t.raw.GetByPath(ctx, ownerUserID, sh.Path)
+	if err != nil {
+		return "", "", err
+	}
+	c := newTranslateCache()
+	dk, uuid, err := t.dkFor(ctx, c, row.KeyUUID)
+	if err != nil {
+		return "", "", err
+	}
+	abs, err := encrypt.OpenPath(dk, uuid, sh.AbsPathEnc)
+	if err != nil {
+		return "", "", err
+	}
+	nk, err := encrypt.DeriveNameKey(dk, uuid)
+	if err != nil {
+		return "", "", err
+	}
+	mount, err := encrypt.DecryptName(nk, uuid, sh.MountNameEnc)
+	if err != nil {
+		return "", "", err
+	}
+	return abs, mount, nil
+}
+
+// AnchorRow fetches the raw (ciphertext) row at an owner's ciphertext path —
+// the share-root anchor for mount-scoped resolution (ADR-0104 phase 3a).
+func (t *NameTranslator) AnchorRow(ctx context.Context, ownerUserID int64, cipherPath string) (*File, error) {
+	np, err := NormalizePath(cipherPath)
+	if err != nil {
+		return nil, err
+	}
+	return t.raw.GetByPath(ctx, ownerUserID, np)
+}
+
+// CipherPathUnder tokenizes relPlain's segments starting from the anchor row
+// — the anchor's own key UUID keys the first segment — and never touches rows
+// above the anchor (ADR-0104 phase 3a: a sharee's wraps cover every in-subtree
+// directory key, but nothing above the share root). relPlain is "" or "/" for
+// the anchor itself, else a "/"-joined plaintext relative path. anchorCipherPath
+// is the anchor row's stored ciphertext path (passed rather than re-read so the
+// caller's mount-table row and this walk agree). A missing intermediate row is
+// ErrNotFound, a non-directory one ErrNotDir; the leaf need not exist (creates).
+func (t *NameTranslator) CipherPathUnder(ctx context.Context, anchor *File, anchorCipherPath, relPlain string) (string, error) {
+	if anchor == nil {
+		return "", fmt.Errorf("files: cipher path under nil anchor")
+	}
+	base, err := NormalizePath(anchorCipherPath)
+	if err != nil {
+		return "", err
+	}
+	rel, err := NormalizePath(relPlain)
+	if err != nil {
+		return "", err
+	}
+	if rel == "/" {
+		return base, nil
+	}
+	c := newTranslateCache()
+	parent := anchor
+	ct := strings.TrimSuffix(base, "/")
+	segs := strings.Split(strings.TrimPrefix(rel, "/"), "/")
+	for i, seg := range segs {
+		tok, err := t.cipherSegment(ctx, c, parent, seg)
+		if err != nil {
+			return "", err
+		}
+		ct += "/" + tok
+		if len(ct) > maxCipherPathChars {
+			return "", fmt.Errorf("files: ciphertext path under the share root exceeds %d chars: %w", maxCipherPathChars, ErrNameBudget)
+		}
+		if i < len(segs)-1 {
+			row, err := t.raw.GetByPath(ctx, anchor.UserID, ct)
+			if err != nil {
+				return "", err
+			}
+			if !row.IsDir {
+				return "", ErrNotDir
+			}
+			parent = row
+		}
+	}
+	return ct, nil
+}
+
+// DecryptUnderAnchor decrypts each row's name chain relative to the anchor —
+// never walking above it — and rewrites the rows to the plaintext mount view:
+// Name decrypted, Path = mountPath + "/" + the decrypted relative path (the
+// anchor row itself, rel "/", maps to mountPath with the mount basename).
+// Rows must sit at or below anchorCipherPath (callers pass subtree listings).
+// A sharee's wrap rows cover every in-subtree directory key, so resolution in
+// the caller's ctx succeeds for enrolled owners too (ADR-0104 phase 3a). A
+// tampered token surfaces ErrIntegrity, never a silent plaintext fallback.
+func (t *NameTranslator) DecryptUnderAnchor(ctx context.Context, anchor *File, anchorCipherPath, mountPath string, rows []File) ([]File, error) {
+	if anchor == nil {
+		return nil, fmt.Errorf("files: decrypt under nil anchor")
+	}
+	base, err := NormalizePath(anchorCipherPath)
+	if err != nil {
+		return nil, err
+	}
+	mount, err := NormalizePath(mountPath)
+	if err != nil {
+		return nil, err
+	}
+	c := newTranslateCache()
+	parents := map[string]*File{base: anchor}
+	prefix := base
+	if prefix != "/" {
+		prefix += "/"
+	}
+	out := make([]File, 0, len(rows))
+	for i := range rows {
+		row := rows[i]
+		rel, under := strings.CutPrefix(row.Path, prefix)
+		if row.Path == base {
+			rel, under = "", true
+		}
+		if !under {
+			return nil, fmt.Errorf("files: row %q is not under the anchor %q", row.Path, base)
+		}
+		if rel == "" {
+			row.Name = path.Base(mount)
+			row.Path = mount
+			out = append(out, row)
+			continue
+		}
+		segs := strings.Split(rel, "/")
+		parent := anchor
+		ct := strings.TrimSuffix(base, "/")
+		plain := ""
+		for i, tok := range segs {
+			name, err := t.decryptSegment(ctx, c, parent, tok)
+			if err != nil {
+				return nil, err
+			}
+			plain += "/" + name
+			ct += "/" + tok
+			if i < len(segs)-1 {
+				next, ok := parents[ct]
+				if !ok {
+					next, err = t.raw.GetByPath(ctx, anchor.UserID, ct)
+					if err != nil {
+						return nil, err
+					}
+					parents[ct] = next
+				}
+				parent = next
+			}
+		}
+		row.Name = path.Base(plain)
+		row.Path = joinNamePath(mount, strings.TrimPrefix(plain, "/"))
+		out = append(out, row)
+	}
+	return out, nil
 }
 
 // joinNamePath joins a plaintext parent path and a basename.

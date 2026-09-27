@@ -47,6 +47,30 @@ type ShareKeys interface {
 	UnwrapForShare(ctx context.Context, sh *files.Share) error
 }
 
+// NameCodec is the ADR-0104 phase-3a share-metadata cipher seam: share rows
+// carry the ciphertext owner path plus the sealed mount name / absolute path
+// copies. *files.NameTranslator satisfies it; nil keeps every share row
+// plaintext (the filename-encryption flag off — bit-identical behavior).
+type NameCodec interface {
+	// ShareCipherPath maps a plaintext owner path to the ciphertext form
+	// stored in shares.file_path, reporting whether the user is scheme 1.
+	ShareCipherPath(ctx context.Context, userID int64, plainPath string) (ct string, encrypted bool, err error)
+	// SealShareMeta computes the grant-time ciphertext path and sealed
+	// metadata copies for a plaintext owner path.
+	SealShareMeta(ctx context.Context, userID int64, plainPath string) (ctPath, mountNameEnc, absPathEnc string, err error)
+	// OpenShareMeta resolves a share row to its plaintext absolute owner
+	// path and mount basename in the caller's ctx.
+	OpenShareMeta(ctx context.Context, ownerUserID int64, sh *files.Share) (plainAbsPath, mountName string, err error)
+}
+
+// shareMetaStore is the rename re-seal seam over the share store
+// (ADR-0104 phase 3a): *SQLShareStore satisfies it. ResealShareMeta reports
+// an error when the wired store lacks it and the codec is live.
+type shareMetaStore interface {
+	ListByPrefix(ctx context.Context, ownerUserID int64, filePath string) ([]files.Share, error)
+	UpdateEncFields(ctx context.Context, id int64, mountNameEnc, absPathEnc string) error
+}
+
 // Service creates and serves public-link shares.
 type Service struct {
 	Store    files.ShareStore
@@ -58,7 +82,11 @@ type Service struct {
 	OCM      *ocm.Client
 	Notifs   ShareNotifier
 	Keys     ShareKeys
-	Logger   *slog.Logger
+	// NameCodec, when set (filename encryption on, ADR-0104 phase 3a), seals
+	// share metadata at grant and opens it for owner/sharee-facing views.
+	// Nil keeps plaintext share rows (flag off — bit-identical).
+	NameCodec NameCodec
+	Logger    *slog.Logger
 }
 
 func (s *Service) now() time.Time {
@@ -198,10 +226,23 @@ func (s *Service) Create(ctx context.Context, uid, pathName string, shareType, p
 	if shareType != files.ShareTypeLink {
 		hash = ""
 	}
+	// ADR-0104 phase 3a: a scheme-1 owner's share row carries the ciphertext
+	// path plus the sealed mount-name/absolute-path copies, so sharees anchor
+	// name resolution at the share root. A seal failure is loud (500) — never
+	// a plaintext fallback. Scheme 0 (or no codec wired) stores today's exact
+	// plaintext row.
+	storePath, mountNameEnc, absPathEnc := np, "", ""
+	if s.NameCodec != nil {
+		ctPath, mEnc, aEnc, err := s.NameCodec.SealShareMeta(ctx, u.ID, np)
+		if err != nil {
+			return nil, err
+		}
+		storePath, mountNameEnc, absPathEnc = ctPath, mEnc, aEnc
+	}
 	sh := &files.Share{
 		OwnerUserID:  u.ID,
 		ShareType:    shareType,
-		Path:         np,
+		Path:         storePath,
 		ItemType:     itemType,
 		Token:        tok,
 		PasswordHash: hash,
@@ -211,12 +252,14 @@ func (s *Service) Create(ctx context.Context, uid, pathName string, shareType, p
 		StimeMs:      s.now().UnixMilli(),
 		ShareWith:    shareWith,
 		Accepted:     1,
+		MountNameEnc: mountNameEnc,
+		AbsPathEnc:   absPathEnc,
 	}
 	if err := s.Store.Insert(ctx, sh); err != nil {
 		return nil, err
 	}
 	if shareType == files.ShareTypeRemote {
-		if err := s.notifyRemote(ctx, u, sh, origin); err != nil {
+		if err := s.notifyRemote(ctx, u, sh, np, origin); err != nil {
 			if delErr := s.Store.Delete(ctx, sh.ID); delErr != nil {
 				return nil, errors.Join(err, delErr)
 			}
@@ -224,13 +267,13 @@ func (s *Service) Create(ctx context.Context, uid, pathName string, shareType, p
 		}
 	}
 	if shareType == files.ShareTypeUser || shareType == files.ShareTypeGroup {
-		s.notifyShareCreated(ctx, u, sh)
+		s.notifyShareCreated(ctx, u, sh, np)
 		s.wrapShareKeys(ctx, sh)
 	}
 	return sh, nil
 }
 
-func (s *Service) notifyRemote(ctx context.Context, owner *users.User, sh *files.Share, origin string) error {
+func (s *Service) notifyRemote(ctx context.Context, owner *users.User, sh *files.Share, plainPath, origin string) error {
 	if s.OCM == nil {
 		return errFederate
 	}
@@ -249,7 +292,7 @@ func (s *Service) notifyRemote(ctx context.Context, owner *users.User, sh *files
 	}
 	if err := s.OCM.NotifyOutgoing(ctx, endPoint, ocm.OutgoingNotice{
 		ShareWith:    sh.ShareWith,
-		Name:         path.Base(sh.Path),
+		Name:         path.Base(plainPath),
 		ProviderID:   strconv.FormatInt(sh.ID, 10),
 		Owner:        ownerCloud,
 		Sender:       ownerCloud,
@@ -273,9 +316,12 @@ type richParam struct {
 }
 
 // notifyShareCreated sends the incoming-share bell for user and group shares
-// (ADR-0082). A notification failure never fails the share: it is Warn-logged
-// and share creation continues.
-func (s *Service) notifyShareCreated(ctx context.Context, owner *users.User, sh *files.Share) {
+// (ADR-0082). plainPath is the plaintext owner path (the row's Path is
+// ciphertext for scheme-1 owners, ADR-0104 phase 3a — notification subjects
+// stay plaintext until the §9 token-subject design in phase 3b). A
+// notification failure never fails the share: it is Warn-logged and share
+// creation continues.
+func (s *Service) notifyShareCreated(ctx context.Context, owner *users.User, sh *files.Share, plainPath string) {
 	if s.Notifs == nil {
 		return
 	}
@@ -285,7 +331,7 @@ func (s *Service) notifyShareCreated(ctx context.Context, owner *users.User, sh 
 		sharerName = owner.UID
 	}
 	params := map[string]richParam{
-		"share": {Type: "highlight", ID: objectID, Name: sh.Path},
+		"share": {Type: "highlight", ID: objectID, Name: plainPath},
 		"user":  {Type: "user", ID: owner.UID, Name: sharerName},
 	}
 	var subject, template string
@@ -297,7 +343,7 @@ func (s *Service) notifyShareCreated(ctx context.Context, owner *users.User, sh 
 			s.warn("sharing: share notification: sharee lookup failed", slog.String("sharee", sh.ShareWith), slog.Any("err", err))
 			return
 		}
-		subject = fmt.Sprintf("You received %s as a share by %s", sh.Path, sharerName)
+		subject = fmt.Sprintf("You received %s as a share by %s", plainPath, sharerName)
 		template = "You received {share} as a share by {user}"
 		recipients = append(recipients, sharee)
 	case files.ShareTypeGroup:
@@ -307,7 +353,7 @@ func (s *Service) notifyShareCreated(ctx context.Context, owner *users.User, sh 
 			groupName = g.DisplayName
 		}
 		params["group"] = richParam{Type: "user-group", ID: gid, Name: groupName}
-		subject = fmt.Sprintf("You received %s to group %s as a share by %s", sh.Path, gid, sharerName)
+		subject = fmt.Sprintf("You received %s to group %s as a share by %s", plainPath, gid, sharerName)
 		template = "You received {share} to group {group} as a share by {user}"
 		members, err := s.Users.GroupMembers(ctx, gid, 0)
 		if err != nil {
@@ -428,6 +474,20 @@ func (s *Service) ListForOwner(ctx context.Context, uid, pathFilter string) ([]f
 	u, err := s.ownerOf(ctx, uid)
 	if err != nil {
 		return nil, err
+	}
+	// ADR-0104 phase 3a: shares.file_path is ciphertext for scheme-1 owners,
+	// so the (plaintext) OCS path filter translates before the exact match. A
+	// filter whose path no longer resolves has no live shares by construction
+	// (deleting a subtree deletes its shares) — empty, not an error.
+	if s.NameCodec != nil && pathFilter != "" {
+		ct, _, err := s.NameCodec.ShareCipherPath(ctx, u.ID, pathFilter)
+		if err != nil {
+			if errors.Is(err, files.ErrNotFound) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		pathFilter = ct
 	}
 	items, err := s.Store.ListByOwner(ctx, u.ID, pathFilter)
 	if err != nil {
@@ -567,7 +627,19 @@ func (s *Service) SharePayload(ctx context.Context, r *http.Request, sh *files.S
 	if err != nil {
 		return nil, err
 	}
-	ent, err := s.Files.Stat(ctx, owner.UID, sh.Path)
+	// ADR-0104 phase 3a: the OCS payload speaks plaintext paths. Open the
+	// sealed share metadata in the owner's ctx — the owner's own keys always
+	// resolve for them, so a failure here is loud (no ciphertext on the wire,
+	// no silent fallback).
+	plainPath := sh.Path
+	if s.NameCodec != nil && sh.AbsPathEnc != "" {
+		plain, _, err := s.NameCodec.OpenShareMeta(ctx, sh.OwnerUserID, sh)
+		if err != nil {
+			return nil, err
+		}
+		plainPath = plain
+	}
+	ent, err := s.Files.Stat(ctx, owner.UID, plainPath)
 	if err != nil && !errors.Is(err, webdav.ErrNotFound) {
 		return nil, err
 	}
@@ -615,10 +687,22 @@ func (s *Service) SharePayload(ctx context.Context, r *http.Request, sh *files.S
 	case files.ShareTypeRemote:
 		shareWithDisplay = sh.ShareWith
 	}
-	return shareMap(sh, owner.UID, display, mime, fileID, url, expiration, shareWithDisplay), nil
+	view := *sh
+	view.Path = plainPath
+	return shareMap(&view, owner.UID, display, mime, fileID, url, expiration, shareWithDisplay), nil
 }
 
 // ListIncoming implements files.IncomingLookup.
+//
+// ADR-0104 phase 3a: a scheme-1 owner's share row carries the ciphertext
+// owner path plus the sealed mount metadata. Each such share is opened in
+// the SHAREE's ctx — the sharee resolves the share root's key through their
+// own wrap row (master-wrapped owners resolve in any ctx), so the returned
+// mount carries the plaintext OwnerPath (for storage-key derivation), the
+// OwnerCipherPath (for share-root-anchored name resolution), and the
+// decrypted Mount basename. An enrolled sharee without an unlocked session
+// surfaces ErrKeyLocked — the ADR-0101 boundary, loud by design; plaintext
+// shares pass through byte-identically.
 func (s *Service) ListIncoming(ctx context.Context, shareeUID string) ([]files.IncomingMount, error) {
 	if s == nil || s.Store == nil || shareeUID == "" {
 		return nil, nil
@@ -650,13 +734,23 @@ func (s *Service) ListIncoming(ctx context.Context, shareeUID string) ([]files.I
 		if err != nil {
 			continue
 		}
-		mount := "/" + pathBase(items[i].Path)
+		sh := &items[i]
+		ownerPath, mount := sh.Path, "/"+pathBase(sh.Path)
+		ownerCipher := ""
+		if s.NameCodec != nil && sh.AbsPathEnc != "" {
+			plain, mountName, err := s.NameCodec.OpenShareMeta(ctx, sh.OwnerUserID, sh)
+			if err != nil {
+				return nil, err
+			}
+			ownerPath, mount, ownerCipher = plain, "/"+mountName, sh.Path
+		}
 		out = append(out, files.IncomingMount{
-			OwnerUID:    owner.UID,
-			OwnerPath:   items[i].Path,
-			Mount:       mount,
-			Permissions: items[i].Permissions,
-			ItemType:    items[i].ItemType,
+			OwnerUID:        owner.UID,
+			OwnerPath:       ownerPath,
+			OwnerCipherPath: ownerCipher,
+			Mount:           mount,
+			Permissions:     sh.Permissions,
+			ItemType:        sh.ItemType,
 		})
 	}
 	return out, nil
@@ -668,6 +762,82 @@ func pathBase(p string) string {
 		return p[i+1:]
 	}
 	return p
+}
+
+// ResealShareMeta refreshes the sealed share metadata (mount_name_enc,
+// abs_path_enc) after a rename/move rewrote the shares' ciphertext file_path
+// prefix (ADR-0104 phase 3a): every share row at or below the renamed root
+// gets its sealed absolute path string-rewritten to the new prefix and
+// re-sealed under the (moved) target's key — a rename does not change
+// directory keys (ADR-0104 §5), so the old seals still open — and a share
+// whose OWN root was renamed gets its mount basename re-sealed too (the
+// basename changed; re-sealing an unchanged basename is a deterministic
+// no-op). Runs in the renamer's ctx (the owner — their keys always resolve
+// for them). Best-effort by contract: the DAV move path calls this after
+// Shares.RenamePath and Warn-logs a failure, mirroring the KeySharer hooks.
+// No-op without a NameCodec or for scheme-0 owners (plaintext rows carry no
+// sealed fields).
+func (s *Service) ResealShareMeta(ctx context.Context, ownerUserID int64, srcPlain, dstPlain string) error {
+	if s.NameCodec == nil {
+		return nil
+	}
+	ms, ok := s.Store.(shareMetaStore)
+	if !ok {
+		return fmt.Errorf("sharing: reseal: store does not expose the share-meta seam")
+	}
+	src, err := files.NormalizePath(srcPlain)
+	if err != nil {
+		return err
+	}
+	dst, err := files.NormalizePath(dstPlain)
+	if err != nil {
+		return err
+	}
+	ctDst, encrypted, err := s.NameCodec.ShareCipherPath(ctx, ownerUserID, dst)
+	if err != nil {
+		return err
+	}
+	if !encrypted {
+		return nil
+	}
+	rows, err := ms.ListByPrefix(ctx, ownerUserID, ctDst)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for i := range rows {
+		sh := &rows[i]
+		if sh.AbsPathEnc == "" {
+			continue // plaintext row (defensive: a ciphertext prefix never matches one)
+		}
+		oldAbs, _, err := s.NameCodec.OpenShareMeta(ctx, ownerUserID, sh)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		var newAbs string
+		switch {
+		case oldAbs == src:
+			newAbs = dst
+		case strings.HasPrefix(oldAbs, src+"/"):
+			newAbs = dst + strings.TrimPrefix(oldAbs, src)
+		default:
+			// The row was selected by the new ciphertext prefix, so its
+			// sealed path must carry the old plaintext prefix; a mismatch is
+			// an inconsistent row — collect it, never silently rewrite.
+			errs = append(errs, fmt.Errorf("sharing: reseal: share %d sealed path %q is not under renamed %q", sh.ID, oldAbs, src))
+			continue
+		}
+		_, mountEnc, absEnc, err := s.NameCodec.SealShareMeta(ctx, ownerUserID, newAbs)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if err := ms.UpdateEncFields(ctx, sh.ID, mountEnc, absEnc); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func shareURL(r *http.Request, token string) string {

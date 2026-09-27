@@ -7,6 +7,7 @@ import (
 	"path"
 	"strings"
 
+	"github.com/PhantomMatthew/nextcloud-go/internal/storage/encrypt"
 	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
 )
 
@@ -20,7 +21,10 @@ func (d *DAV) lookupIncoming(ctx context.Context, user, p string) (*IncomingMoun
 	}
 	mounts, err := d.Incoming.ListIncoming(ctx, user)
 	if err != nil {
-		return nil, "", err
+		// mapKeyLocked: an enrolled-owner ciphertext share without an
+		// unlocked sharee session fails the open with ErrKeyLocked — the
+		// webdav boundary maps it to 403 (ADR-0101/0104 phase 3a).
+		return nil, "", mapKeyLocked(err)
 	}
 	for i := range mounts {
 		m := mounts[i]
@@ -168,7 +172,15 @@ func (d *DAV) mergeIncomingRoot(ctx context.Context, user string, own []*webdav.
 			seen[name] = struct{}{}
 			continue
 		}
-		ent, err := d.statOwned(ctx, m.OwnerUID, m.OwnerPath)
+		var ent *webdav.Entry
+		if m.OwnerCipherPath != "" {
+			// Ciphertext mount (ADR-0104 phase 3a): the mount root resolves
+			// anchored at the share root, never through the owner's
+			// ancestors (unresolvable for an enrolled owner).
+			ent, err = d.statCipherShare(ctx, m.Mount, &m)
+		} else {
+			ent, err = d.statOwned(ctx, m.OwnerUID, m.OwnerPath)
+		}
 		if err != nil {
 			if errors.Is(err, webdav.ErrNotFound) {
 				continue
@@ -186,7 +198,14 @@ func (d *DAV) CheckLock(ctx context.Context, user, p, ifHeader string) error {
 		if m.Remote {
 			return nil
 		}
+		if m.OwnerCipherPath != "" {
+			// Ciphertext mount (ADR-0104 phase 3a): lock rows key on the
+			// owner's ciphertext paths, translated anchor-relative.
+			return d.checkLockCipherMount(ctx, m, p, ifHeader)
+		}
 		return d.checkLockOwned(ctx, m.OwnerUID, ownerPath, ifHeader)
+	} else if errors.Is(err, encrypt.ErrKeyLocked) {
+		return err
 	}
 	return d.checkLockOwned(ctx, user, p, ifHeader)
 }
@@ -203,8 +222,15 @@ func (d *DAV) mkdirMaybeIncoming(ctx context.Context, user, p string) (*webdav.E
 		if m.Permissions&webdav.PermCreate == 0 {
 			return nil, webdav.ErrForbidden
 		}
+		if m.OwnerCipherPath != "" {
+			// Ciphertext mount (ADR-0104 phase 3a): the row is built in
+			// ciphertext form, anchored at the share root.
+			return d.mkdirCipherMount(ctx, np, m)
+		}
 		e, merr := d.mkdirOwned(ctx, m.OwnerUID, ownerPath)
 		return incomingEntry(e, np, m.Permissions), merr
+	} else if errors.Is(err, encrypt.ErrKeyLocked) {
+		return nil, err
 	}
 	return d.mkdirOwned(ctx, user, np)
 }
@@ -227,6 +253,8 @@ func (d *DAV) removeMaybeIncoming(ctx context.Context, user, p string) error {
 			return webdav.ErrForbidden
 		}
 		return d.removeOwned(ctx, m.OwnerUID, ownerPath)
+	} else if errors.Is(err, encrypt.ErrKeyLocked) {
+		return err
 	}
 	return d.removeOwned(ctx, user, np)
 }

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PhantomMatthew/nextcloud-go/internal/storage/encrypt"
 	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
 )
 
@@ -74,6 +75,25 @@ func (d *DAV) writeConditional(ctx context.Context, user, p string, r io.Reader,
 				// remote server owns the state — so they pass through.
 				return d.writeRemote(ctx, np, m, r)
 			}
+			if m.OwnerCipherPath != "" {
+				// Ciphertext mount (ADR-0104 phase 3a): existence and
+				// permissions resolve anchored at the share root, then the
+				// write core runs on ciphertext rows + plaintext storage
+				// keys under the same per-path stripe.
+				need := webdav.PermUpdate
+				if _, oerr := d.statCipherShare(ctx, np, m); errors.Is(oerr, webdav.ErrNotFound) {
+					need = webdav.PermCreate
+				} else if oerr != nil {
+					return nil, false, oerr
+				}
+				if m.Permissions&need == 0 {
+					return nil, false, webdav.ErrForbidden
+				}
+				unlock := d.writeLocks.lock(m.OwnerUID + "\x00" + ownerPath)
+				defer unlock()
+				ent, created, werr := d.writeCipherMount(ctx, np, m, r, mtime, snapshot, cond)
+				return incomingEntry(ent, np, m.Permissions), created, werr
+			}
 			need := webdav.PermUpdate
 			if _, oerr := d.statOwned(ctx, m.OwnerUID, ownerPath); errors.Is(oerr, webdav.ErrNotFound) {
 				need = webdav.PermCreate
@@ -84,6 +104,8 @@ func (d *DAV) writeConditional(ctx context.Context, user, p string, r io.Reader,
 				return nil, false, webdav.ErrForbidden
 			}
 			wUser, wPath, mount = m.OwnerUID, ownerPath, m
+		} else if errors.Is(lerr, encrypt.ErrKeyLocked) {
+			return nil, false, lerr
 		}
 	}
 	unlock := d.writeLocks.lock(wUser + "\x00" + wPath)

@@ -18,10 +18,12 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
 )
 
-// nameE2EEnv is keyShareEnv upgraded the way app.New wires ADR-0104 phase 2
-// with encryption.filename_encryption on: one NameTranslator over the raw
-// store, TranslatingStore as DAV.Meta and KeySharer.Meta, and the lock,
-// trash, and version satellite wrappers. Users are flipped to scheme 1
+// nameE2EEnv is keyShareEnv upgraded the way app.New wires ADR-0104 with
+// filename encryption on: one NameTranslator over the raw store,
+// TranslatingStore as DAV.Meta (phase 2), the lock/trash/version satellite
+// wrappers (phase 2), and — phase 3a — the RAW store as KeySharer.Meta
+// (share paths are ciphertext now), the share-metadata codec on the sharing
+// service, and the DAV cipher-mount seams. Users are flipped to scheme 1
 // individually by encryptUser (the server creation hook / phase-4 sweep do
 // this in production).
 type nameE2EEnv struct {
@@ -37,7 +39,14 @@ func upgradeNameCrypt(t *testing.T, env *keyShareEnv, res *encrypt.SQLResolver) 
 	env.dav.Meta = tmeta
 	env.dav.DirKeys = res
 	env.dav.Locks = files.NewTranslatingLockStore(files.NewSQLLockStore(env.db), xlate)
-	env.keys.Meta = tmeta
+	// Phase 3a: the KeySharer reads the raw store (ciphertext share paths —
+	// the translating wrapper would double-encrypt); the sharing service
+	// seals share metadata; DAV re-seals after renames.
+	env.keys.Meta = env.meta
+	env.svc.NameCodec = xlate
+	env.dav.Names = xlate
+	env.dav.RawMeta = env.meta
+	env.dav.ShareResealer = env.svc
 	env.dav.Trash = files.NewTrash(env.dav.Storage, files.NewTranslatingTrashStore(files.NewSQLTrashStore(env.db), xlate), env.dav, env.users)
 	env.dav.Trash.LocationNamer = xlate.TrashLocationBase
 	env.dav.Versions = files.NewVersions(env.dav.Storage, files.NewTranslatingVersionStore(files.NewSQLVersionStore(env.db), xlate), env.dav, env.users)
@@ -62,13 +71,14 @@ func (e *nameE2EEnv) encryptUser(t *testing.T, uid string) {
 // master-wrapped users; enrolled users need rawRowAs with an unlocked ctx).
 func (e *nameE2EEnv) rawRow(t *testing.T, plainPath string) *files.File {
 	t.Helper()
-	return e.rawRowAs(t, context.Background(), "alice", plainPath)
+	return e.rawRowAs(t, context.Background(), plainPath)
 }
 
-// rawRowAs is rawRow with the caller's ctx.
-func (e *nameE2EEnv) rawRowAs(t *testing.T, ctx context.Context, uid, plainPath string) *files.File {
+// rawRowAs is rawRow with the caller's ctx (the lookup user is alice — the
+// e2e scenarios are owner-alice centric).
+func (e *nameE2EEnv) rawRowAs(t *testing.T, ctx context.Context, plainPath string) *files.File {
 	t.Helper()
-	f, err := e.dav.Meta.GetByPath(ctx, e.ids[uid], plainPath)
+	f, err := e.dav.Meta.GetByPath(ctx, e.ids["alice"], plainPath)
 	if err != nil {
 		t.Fatalf("lookup %s: %v", plainPath, err)
 	}
@@ -481,10 +491,11 @@ func TestNameCryptLocks(t *testing.T) {
 	}
 }
 
-// TestNameCryptKeySharerFolderGrant pins the KeySharer flowing through the
-// translating store with PLAINTEXT share paths (no double-encryption — the
-// shares table is phase-3 scope): a folder grant wraps both the folder DKs
-// and the file FKs for the recipient.
+// TestNameCryptKeySharerFolderGrant pins the phase-3a KeySharer flow with
+// CIPHERTEXT share paths (the phase-2 plaintext-share carve-out is gone):
+// the grant seals the share row (ciphertext file_path + enc fields), the
+// KeySharer reads the raw store (no double-encryption), and a folder grant
+// wraps both the folder DKs and the file FKs for the recipient.
 func TestNameCryptKeySharerFolderGrant(t *testing.T) {
 	ctx := context.Background()
 	env := newNameE2EEnv(t, "alice", "bob")
@@ -496,13 +507,28 @@ func TestNameCryptKeySharerFolderGrant(t *testing.T) {
 
 	sh := env.share(t, "/docs", files.ShareTypeUser, "bob")
 
-	// shares.file_path stays plaintext until phase 3.
-	var sharePath string
-	if err := env.db.QueryRow(ctx, `SELECT file_path FROM shares WHERE id = ?`, sh.ID).Scan(&sharePath); err != nil {
+	// Phase 3a: shares.file_path is the ciphertext path, the enc fields are
+	// sealed, and nothing plaintext leaks into the row.
+	var sharePath, mountEnc, absEnc string
+	if err := env.db.QueryRow(ctx, `SELECT file_path, mount_name_enc, abs_path_enc FROM shares WHERE id = ?`, sh.ID).Scan(&sharePath, &mountEnc, &absEnc); err != nil {
 		t.Fatal(err)
 	}
-	if sharePath != "/docs" {
-		t.Errorf("share path = %q, want plaintext /docs (no double-encryption)", sharePath)
+	docsRow := env.rawRow(t, "/docs")
+	if sharePath != docsRow.Path {
+		t.Errorf("share path = %q, want the ciphertext path %q", sharePath, docsRow.Path)
+	}
+	if strings.Contains(sharePath, "docs") || strings.Contains(mountEnc, "docs") || strings.Contains(absEnc, "docs") {
+		t.Errorf("share row leaks the plaintext name: %q %q %q", sharePath, mountEnc, absEnc)
+	}
+	if mountEnc == "" || absEnc == "" {
+		t.Errorf("sealed share metadata missing: mount_name_enc=%q abs_path_enc=%q", mountEnc, absEnc)
+	}
+	abs, mountName, err := env.xlate.OpenShareMeta(ctx, env.ids["alice"], &files.Share{OwnerUserID: env.ids["alice"], Path: sharePath, MountNameEnc: mountEnc, AbsPathEnc: absEnc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if abs != "/docs" || mountName != "docs" {
+		t.Errorf("opened share meta = %q %q, want /docs docs", abs, mountName)
 	}
 
 	// Bob holds wraps of both folder DKs and the file FK (counted via SQL).
@@ -521,11 +547,9 @@ func TestNameCryptKeySharerFolderGrant(t *testing.T) {
 	}
 
 	// The (master-wrapped) owner's share reads through for bob with
-	// plaintext names.
-	env.dav.Incoming = stubIncomingFeed{mounts: []files.IncomingMount{{
-		OwnerUID: "alice", OwnerPath: "/docs", Mount: "/docs",
-		Permissions: webdav.PermRead, ItemType: "folder",
-	}}}
+	// plaintext names — via the REAL ListIncoming: the ciphertext mount
+	// resolves anchored at the share root (phase 3a).
+	env.dav.Incoming = files.MultiIncoming{env.svc}
 	ents, err := env.dav.List(ctx, "bob", "/docs")
 	if err != nil {
 		t.Fatal(err)
@@ -640,7 +664,7 @@ func TestNameCryptEnrolledShareeLocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	secretRow := e2e.rawRowAs(t, actx, "alice", "/secret")
+	secretRow := e2e.rawRowAs(t, actx, "/secret")
 	if got := env.wrapRowsForUUID(t, secretRow.KeyUUID, "bob"); got != 1 {
 		t.Fatalf("bob wrap rows on the shared folder DK = %d, want 1", got)
 	}
@@ -683,7 +707,7 @@ func TestNameCryptEnrolledShareeLocked(t *testing.T) {
 	if !strings.Contains(rr.Body.String(), "plans.xlsx") {
 		t.Errorf("owner PROPFIND body missing the plaintext name:\n%s", rr.Body.String())
 	}
-	if row := e2e.rawRowAs(t, actx, "alice", "/secret/plans.xlsx"); strings.Contains(rr.Body.String(), row.Name) {
+	if row := e2e.rawRowAs(t, actx, "/secret/plans.xlsx"); strings.Contains(rr.Body.String(), row.Name) {
 		t.Error("owner PROPFIND body leaks the name token")
 	}
 }

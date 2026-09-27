@@ -2,6 +2,7 @@ package encrypt
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
@@ -104,4 +105,65 @@ func nameAD(parentKeyUUID [keyUUIDSize]byte) []byte {
 	ad := make([]byte, 0, len(nameTokenAD)+keyUUIDSize)
 	ad = append(ad, nameTokenAD...)
 	return append(ad, parentKeyUUID[:]...)
+}
+
+// NCGOSP1 sealed paths (ADR-0104 §7, phase 3a): a share row carries a
+// share-scoped copy of the plaintext absolute owner path, sealed under the
+// share target's own key (the directory key of a folder target, the file key
+// of a file target) with a RANDOM nonce — unlike NCGOFN1 name tokens the
+// value is never addressed by SQL, so determinism buys nothing and the
+// random nonce keeps identical paths from correlating across shares.
+//
+//	blob = nonce(12) || AES-256-GCM(key, nonce, plainPath, ad = "NCGOSP1" || keyUUID)
+//	seal = base64.RawURLEncoding(blob)
+const namePathAD = "NCGOSP1"
+
+// SealPath seals a plaintext absolute path under key (the share target's
+// 32-byte directory or file key), bound to keyUUID as associated data.
+func SealPath(key []byte, keyUUID [16]byte, plain string) (string, error) {
+	if len(key) != fileKeySize {
+		return "", fmt.Errorf("encrypt: seal path: key must be %d bytes, got %d", fileKeySize, len(key))
+	}
+	aead, err := newAEAD(key)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, nonceSize)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", fmt.Errorf("encrypt: seal path: nonce: %w", err)
+	}
+	ad := make([]byte, 0, len(namePathAD)+keyUUIDSize)
+	ad = append(ad, namePathAD...)
+	ad = append(ad, keyUUID[:]...)
+	blob := aead.Seal(nonce, nonce, []byte(plain), ad)
+	return base64.RawURLEncoding.EncodeToString(blob), nil
+}
+
+// OpenPath reverses SealPath. Every failure — bad base64, a truncated blob,
+// a GCM open miss (wrong key, wrong key UUID, tampered seal) — wraps
+// ErrIntegrity: a seal that does not authenticate is corruption, never a
+// plaintext fallback.
+func OpenPath(key []byte, keyUUID [16]byte, blob string) (string, error) {
+	if len(key) != fileKeySize {
+		return "", fmt.Errorf("encrypt: open path: key must be %d bytes, got %d: %w", fileKeySize, len(key), ErrIntegrity)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(blob)
+	if err != nil {
+		return "", fmt.Errorf("encrypt: open path decode: %w", errors.Join(err, ErrIntegrity))
+	}
+	if len(raw) <= nonceSize+tagSize {
+		return "", fmt.Errorf("encrypt: open path truncated (%d bytes): %w", len(raw), ErrIntegrity)
+	}
+	aead, err := newAEAD(key)
+	if err != nil {
+		return "", fmt.Errorf("encrypt: open path: %w", errors.Join(err, ErrIntegrity))
+	}
+	ad := make([]byte, 0, len(namePathAD)+keyUUIDSize)
+	ad = append(ad, namePathAD...)
+	ad = append(ad, keyUUID[:]...)
+	plain, err := aead.Open(nil, raw[:nonceSize], raw[nonceSize:], ad)
+	if err != nil {
+		return "", fmt.Errorf("encrypt: open path authentication failed: %w", errors.Join(err, ErrIntegrity))
+	}
+	return string(plain), nil
 }

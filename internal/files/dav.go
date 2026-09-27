@@ -17,6 +17,7 @@ import (
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/events"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage"
+	"github.com/PhantomMatthew/nextcloud-go/internal/storage/encrypt"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
 )
@@ -46,6 +47,20 @@ type DAV struct {
 	// root at their first request. Nil means the flag is off and every write
 	// stays bit-identical (the never-enable rollback carve-out).
 	DirKeys DirKeyMinter
+	// Names, when set (filename encryption on, ADR-0104 phase 3a), is the
+	// translation core for share-root-anchored resolution of ciphertext
+	// incoming mounts. Nil disables the ciphertext-mount branches (no
+	// ciphertext share rows exist then — the sharing service seals none).
+	Names *NameTranslator
+	// RawMeta, when set with Names, is the raw filecache store behind the
+	// translating decorator: ciphertext-mount operations build rows with
+	// ciphertext Name/Path directly and must not be double-translated.
+	RawMeta *SQLStore
+	// ShareResealer, when set (filename encryption on, ADR-0104 phase 3a),
+	// re-seals share rows' sealed metadata after a rename rewrote their
+	// ciphertext file_path prefix. Best-effort like KeySharer: a failure is
+	// Warn-logged, never fails the move. *sharing.Service satisfies it.
+	ShareResealer ShareMetaResealer
 	// Logger, when set, receives the best-effort key-share warnings.
 	Logger *slog.Logger
 	// LiveProps, when set, attaches plugin-provided custom properties to
@@ -315,6 +330,11 @@ func (d *DAV) statMaybeIncoming(ctx context.Context, user, p string) (*webdav.En
 	if m.Remote {
 		return d.statRemote(ctx, np, m)
 	}
+	if m.OwnerCipherPath != "" {
+		// Ciphertext mount (ADR-0104 phase 3a): anchor name resolution at
+		// the share root — the sharee's wraps cover the in-subtree keys.
+		return d.statCipherShare(ctx, np, m)
+	}
 	e, err = d.statOwned(ctx, m.OwnerUID, ownerPath)
 	if err != nil {
 		return nil, err
@@ -352,6 +372,10 @@ func (d *DAV) listMaybeIncoming(ctx context.Context, user, p string) ([]*webdav.
 	}
 	if m.Remote {
 		return d.listRemote(ctx, np, m)
+	}
+	if m.OwnerCipherPath != "" {
+		// Ciphertext mount (ADR-0104 phase 3a): anchored name resolution.
+		return d.listCipherShare(ctx, np, m)
 	}
 	children, err := d.listOwned(ctx, m.OwnerUID, ownerPath)
 	if err != nil {
@@ -393,6 +417,20 @@ func (d *DAV) readMaybeIncoming(ctx context.Context, user, p string) (io.ReadClo
 	}
 	if m.Permissions&webdav.PermRead == 0 {
 		return nil, nil, webdav.ErrForbidden
+	}
+	if m.OwnerCipherPath != "" {
+		// Ciphertext mount (ADR-0104 phase 3a): the entry resolves anchored
+		// at the share root; the storage key is the plaintext owner path
+		// (object keys stay plaintext, §10).
+		e, err := d.statCipherShare(ctx, np, m)
+		if err != nil {
+			return nil, nil, err
+		}
+		rc, _, err := d.readOwned(ctx, m.OwnerUID, ownerPath, e)
+		if err != nil {
+			return nil, nil, err
+		}
+		return rc, e, nil
 	}
 	e, err := d.statOwned(ctx, m.OwnerUID, ownerPath)
 	if err != nil {
@@ -718,6 +756,24 @@ func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *tim
 // threading it lets both hooks wrap without a Resolve in the writer's ctx,
 // which an enrolled owner's key would not satisfy (ADR-0101).
 func (d *DAV) shareFileKey(ctx context.Context, ownerUserID int64, np string, oldUUID, newUUID, fileKey []byte) {
+	if d.KeySharer == nil {
+		return
+	}
+	// ADR-0104 phase 3a: shares.file_path is ciphertext for scheme-1
+	// owners — Covering's prefix match needs the translated path. The
+	// wrap is best-effort, so a translation failure is Warn-logged too.
+	keyPath, err := d.shareKeyPath(ctx, ownerUserID, np)
+	if err != nil {
+		d.warn(ctx, "files: share key wrap path translation failed", slog.String("path", np), slog.Any("err", err))
+		return
+	}
+	d.shareFileKeyCipher(ctx, ownerUserID, keyPath, oldUUID, newUUID, fileKey)
+}
+
+// shareFileKeyCipher is shareFileKey with an already-share-table-formed path
+// (ciphertext for scheme-1 owners): the ciphertext-mount write path hands it
+// over directly — the translating decorator must not re-translate it.
+func (d *DAV) shareFileKeyCipher(ctx context.Context, ownerUserID int64, keyPath string, oldUUID, newUUID, fileKey []byte) {
 	ks := d.KeySharer
 	if ks == nil {
 		return
@@ -733,12 +789,12 @@ func (d *DAV) shareFileKey(ctx context.Context, ownerUserID int64, np string, ol
 	}
 	if haveOld && haveNew {
 		if err := ks.ReWrapForOverwrite(ctx, oldK, newK, fileKey); err != nil {
-			d.warn(ctx, "files: share key carry on overwrite failed", slog.String("path", np), slog.Any("err", err))
+			d.warn(ctx, "files: share key carry on overwrite failed", slog.String("path", keyPath), slog.Any("err", err))
 		}
 	}
 	if haveNew {
-		if err := ks.WrapForWrite(ctx, ownerUserID, np, newK, fileKey); err != nil {
-			d.warn(ctx, "files: share key wrap on write failed", slog.String("path", np), slog.Any("err", err))
+		if err := ks.WrapForWrite(ctx, ownerUserID, keyPath, newK, fileKey); err != nil {
+			d.warn(ctx, "files: share key wrap on write failed", slog.String("path", keyPath), slog.Any("err", err))
 		}
 	}
 }
@@ -758,6 +814,20 @@ func (d *DAV) checkNameBudget(ctx context.Context, userID int64, p string) error
 		return mapMeta(bc.CheckNameBudget(ctx, userID, p))
 	}
 	return nil
+}
+
+// shareKeyPath maps the plaintext path the DAV boundary speaks to the form
+// the shares table carries (ciphertext for scheme-1 users, ADR-0104 phase
+// 3a), so Covering/RenamePath/DeleteByPath prefix matching hits the stored
+// rows. Only the translating store translates; the raw store fails the
+// assertion and np passes through, keeping flag-off bit-identical.
+func (d *DAV) shareKeyPath(ctx context.Context, userID int64, np string) (string, error) {
+	if cp, ok := d.Meta.(interface {
+		CipherPath(context.Context, int64, string) (string, error)
+	}); ok {
+		return cp.CipherPath(ctx, userID, np)
+	}
+	return np, nil
 }
 
 func (d *DAV) mkdirOwned(ctx context.Context, user, p string) (*webdav.Entry, error) {
@@ -817,9 +887,13 @@ func (d *DAV) mkdirOwned(ctx context.Context, user, p string) (*webdav.Entry, er
 	}
 	// ADR-0104 phase 1 (folder wrap-on-write, moved from phase 3): the
 	// recipients of every share covering the new folder get a wrap of its
-	// DK. Best-effort, same as the file write path's share hooks.
+	// DK. Best-effort, same as the file write path's share hooks. Phase 3a:
+	// Covering matches ciphertext share paths, so the path translates first.
 	if d.DirKeys != nil && d.KeySharer != nil {
-		if err := d.KeySharer.WrapForWrite(ctx, u.ID, np, dirUUID, dirKey); err != nil {
+		keyPath, kerr := d.shareKeyPath(ctx, u.ID, np)
+		if kerr != nil {
+			d.warn(ctx, "files: share key wrap path translation failed", slog.String("path", np), slog.Any("err", kerr))
+		} else if err := d.KeySharer.WrapForWrite(ctx, u.ID, keyPath, dirUUID, dirKey); err != nil {
 			d.warn(ctx, "files: share key wrap on mkdir failed", slog.String("path", np), slog.Any("err", err))
 		}
 	}
@@ -893,7 +967,15 @@ func (d *DAV) Purge(ctx context.Context, user, p string) error {
 		}
 	}
 	if d.Shares != nil {
-		if err := d.Shares.DeleteByPath(ctx, u.ID, np); err != nil {
+		// ADR-0104 phase 3a: shares.file_path is ciphertext for scheme-1
+		// owners; translate the plaintext boundary path before the prefix
+		// delete. Only the leaf row is gone by now, so translation still
+		// resolves (the leaf token needs only its parent's key).
+		ctPath, err := d.shareKeyPath(ctx, u.ID, np)
+		if err != nil {
+			return mapMeta(err)
+		}
+		if err := d.Shares.DeleteByPath(ctx, u.ID, ctPath); err != nil {
 			return err
 		}
 	}
@@ -925,9 +1007,13 @@ func (d *DAV) Move(ctx context.Context, srcUser, srcPath, dstUser, dstPath strin
 	}
 	if _, _, err := d.lookupIncoming(ctx, srcUser, srcPath); err == nil {
 		return nil, false, webdav.ErrForbidden
+	} else if errors.Is(err, encrypt.ErrKeyLocked) {
+		return nil, false, err
 	}
 	if _, _, err := d.lookupIncoming(ctx, dstUser, dstPath); err == nil {
 		return nil, false, webdav.ErrForbidden
+	} else if errors.Is(err, encrypt.ErrKeyLocked) {
+		return nil, false, err
 	}
 	u, err := d.resolveUser(ctx, srcUser)
 	if err != nil {
@@ -998,8 +1084,28 @@ func (d *DAV) Move(ctx context.Context, srcUser, srcPath, dstUser, dstPath strin
 		}
 	}
 	if d.Shares != nil {
-		if err := d.Shares.RenamePath(ctx, u.ID, src, dst); err != nil {
+		// ADR-0104 phase 3a: shares.file_path is ciphertext for scheme-1
+		// owners — both endpoints translate (only the moved leaf changed
+		// place, so both still resolve: leaf tokens need only the parent's
+		// key, and the destination leaf exists after RenameSubtree).
+		ctSrc, err := d.shareKeyPath(ctx, u.ID, src)
+		if err != nil {
+			return nil, false, mapMeta(err)
+		}
+		ctDst, err := d.shareKeyPath(ctx, u.ID, dst)
+		if err != nil {
+			return nil, false, mapMeta(err)
+		}
+		if err := d.Shares.RenamePath(ctx, u.ID, ctSrc, ctDst); err != nil {
 			return nil, false, err
+		}
+		// The ciphertext prefix moved; the sealed share metadata copies
+		// (abs_path_enc/mount_name_enc) still hold the old plaintext path.
+		// Best-effort re-seal, mirroring the KeySharer hook idiom.
+		if d.ShareResealer != nil {
+			if err := d.ShareResealer.ResealShareMeta(ctx, u.ID, src, dst); err != nil {
+				d.warn(ctx, "files: share meta reseal after rename failed", slog.String("src", src), slog.String("dst", dst), slog.Any("err", err))
+			}
 		}
 	}
 	now := d.now()

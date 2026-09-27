@@ -266,7 +266,15 @@ func (t *Trash) MoveToTrash(ctx context.Context, user, p, deletedBy string) erro
 		}
 	}
 	if t.Files.Shares != nil {
-		if err := t.Files.Shares.DeleteByPath(ctx, usr.ID, np); err != nil {
+		// ADR-0104 phase 3a: shares.file_path is ciphertext for scheme-1
+		// owners; translate before the prefix delete. Only the leaf row is
+		// deleted by now, so translation still resolves (the leaf token
+		// needs only its parent's key).
+		ctPath, err := t.Files.shareKeyPath(ctx, usr.ID, np)
+		if err != nil {
+			return mapMeta(err)
+		}
+		if err := t.Files.Shares.DeleteByPath(ctx, usr.ID, ctPath); err != nil {
 			return err
 		}
 	}
@@ -395,7 +403,18 @@ func (t *Trash) PurgeLocation(ctx context.Context, user, locationID string) erro
 		}
 	}
 	if t.Files != nil && t.Files.Shares != nil {
-		if err := t.Files.Shares.DeleteByPath(ctx, usr.ID, item.OriginalPath); err != nil {
+		// ADR-0104 phase 3a: translate to the ciphertext share path, exactly
+		// like the versions/props deletes above. A trash item whose ancestor
+		// rows are gone no longer resolves — nothing can remain under that
+		// token chain (shares were deleted at trash time), so skip.
+		ctPath, err := t.Files.shareKeyPath(ctx, usr.ID, item.OriginalPath)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			return mapMeta(err)
+		}
+		if err := t.Files.Shares.DeleteByPath(ctx, usr.ID, ctPath); err != nil {
 			return err
 		}
 	}

@@ -18,7 +18,16 @@ const (
 	ShareTypeRemote = 6
 )
 
-// Share is one path-keyed share (link, user, or group).
+// Share is one path-keyed share (link, user, or group). With filename
+// encryption on (ADR-0104 phase 3a), Path carries the owner's
+// ciphertext-materialized path and the two enc fields hold the share-scoped
+// metadata copies sealed under the share target's own key: MountNameEnc is
+// the NCGOFN1 token of the mount basename (the basename's tree token lives
+// under the share root's PARENT directory key, which sharees never hold),
+// and AbsPathEnc is the plaintext absolute owner path sealed by SealPath
+// (content ops through the mount need it for storage-key derivation when the
+// owner's ancestor chain is unresolvable to the sharee). Both are empty for
+// plaintext (scheme-0) shares.
 type Share struct {
 	ID           int64
 	OwnerUserID  int64
@@ -33,18 +42,30 @@ type Share struct {
 	StimeMs      int64
 	ShareWith    string
 	Accepted     int
+	// MountNameEnc is the share-root basename sealed under the share
+	// target's own key (NCGOFN1 token form); empty for plaintext shares.
+	MountNameEnc string
+	// AbsPathEnc is the plaintext absolute owner path sealed under the
+	// share target's own key (NCGOSP1); empty for plaintext shares.
+	AbsPathEnc string
 }
 
 // IncomingMount is a share visible inside a sharee's files jail.
 type IncomingMount struct {
-	OwnerUID     string
-	OwnerPath    string
-	Mount        string
-	Permissions  int
-	ItemType     string
-	Remote       bool
-	RemoteOrigin string
-	RemoteToken  string
+	OwnerUID  string
+	OwnerPath string
+	// OwnerCipherPath is the owner tree's ciphertext path of the share root
+	// (ADR-0104 phase 3a): non-empty when the owner's tree is scheme 1. DAV
+	// then anchors name resolution at the share root (the sharee's wraps
+	// cover every in-subtree directory key) instead of walking ancestors the
+	// sharee cannot resolve. Empty for plaintext shares and remote mounts.
+	OwnerCipherPath string
+	Mount           string
+	Permissions     int
+	ItemType        string
+	Remote          bool
+	RemoteOrigin    string
+	RemoteToken     string
 }
 
 // RemoteFile fetches and mutates a federated share's public WebDAV.
@@ -77,6 +98,16 @@ func (m MultiIncoming) ListIncoming(ctx context.Context, shareeUID string) ([]In
 		out = append(out, items...)
 	}
 	return out, nil
+}
+
+// ShareMetaResealer re-seals share rows' sealed metadata (mount_name_enc,
+// abs_path_enc) after a subtree rename rewrote their ciphertext file_path
+// prefix (ADR-0104 phase 3a). *sharing.Service satisfies it — files cannot
+// import sharing (sharing imports files), so the seam is declared here
+// structurally. Nil-ok on DAV: the never-enable carve-out has no sealed
+// share rows.
+type ShareMetaResealer interface {
+	ResealShareMeta(ctx context.Context, ownerUserID int64, srcPlain, dstPlain string) error
 }
 
 // ShareStore persists shares.

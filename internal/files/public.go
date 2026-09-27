@@ -14,10 +14,22 @@ import (
 // PublicShareResolver looks up a valid (non-expired) public share by token.
 type PublicShareResolver func(ctx context.Context, token string) (*Share, *users.User, error)
 
+// ShareNameCodec opens a share row's sealed metadata (ADR-0104 phase 3a).
+// *NameTranslator satisfies it; the interface keeps PublicDAV free of a
+// concrete translator dependency.
+type ShareNameCodec interface {
+	OpenShareMeta(ctx context.Context, ownerUserID int64, sh *Share) (plainAbsPath, mountName string, err error)
+}
+
 // PublicDAV jails WebDAV over the owner's files.DAV at the shared path.
 type PublicDAV struct {
 	Files   *DAV
 	Resolve PublicShareResolver
+	// NameCodec, when set (filename encryption on, ADR-0104 phase 3a), opens
+	// sealed share rows: Path is ciphertext then, and every jail operation
+	// works on the opened plaintext path. Nil means no ciphertext share rows
+	// exist (flag off).
+	NameCodec ShareNameCodec
 }
 
 func (p *PublicDAV) resolve(ctx context.Context, token string) (*Share, *users.User, error) {
@@ -30,6 +42,23 @@ func (p *PublicDAV) resolve(ctx context.Context, token string) (*Share, *users.U
 			return nil, nil, webdav.ErrNotFound
 		}
 		return nil, nil, err
+	}
+	// ADR-0104 phase 3a: open the sealed share metadata in the anonymous
+	// ctx. A master-wrapped owner resolves through their own rows (names
+	// decrypt, the link works); an enrolled owner without an unlocked
+	// session is ErrKeyLocked → 403 — the same boundary as content
+	// (ADR-0101). mapKeyLocked dual-matches it for the webdav boundary.
+	if sh.AbsPathEnc != "" {
+		if p.NameCodec == nil {
+			return nil, nil, errors.New("files: sealed share row without the phase-3a name-codec wiring")
+		}
+		plain, _, err := p.NameCodec.OpenShareMeta(ctx, sh.OwnerUserID, sh)
+		if err != nil {
+			return nil, nil, mapKeyLocked(err)
+		}
+		cp := *sh
+		cp.Path = plain
+		sh = &cp
 	}
 	return sh, owner, nil
 }

@@ -197,3 +197,84 @@ func TestNCGOFN1RoundTripShapes(t *testing.T) {
 		}
 	}
 }
+
+// TestNCGOSP1SealPathRoundTrip pins the SealPath/OpenPath contract (ADR-0104
+// §7): random nonces make frozen vectors impossible, so the pin is the
+// round-trip plus non-determinism of repeat seals.
+func TestNCGOSP1SealPathRoundTrip(t *testing.T) {
+	dk, parent, _ := nameTestVectors(t)
+	plain := "/Photos/2026/裁员名单.xlsx"
+	seal, err := SealPath(dk, parent, plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := OpenPath(dk, parent, seal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back != plain {
+		t.Errorf("round trip = %q, want %q", back, plain)
+	}
+	// Random nonce: sealing the same path twice yields different blobs.
+	seal2, err := SealPath(dk, parent, plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seal == seal2 {
+		t.Error("repeat seals identical, want random nonces")
+	}
+	// Seal length is pinned: base64url of nonce(12) || N || tag(16).
+	if want := base64.RawURLEncoding.EncodedLen(nonceSize + len(plain) + tagSize); len(seal) != want {
+		t.Errorf("seal = %d chars, want %d", len(seal), want)
+	}
+}
+
+// TestNCGOSP1FailuresAreIntegrity pins that every open failure — wrong key,
+// wrong key UUID (AD binding), tamper, bad encoding — wraps ErrIntegrity.
+func TestNCGOSP1FailuresAreIntegrity(t *testing.T) {
+	dk, parent, _ := nameTestVectors(t)
+	seal, err := SealPath(dk, parent, "/a/b.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wrong key.
+	otherKey := make([]byte, 32)
+	for i := range otherKey {
+		otherKey[i] = byte(i + 1)
+	}
+	if _, err := OpenPath(otherKey, parent, seal); !errors.Is(err, ErrIntegrity) {
+		t.Errorf("wrong key err = %v, want ErrIntegrity", err)
+	}
+
+	// Wrong key UUID (AD binding: a seal opened under another uuid fails).
+	otherUUID := parent
+	otherUUID[15] ^= 0x01
+	if _, err := OpenPath(dk, otherUUID, seal); !errors.Is(err, ErrIntegrity) {
+		t.Errorf("wrong uuid err = %v, want ErrIntegrity", err)
+	}
+
+	// Tampered seal (flip a ciphertext byte: same length, valid base64).
+	raw, err := base64.RawURLEncoding.DecodeString(seal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[nonceSize] ^= 0x01
+	if _, err := OpenPath(dk, parent, base64.RawURLEncoding.EncodeToString(raw)); !errors.Is(err, ErrIntegrity) {
+		t.Errorf("tampered seal err = %v, want ErrIntegrity", err)
+	}
+
+	// Bad base64, truncated blob, wrong key length.
+	if _, err := OpenPath(dk, parent, "not!base64!"); !errors.Is(err, ErrIntegrity) {
+		t.Errorf("bad base64 err = %v, want ErrIntegrity", err)
+	}
+	if _, err := OpenPath(dk, parent, base64.RawURLEncoding.EncodeToString(raw[:nonceSize+tagSize])); !errors.Is(err, ErrIntegrity) {
+		t.Errorf("truncated blob err = %v, want ErrIntegrity", err)
+	}
+	if _, err := OpenPath(dk[:31], parent, seal); !errors.Is(err, ErrIntegrity) {
+		t.Errorf("31-byte key err = %v, want ErrIntegrity", err)
+	}
+	if _, err := SealPath(dk[:31], parent, "/a"); err == nil {
+		t.Error("seal with 31-byte key accepted")
+	}
+}

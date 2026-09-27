@@ -527,15 +527,30 @@ func TestNewAppPerUserKeysWiresKeySharer(t *testing.T) {
 	if _, translated := a.versionsFS.Meta.(*files.TranslatingVersionStore); translated {
 		t.Error("versions store wrapped without filename_encryption")
 	}
+	// ADR-0104 phase 3a, flag off: zero share-metadata codec wiring — share
+	// rows stay plaintext bit-identically.
+	if a.shares.NameCodec != nil {
+		t.Error("sharing NameCodec wired without filename_encryption")
+	}
+	if a.publicFS.NameCodec != nil {
+		t.Error("public-link NameCodec wired without filename_encryption")
+	}
+	if dav.Names != nil || dav.RawMeta != nil || dav.ShareResealer != nil {
+		t.Error("DAV phase-3a seams wired without filename_encryption")
+	}
 }
 
 // TestNewAppFilenameEncryptionWiresDirKeys pins the ADR-0104 phase-1 app
 // wiring: with filename encryption on (validation requires per-user keys),
 // the DAV directory-key minter is the same resolver. Phase 2 adds the
-// translating decorator: DAV.Meta, the KeySharer's meta seam, the app's
-// fileMeta (search/quota handlers), and the lock/trash/version satellite
-// stores all wrap the raw stores over one shared translation core, and the
-// user-creation hook flips users.name_scheme (the write switch).
+// translating decorator: DAV.Meta, the app's fileMeta (search/quota
+// handlers), and the lock/trash/version satellite stores all wrap the raw
+// stores over one shared translation core, and the user-creation hook flips
+// users.name_scheme (the write switch). Phase 3a moves the KeySharer's meta
+// seam back to the RAW store (share rows carry ciphertext paths now — the
+// translating wrapper would double-encrypt) and wires the share-metadata
+// codec into the sharing service, the public-link jail, and the DAV
+// rename re-seal hook.
 func TestNewAppFilenameEncryptionWiresDirKeys(t *testing.T) {
 	ctx := context.Background()
 	cfg := DevConfig()
@@ -571,9 +586,24 @@ func TestNewAppFilenameEncryptionWiresDirKeys(t *testing.T) {
 	if dav.KeySharer == nil {
 		t.Fatal("DAV.KeySharer not wired in per-user mode")
 	}
-	ksMeta, ok := dav.KeySharer.Meta.(*files.TranslatingStore)
-	if !ok || ksMeta != tMeta {
-		t.Error("KeySharer.Meta must be the translating store (plaintext share paths, no double-encryption)")
+	// Phase 3a: share paths are ciphertext, so the KeySharer meta seam is the
+	// RAW store (the translating wrapper would double-encrypt).
+	ksMeta, ok := dav.KeySharer.Meta.(*files.SQLStore)
+	if !ok || ksMeta != tMeta.Raw() {
+		t.Error("KeySharer.Meta must be the raw filecache store (ciphertext share paths, no double-encryption)")
+	}
+	// Phase 3a seams: the share-metadata codec and the rename re-seal hook.
+	if a.shares.NameCodec == nil {
+		t.Error("sharing service NameCodec not wired with filename_encryption on")
+	}
+	if a.publicFS.NameCodec == nil {
+		t.Error("public-link jail NameCodec not wired with filename_encryption on")
+	}
+	if dav.Names == nil || dav.RawMeta == nil {
+		t.Error("DAV ciphertext-mount seams (Names/RawMeta) not wired")
+	}
+	if dav.ShareResealer == nil {
+		t.Error("DAV share-meta reseal hook not wired")
 	}
 	if _, ok := dav.Locks.(*files.TranslatingLockStore); !ok {
 		t.Error("DAV.Locks is not the translating wrapper")

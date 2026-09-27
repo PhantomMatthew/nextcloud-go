@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
+	"github.com/PhantomMatthew/nextcloud-go/internal/storage/encrypt"
 	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
 )
 
@@ -63,7 +64,25 @@ func (s *Service) PublicLinkHandler() http.Handler {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
-		rc, ent, err := s.Files.Read(r.Context(), owner.UID, sh.Path)
+		// ADR-0104 phase 3a: a scheme-1 owner's share row carries the
+		// ciphertext path; open the sealed metadata in the anonymous ctx.
+		// Master-wrapped owners resolve through their own rows; an enrolled
+		// owner without an unlocked session is ErrKeyLocked → 403 — the same
+		// boundary as content (ADR-0101).
+		plainPath := sh.Path
+		if s.NameCodec != nil && sh.AbsPathEnc != "" {
+			plain, _, err := s.NameCodec.OpenShareMeta(r.Context(), sh.OwnerUserID, sh)
+			if err != nil {
+				if errors.Is(err, encrypt.ErrKeyLocked) {
+					http.Error(w, "encrypted: key locked", http.StatusForbidden)
+					return
+				}
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+				return
+			}
+			plainPath = plain
+		}
+		rc, ent, err := s.Files.Read(r.Context(), owner.UID, plainPath)
 		if err != nil {
 			if errors.Is(err, webdav.ErrNotFound) {
 				http.NotFound(w, r)

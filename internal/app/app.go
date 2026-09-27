@@ -74,7 +74,7 @@ type App struct {
 	uploadsFS     webdav.FS
 	trashFS       *files.Trash
 	versionsFS    *files.Versions
-	publicFS      webdav.FS
+	publicFS      *files.PublicDAV
 	shares        *sharing.Service
 	jobs          jobs.Runner
 	jobsStore     *jobs.SQLStore
@@ -259,7 +259,13 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 			tMeta := files.NewTranslatingStore(meta, nameTranslator)
 			a.fileMeta = tMeta
 			dav.Meta = tMeta
-			keySharer.Meta = tMeta
+			// Phase 3a: the KeySharer reads the RAW store — share rows now
+			// carry ciphertext paths, so the translating wrapper would
+			// double-encrypt on the way in. Covering's prefix matching works
+			// on ciphertext strings by construction (tokens joined by "/").
+			keySharer.Meta = meta
+			dav.Names = nameTranslator
+			dav.RawMeta = meta
 			dav.Locks = files.NewTranslatingLockStore(dav.Locks, nameTranslator)
 			// The write switch is users.name_scheme: users created while the
 			// mode is on start at scheme 1. Server wiring only — the
@@ -286,6 +292,14 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	dav.Incoming = files.MultiIncoming{a.shares, a.ocmStore}
 	dav.Remote = a.shares.OCM
 	a.publicFS = &files.PublicDAV{Files: dav, Resolve: a.shares.LookupValid}
+	if nameTranslator != nil {
+		// ADR-0104 phase 3a: the sharing service seals share rows
+		// (ciphertext file_path + grant-time sealed metadata copies), the
+		// public-link jail opens them, and DAV re-seals them after renames.
+		a.shares.NameCodec = nameTranslator
+		a.publicFS.NameCodec = nameTranslator
+		dav.ShareResealer = a.shares
+	}
 	a.uploadsFS = files.NewUploads(st, files.NewSQLUploadStore(db), dav, a.Users)
 	// Trash and versions carry ciphertext paths when filename encryption is
 	// on (ADR-0104 §6) through thin wrappers on the same translation core.

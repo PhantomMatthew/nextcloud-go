@@ -395,6 +395,15 @@ func (s *TranslatingStore) CheckNameBudget(ctx context.Context, userID int64, p 
 	return s.t.checkNameBudget(ctx, userID, p)
 }
 
+// CipherPath exposes the translation core's plaintext→ciphertext path mapping
+// for callers whose store rows live outside files (the shares table,
+// ADR-0104 phase 3a): KeySharer wrap-on-write and the share rename/delete
+// rewrites match ciphertext file_path strings, while the DAV boundary speaks
+// plaintext. Scheme-0 users pass through as normalized plaintext.
+func (s *TranslatingStore) CipherPath(ctx context.Context, userID int64, p string) (string, error) {
+	return s.t.cipherPath(ctx, newTranslateCache(), userID, p)
+}
+
 var (
 	_ Store        = (*TranslatingStore)(nil)
 	_ KeyShareMeta = (*TranslatingStore)(nil)
@@ -413,6 +422,11 @@ type TranslatingLockStore struct {
 func NewTranslatingLockStore(raw LockStore, t *NameTranslator) *TranslatingLockStore {
 	return &TranslatingLockStore{raw: raw, t: t}
 }
+
+// Raw returns the wrapped store: the ciphertext-mount lock check
+// (ADR-0104 phase 3a) queries it with anchor-derived ciphertext paths the
+// translator must not re-translate.
+func (s *TranslatingLockStore) Raw() LockStore { return s.raw }
 
 func (s *TranslatingLockStore) GetByPath(ctx context.Context, userID int64, filePath string) (*FileLock, error) {
 	np, err := NormalizePath(filePath)
@@ -595,6 +609,11 @@ type TranslatingVersionStore struct {
 func NewTranslatingVersionStore(raw VersionStore, t *NameTranslator) *TranslatingVersionStore {
 	return &TranslatingVersionStore{raw: raw, t: t}
 }
+
+// Raw returns the wrapped store: the ciphertext-mount write path
+// (ADR-0104 phase 3a) inserts version rows carrying ciphertext paths the
+// translator must not re-translate.
+func (s *TranslatingVersionStore) Raw() VersionStore { return s.raw }
 
 func (s *TranslatingVersionStore) Insert(ctx context.Context, v *FileVersion) error {
 	if v == nil {

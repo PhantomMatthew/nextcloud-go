@@ -191,6 +191,30 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-27** — SSE **filename encryption phase 3a** (ADR-0104 §12):
+  sharing integration. Migration **0024** adds `shares.mount_name_enc` +
+  `shares.abs_path_enc`: the mount basename's tree token lives under the
+  share root's **parent** DK (sharees hold no wrap for it), so the grant
+  stores a share-scoped copy sealed under the share target's own key; and
+  content ops through a mount need the plaintext owner path for storage-key
+  derivation while an enrolled offline owner's ancestor chain is
+  unresolvable, so the grant stores it NCGOSP1-sealed under the same key.
+  `shares.file_path` is now the ciphertext path (exact/prefix matching
+  preserved by the token-join shape). Incoming mounts resolve **anchored at
+  the share root** (`CipherPathUnder`/`DecryptUnderAnchor`/`AnchorRow`),
+  lifting phase 2's documented enrolled-sharee 403: PROPFIND/GET/PUT/MKCOL
+  through the mount work with the sharee's unlocked session (PUT/MKCOL mint
+  owner keys and wrap both parties), while a sharee with no unlocked session
+  keeps the 403 boundary. KeySharer rewired to ciphertext paths end to end
+  (raw meta seam; `WrapForWrite`/`RenamePath`/`DeleteByPath` call sites
+  translate); renames re-seal the share metadata (`ResealShareMeta`,
+  best-effort after `RenamePath`). Public links: master-wrapped owners
+  resolve anonymously, enrolled owners 403 (same boundary as content).
+  Owner-facing OCS views open the sealed rows to plaintext; sharee mount
+  tables carry OwnerPath (plaintext) + OwnerCipherPath (anchor). Phase 3
+  split same-day: **3b** (activity subject tokens, upload-session
+  tokenization, §9 marker) is a separate follow-up; OCM incoming mount names
+  stay plaintext as an accepted residual (the name is the peer's data).
 - **2026-09-27** — Filename encryption phase-2 acceptance fix (ADR-0104 §6,
   same-day note): `trash_items.location_id` embedded the **plaintext**
   basename — computed by the Trash service before the translating store saw

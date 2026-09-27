@@ -1,6 +1,6 @@
 # ADR-0104: Server-side filename encryption — parent-keyed deterministic names with ciphertext-materialized paths (design)
 
-- **Status**: Accepted (design; implementation phased as below) (phases 1–2 landed 2026-09-27 — primitives, migration 0023, folder key minting, share coverage; store + DAV cutover with the translating decorator, satellite stores, search scan, and the write switch; phases 3–4 pending)
+- **Status**: Accepted (design; implementation phased as below) (phases 1–2 landed 2026-09-27 — primitives, migration 0023, folder key minting, share coverage; store + DAV cutover with the translating decorator, satellite stores, search scan, and the write switch; phase **3a** landed 2026-09-27 — migration 0024, ciphertext share paths with share-root anchoring, KeySharer ciphertext rewiring, public-link boundary; phases 3b–4 pending)
 - **Date**: 2026-09-27
 - **Deciders**: Project lead
 - **Supersedes**: (none)
@@ -187,20 +187,47 @@ name.
 
 ### 7. Sharing, federation, public links
 
-- `shares.file_path` stores the ciphertext owner path; exact-match resolution
-  is unchanged. Grant wrapping covers folder DKs via `ListSealedSubtree`
-  (no query change — folders now satisfy `key_uuid IS NOT NULL`).
-- `ListIncoming` decrypts the mount basename per request via the sharee's own
-  wrap rows. Mounts stay virtual: nothing sharee-side is persisted, so there
-  is nothing to encrypt on the sharee side. Sharee renames of mounts do not
-  exist in ncgo (mount name derives from the owner path), so no design is
-  needed there.
+- `shares.file_path` stores the ciphertext owner path; exact/prefix matching
+  is preserved by the token-join shape, and grant wrapping covers folder DKs
+  via `ListSealedSubtree` (no query change — folders now satisfy
+  `key_uuid IS NOT NULL`). Phase 3a adds two sealed columns (migration 0024):
+  **`mount_name_enc`** — a share-scoped copy of the mount basename as an
+  NCGOFN1 token under the share target's OWN key — and **`abs_path_enc`** —
+  the plaintext absolute owner path sealed by `SealPath` (NCGOSP1: random
+  nonce || AES-256-GCM, ad `"NCGOSP1"||keyUUID`) under the same key. Both
+  exist because of two gaps sharees can never close from the tree alone: the
+  basename's tree token lives under the share root's PARENT directory key
+  (no sharee wrap), and content ops through a mount need the plaintext
+  absolute path for storage-key derivation while an enrolled offline owner's
+  ancestor chain is unresolvable to anyone. Exactly the wrap holders
+  (sharees + server) can open them.
+- Name resolution through an incoming mount is **anchored at the share
+  root**: `CipherPathUnder`/`DecryptUnderAnchor` walk tokens starting from
+  the anchor row's own key and never touch rows above it, so a sharee
+  resolves an ENROLLED owner's shared subtree through their own wrap rows
+  (lifting phase 2's documented 403 residual); an enrolled sharee without an
+  unlocked session stays `ErrKeyLocked` → 403, the ADR-0101 boundary.
+  Mounts stay virtual: nothing sharee-side is persisted, so there is nothing
+  to encrypt on the sharee side. Sharee renames of mounts do not exist in
+  ncgo (mount name derives from the owner path), so no design is needed
+  there. **Rename/move re-seal**: the existing `RenamePath` prefix rewrite
+  moves the ciphertext `file_path`; a best-effort `ResealShareMeta` pass then
+  opens each affected row (the rename does not change directory keys),
+  string-rewrites the plaintext prefix inside `abs_path_enc`, re-seals, and
+  re-seals `mount_name_enc` when the share's own root basename changed.
+  **Reshares** stay rejected (ADR-0017's reshare bit is off): Create always
+  seals against the creator's OWN tree, so a mount path (virtual, no local
+  row) now fails loudly instead of persisting an orphaned row.
 - **Public links**: master-wrapped deployments resolve through the owner's
-  rows as today; an enrolled owner without an unlocked session yields
-  `ErrKeyLocked` → 403 — the same boundary as content (ADR-0101).
-- **OCM**: the local side is identical to a local share; the remote peer's
-  storage is its own affair. Federated mount names are derived locally and
-  follow the local user's scheme.
+  rows as today (the anonymous ctx opens the sealed metadata); an enrolled
+  owner without an unlocked session yields `ErrKeyLocked` → 403 on both the
+  public DAV jail and the direct `/s/{token}` download — the same boundary
+  as content (ADR-0101).
+- **OCM**: the local (outgoing) side is identical to a local share. OCM
+  **incoming** (remote) mount names stay plaintext in `ocm_incoming` (the
+  name is the peer's data, chosen at accept time; there is no local DK chain
+  for remote content) — recorded as an accepted residual (same-day phase-3a
+  amendment; earlier text said "follow the local scheme").
 
 ### 8. Search
 
@@ -232,7 +259,10 @@ log, and that residual is accepted and documented.
 - **Enrolled mode (ADR-0100/0101)**: at-rest compromise with no active
   unlocked session now protects names as well as content; the unlock
   boundaries (public links, background jobs, token-less sessions) are exactly
-  the content boundaries.
+  the content boundaries. (Phase-3a note: `shares.file_path` left the leak
+  set for scheme-1 owners — it carries ciphertext plus the AEAD-sealed
+  `mount_name_enc`/`abs_path_enc` copies; the share grant no longer publishes
+  the owner path to a DB-only reader.)
 - **Explicit non-goals / residuals**: sizes, mtimes, etags, permissions, tree
   shape (depth, fan-out), duplicate-name equality within a folder, activity
   actor/verb metadata, and **request URLs in server access logs** (ops
@@ -311,8 +341,17 @@ log, and that residual is accepted and documented.
      id and trash object keys carry no plaintext name, and the cap keeps the
      id within `ValidLocationID`'s 255 chars. Scheme-0 users keep the
      plaintext basename form bit-identically.)
-3. **Sharing + activity + uploads**: ListIncoming decryption, activity token
-   subjects, upload-session tokenization, public-link boundary tests.
+3. **Sharing + activity + uploads** — split same-day into two increments.
+   **3a (landed 2026-09-27) — sharing**: ciphertext `shares.file_path` with
+   the §7 grant-time sealed copies (migration 0024: `mount_name_enc`,
+   `abs_path_enc`), share-root-anchored mount resolution (`CipherPathUnder`/
+   `DecryptUnderAnchor`/`AnchorRow`) lifting the phase-2 enrolled-sharee 403,
+   `ListIncoming` opening mounts in the sharee's ctx, owner-facing OCS views
+   opening them in the owner's ctx, the rename re-seal pass, the KeySharer
+   rewired to ciphertext paths end to end (raw meta seam; `WrapForWrite` call
+   sites translate), and the public-link master-works/enrolled-403 boundary.
+   **3b (follow-up)** — activity subject tokens + upload-session destination
+   tokenization + the §9 marker, unchanged in scope.
 4. **Tooling**: encrypt-names/decrypt-names sweeps, status/reconcile
    reporting, config reference and docs.
 
@@ -377,9 +416,14 @@ log, and that residual is accepted and documented.
   post-decrypt sort order, rename-token stability, cross-parent move O(1)
   re-tokening, copy re-keying, budget-400s, and ciphertext-string behavior of
   locks/trash/versions.
-- Phase 3 pins sharee mount decryption, wrap-on-write for new folders under
-  shares, public-link 403 for locked enrolled owners, activity placeholder
-  fallback, and tokenized upload sessions.
+- Phase 3a pins ciphertext share rows (no plaintext path material),
+  ListIncoming mount decryption with OwnerPath/OwnerCipherPath, the enrolled
+  sharee's end-to-end DAV operability through a ciphertext mount (PROPFIND,
+  GET, PUT with both wrap rows, MKCOL DK mint+wrap) plus the no-session 403
+  variant, rename re-seal of mount_name_enc/abs_path_enc (root/ancestor/
+  below-point), owner OCS plaintext views, and the public-link
+  master-works/enrolled-403 pair. Phase 3b pins the activity placeholder
+  fallback and tokenized upload sessions.
 - Phase 4 pins sweep idempotence, per-user transactional cutover (failure
   leaves the user fully scheme 0), decrypt-names round-trip, and
   status/reconcile output.

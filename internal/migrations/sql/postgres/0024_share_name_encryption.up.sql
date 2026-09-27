@@ -1,0 +1,2 @@
+ALTER TABLE shares ADD COLUMN mount_name_enc TEXT NOT NULL DEFAULT '';
+ALTER TABLE shares ADD COLUMN abs_path_enc TEXT NOT NULL DEFAULT '';
