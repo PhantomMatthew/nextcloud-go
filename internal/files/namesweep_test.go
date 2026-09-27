@@ -555,11 +555,22 @@ func TestNameSweepSkipsOrphanTrash(t *testing.T) {
 	if err := env.db.QueryRow(ctx, `SELECT original_path FROM trash_items WHERE location_id <> ?`, orphanLoc).Scan(&folderOrig); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(folderOrig, "a") && folderOrig != "/" {
-		// token path must not contain plaintext segments
-		if strings.Contains(folderOrig, "/a") {
-			t.Errorf("folder trash row leaks plaintext: %q", folderOrig)
+	// No plaintext SEGMENT survives (exact-segment compare — a substring check
+	// false-positives whenever a random b64url token happens to start with
+	// 'a'). Stronger still: the stored ciphertext round-trips through the real
+	// translator back to the plaintext original path.
+	for _, seg := range strings.Split(folderOrig, "/") {
+		if seg == "a" || seg == "b" {
+			t.Errorf("folder trash row leaks plaintext segment %q in %q", seg, folderOrig)
 		}
+	}
+	xlate := files.NewNameTranslator(env.meta, env.res, env.users)
+	back, err := xlate.PlainPath(ctx, env.ids["alice"], folderOrig)
+	if err != nil {
+		t.Fatalf("converted trash path does not decrypt: %v", err)
+	}
+	if back != "/a/b" {
+		t.Errorf("PlainPath(%q) = %q, want /a/b", folderOrig, back)
 	}
 }
 
