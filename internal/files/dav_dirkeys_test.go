@@ -232,6 +232,38 @@ func TestDirKeysMkdirUnderShareWrapsSharee(t *testing.T) {
 	}
 }
 
+// TestDirKeysRestoreUnderShareWrapsSharee pins folder wrap-on-restore
+// (ADR-0104 phase-2 gap closed): a folder restored under a covering share
+// wraps its freshly minted DK for the sharee — without the hook the
+// restored tree's names stayed unresolvable to them.
+func TestDirKeysRestoreUnderShareWrapsSharee(t *testing.T) {
+	ctx := context.Background()
+	env := newKeyShareEnv(t, "alice", "bob")
+	env.dav.DirKeys = env.res
+
+	env.mkdir(t, "/docs")
+	env.mkdir(t, "/docs/sub")
+	env.share(t, "/docs", files.ShareTypeUser, "bob")
+
+	if err := env.dav.Remove(ctx, "alice", "/docs/sub"); err != nil {
+		t.Fatal(err)
+	}
+	ents, err := env.dav.Trash.List(ctx, "alice", "/trash")
+	if err != nil || len(ents) != 1 {
+		t.Fatalf("trash list = %v %v", ents, err)
+	}
+	loc := strings.TrimPrefix(ents[0].Path, "/")
+	if _, _, err := env.dav.Trash.Restore(ctx, "alice", loc, "alice", "", false); err != nil {
+		t.Fatal(err)
+	}
+	subUUID := env.folderKeyUUID(t, "/docs/sub")
+	for uid, want := range map[string]int64{"alice": 1, "bob": 1} {
+		if got := env.wrapRowsForUUID(t, subUUID, uid); got != want {
+			t.Errorf("%s wrap rows for the restored subfolder DK = %d, want %d", uid, got, want)
+		}
+	}
+}
+
 // TestDirKeysEnrolledOwnerMkdir pins the enrolled path: the folder DK is a
 // scheme=1 box under the owner's public key (no session, no symmetric UK),
 // resolving through the reader's identity ctx like any enrolled key.

@@ -202,10 +202,9 @@ func TestNameCryptCipherMountDeleteTrashes(t *testing.T) {
 	if err != nil || string(body) != "inner" {
 		t.Fatalf("restored dir read = %q %v", body, err)
 	}
-	// Known phase-2 gap (NOT asserted): after the owner's restore, bob cannot
-	// resolve the restored item's names — ingestFromStorage does not re-wrap
-	// the sharee's directory keys (dav.go restore path). Unrelated to this
-	// increment.
+	// The sharee's view of the restored tree is pinned by
+	// TestNameCryptCipherMountDeleteRestoreShareeReads (wrap-on-restore
+	// covers the fresh DKs).
 }
 
 // TestNameCryptCipherMountDeleteRootRefused pins the share-root boundary:
@@ -315,4 +314,108 @@ func TestNameCryptCipherMountDeleteLocked(t *testing.T) {
 		t.Fatalf("owner read after refused delete: %v", err)
 	}
 	_ = rc.Close()
+}
+
+// TestNameCryptCipherMountDeleteRestoreShareeReads pins the full round trip
+// that the phase-3a DELETE fix left documented as a gap: the sharee deletes
+// through the mount, the owner restores from trash, and the sharee resolves
+// and reads the restored tree again — wrap-on-restore (ingestFromStorage,
+// mirroring mkdirOwned's hook) covers the restored folders' fresh DKs.
+func TestNameCryptCipherMountDeleteRestoreShareeReads(t *testing.T) {
+	rig := newCipherMountRig(t)
+	env, e2e, actx := rig.env, rig.e2e, rig.actx
+
+	if _, err := env.dav.Mkdir(actx, "alice", "/secret"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.dav.Mkdir(actx, "alice", "/secret/sub"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := env.dav.Write(actx, "alice", "/secret/sub/inner.txt", strings.NewReader("inner"), nil); err != nil {
+		t.Fatal(err)
+	}
+	rig.shareSecret(t, webdav.PermRead|webdav.PermDelete)
+
+	rr := rig.do(t, "DELETE", "/remote.php/dav/files/bob/secret/sub", rig.bobUnlocked())
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("sharee DELETE = %d, want 204: %s", rr.Code, rr.Body.String())
+	}
+	items, err := env.dav.Trash.Sessions.List(actx, env.ids["alice"])
+	if err != nil || len(items) != 1 {
+		t.Fatalf("owner trash items = %+v %v, want exactly 1", items, err)
+	}
+	if _, _, err := env.dav.Trash.Restore(actx, "alice", items[0].LocationID, "alice", "", false); err != nil {
+		t.Fatal(err)
+	}
+
+	// The restored folder's fresh DK carries a wrap for the sharee.
+	subRow := e2e.rawRowAs(t, actx, "/secret/sub")
+	if got := env.wrapRowsForUUID(t, subRow.KeyUUID, "bob"); got != 1 {
+		t.Errorf("bob wrap rows on the restored folder DK = %d, want 1", got)
+	}
+
+	// The sharee resolves names and reads content through the mount again.
+	bctx := pctx("bob", rig.bobKey)
+	rr = rig.do(t, "PROPFIND", "/remote.php/dav/files/bob/secret", rig.bobUnlocked())
+	if rr.Code != http.StatusMultiStatus {
+		t.Fatalf("post-restore mount PROPFIND = %d, want 207: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "sub") {
+		t.Errorf("post-restore mount PROPFIND missing the restored name:\n%s", rr.Body.String())
+	}
+	rc, _, err := env.dav.Read(bctx, "bob", "/secret/sub/inner.txt")
+	if err != nil {
+		t.Fatalf("post-restore sharee read: %v", err)
+	}
+	body, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil || string(body) != "inner" {
+		t.Fatalf("post-restore sharee read = %q %v", body, err)
+	}
+}
+
+// TestNameCryptOwnerRestoreSharedSubdirShareeReads pins the gap closure on
+// the plain owner path (no mount involved in the delete): the owner trashes
+// and restores a subfolder of a share, and wrap-on-restore makes the
+// restored tree resolvable to the sharee again.
+func TestNameCryptOwnerRestoreSharedSubdirShareeReads(t *testing.T) {
+	rig := newCipherMountRig(t)
+	env, e2e, actx := rig.env, rig.e2e, rig.actx
+
+	if _, err := env.dav.Mkdir(actx, "alice", "/secret"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.dav.Mkdir(actx, "alice", "/secret/sub"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := env.dav.Write(actx, "alice", "/secret/sub/inner.txt", strings.NewReader("inner"), nil); err != nil {
+		t.Fatal(err)
+	}
+	rig.shareSecret(t, webdav.PermRead)
+
+	if err := env.dav.Remove(actx, "alice", "/secret/sub"); err != nil {
+		t.Fatal(err)
+	}
+	items, err := env.dav.Trash.Sessions.List(actx, env.ids["alice"])
+	if err != nil || len(items) != 1 || items[0].OriginalPath != "/secret/sub" {
+		t.Fatalf("owner trash items = %+v %v, want exactly /secret/sub", items, err)
+	}
+	if _, _, err := env.dav.Trash.Restore(actx, "alice", items[0].LocationID, "alice", "", false); err != nil {
+		t.Fatal(err)
+	}
+
+	subRow := e2e.rawRowAs(t, actx, "/secret/sub")
+	if got := env.wrapRowsForUUID(t, subRow.KeyUUID, "bob"); got != 1 {
+		t.Errorf("bob wrap rows on the restored folder DK = %d, want 1", got)
+	}
+	bctx := pctx("bob", rig.bobKey)
+	rc, _, err := env.dav.Read(bctx, "bob", "/secret/sub/inner.txt")
+	if err != nil {
+		t.Fatalf("post-restore sharee read: %v", err)
+	}
+	body, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil || string(body) != "inner" {
+		t.Fatalf("post-restore sharee read = %q %v", body, err)
+	}
 }

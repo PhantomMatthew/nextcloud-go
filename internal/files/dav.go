@@ -1241,15 +1241,36 @@ func (d *DAV) ingestFromStorage(ctx context.Context, user, p string) error {
 			}
 			// ADR-0104 phase 1: mint-then-insert, as in mkdirOwned. The
 			// ErrExists race loser's wrap row is a benign orphan.
+			var dirUUID [16]byte
+			var dirKey []byte
 			if d.DirKeys != nil {
-				dirUUID, _, err := d.DirKeys.AllocateForUser(ctx, u.UID)
+				var err error
+				dirUUID, dirKey, err = d.DirKeys.AllocateForUser(ctx, u.UID)
 				if err != nil {
 					return err
 				}
 				f.KeyUUID = dirUUID[:]
 			}
-			if err := d.Meta.Insert(ctx, f); err != nil && !errors.Is(err, ErrExists) {
-				return mapMeta(err)
+			inserted := true
+			if err := d.Meta.Insert(ctx, f); err != nil {
+				if !errors.Is(err, ErrExists) {
+					return mapMeta(err)
+				}
+				inserted = false
+			}
+			// Folder wrap-on-restore, mirroring mkdirOwned's wrap-on-write:
+			// a folder restored under a covering share wraps its fresh DK for
+			// the sharees too — otherwise the restored tree's names are
+			// unresolvable to them (the phase-2 gap pinned at phase 3a).
+			// Best-effort, same policy as the other share hooks; skipped on
+			// the ErrExists race (the pre-existing row keeps its own DK).
+			if inserted && d.DirKeys != nil && d.KeySharer != nil {
+				keyPath, kerr := d.shareKeyPath(ctx, u.ID, np)
+				if kerr != nil {
+					d.warn(ctx, "files: share key wrap path translation failed", slog.String("path", np), slog.Any("err", kerr))
+				} else if err := d.KeySharer.WrapForWrite(ctx, u.ID, keyPath, dirUUID, dirKey); err != nil {
+					d.warn(ctx, "files: share key wrap on restore failed", slog.String("path", np), slog.Any("err", err))
+				}
 			}
 		}
 		kids, err := d.Storage.List(ctx, key)

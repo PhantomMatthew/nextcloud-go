@@ -191,6 +191,23 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-30** — SSE **filename encryption: wrap-on-restore** (ADR-0104 §7,
+  phase-2 gap). `ingestFromStorage` (the `Trash.Restore` funnel) now mirrors
+  `mkdirOwned`'s wrap-on-write hook: a folder restored under a covering share
+  wraps its freshly minted directory key for the sharees too, so the restored
+  tree's names resolve for them again. Previously the restored row's DK was
+  wrapped for the owner alone and every sharee lost name resolution over the
+  restored subtree (a 403 on ciphertext-mount PROPFIND) — for both the plain
+  owner-trash path and the phase-3a ciphertext-mount DELETE round trip. The
+  hook is best-effort (warn, same policy as the other share hooks), skipped
+  on the `ErrExists` race so no orphan wraps land on an unused DK; file rows
+  are untouched (their content-key wraps survive `DeleteSubtree` and resolve
+  via the storage object header). Pinned by
+  `TestDirKeysRestoreUnderShareWrapsSharee` (scheme-0 unit pin),
+  `TestNameCryptCipherMountDeleteRestoreShareeReads` (enrolled sharee mount
+  DELETE → owner restore → sharee PROPFIND/Read round trip), and
+  `TestNameCryptOwnerRestoreSharedSubdirShareeReads` (plain owner path).
+
 - **2026-09-30** — SSE **filename encryption phase-3a residual: ciphertext-mount
   lock indicator** (ADR-0104 §7). Owner-side locks now surface in an enrolled
   sharee's PROPFIND/Stat through a ciphertext mount — previously `applyLock`'s
