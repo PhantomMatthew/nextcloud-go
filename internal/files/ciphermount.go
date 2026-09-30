@@ -81,7 +81,8 @@ func (d *DAV) cipherShareTarget(ctx context.Context, m *IncomingMount, np string
 // raw by its anchored ciphertext path and its name chain decrypted relative
 // to the share root (never the generic decryptRow — it walks ancestors to the
 // root and 403s for enrolled owners). The entry speaks the plaintext owner
-// path inward (favorites/locks stay owner-path keyed) and np outward.
+// path inward (favorites stay owner-path keyed; the lock indicator resolves
+// anchor-relative via applyLockCipherMount) and np outward.
 func (d *DAV) statCipherShare(ctx context.Context, np string, m *IncomingMount) (*webdav.Entry, error) {
 	names, raw, err := d.cipherMountSeams()
 	if err != nil {
@@ -99,7 +100,9 @@ func (d *DAV) statCipherShare(ctx context.Context, np string, m *IncomingMount) 
 	if err != nil {
 		return nil, mapMeta(err)
 	}
-	return incomingEntry(d.toEntry(ctx, u.ID, &dec[0]), np, m.Permissions), nil
+	e := d.toEntryBare(ctx, u.ID, &dec[0])
+	d.applyLockCipherMount(ctx, u, anchor, m, np, e)
+	return incomingEntry(e, np, m.Permissions), nil
 }
 
 // listCipherShare is listOwned for a ciphertext mount: raw children of the
@@ -138,9 +141,11 @@ func (d *DAV) listCipherShare(ctx context.Context, np string, m *IncomingMount) 
 	})
 	out := make([]*webdav.Entry, 0, len(dec))
 	for i := range dec {
-		e := d.toEntry(ctx, u.ID, &dec[i])
+		e := d.toEntryBare(ctx, u.ID, &dec[i])
 		rel := strings.TrimPrefix(e.Path, m.OwnerPath)
-		out = append(out, incomingEntry(e, path.Join(m.Mount, strings.TrimPrefix(rel, "/")), m.Permissions))
+		childNp := path.Join(m.Mount, strings.TrimPrefix(rel, "/"))
+		d.applyLockCipherMount(ctx, u, anchor, m, childNp, e)
+		out = append(out, incomingEntry(e, childNp, m.Permissions))
 	}
 	return out, nil
 }
@@ -168,7 +173,7 @@ func (d *DAV) mkdirCipherMount(ctx context.Context, np string, m *IncomingMount)
 	// segment, ciphertext path length) before the storage backend sees it.
 	// A missing intermediate is a missing PARENT here — 409 like mkdirOwned
 	// (RFC 4918 §9.3.1, ADR-0078), not 404.
-	u, _, ctTarget, err := d.cipherShareTarget(ctx, m, np)
+	u, anchor, ctTarget, err := d.cipherShareTarget(ctx, m, np)
 	if err != nil {
 		if errors.Is(err, webdav.ErrNotFound) {
 			return nil, webdav.ErrParentMissing
@@ -218,7 +223,9 @@ func (d *DAV) mkdirCipherMount(ctx context.Context, np string, m *IncomingMount)
 	}
 	got.Name = path.Base(np)
 	got.Path = plainTarget
-	return incomingEntry(d.toEntry(ctx, u.ID, got), np, m.Permissions), nil
+	e := d.toEntryBare(ctx, u.ID, got)
+	d.applyLockCipherMount(ctx, u, anchor, m, np, e)
+	return incomingEntry(e, np, m.Permissions), nil
 }
 
 // writeCipherMount is the write() core for a ciphertext mount (ADR-0104
@@ -237,7 +244,7 @@ func (d *DAV) writeCipherMount(ctx context.Context, np string, m *IncomingMount,
 	if rel != "/" {
 		plainTarget += rel
 	}
-	u, _, ctTarget, err := d.cipherShareTarget(ctx, m, np)
+	u, anchor, ctTarget, err := d.cipherShareTarget(ctx, m, np)
 	if err != nil {
 		return nil, false, err
 	}
@@ -365,11 +372,14 @@ func (d *DAV) writeCipherMount(ctx context.Context, np string, m *IncomingMount,
 	if err != nil {
 		return nil, false, mapMeta(err)
 	}
-	// The entry speaks the plaintext owner path inward (favorites/locks stay
-	// owner-path keyed); the caller rewrites it into the mount namespace.
+	// The entry speaks the plaintext owner path inward (favorites stay
+	// owner-path keyed; locks resolve anchor-relative); the caller rewrites
+	// it into the mount namespace.
 	got.Name = path.Base(np)
 	got.Path = plainTarget
-	return d.toEntry(ctx, u.ID, got), created, nil
+	e := d.toEntryBare(ctx, u.ID, got)
+	d.applyLockCipherMount(ctx, u, anchor, m, np, e)
+	return e, created, nil
 }
 
 // snapshotCipherMount is Versions.Snapshot for a ciphertext-mount overwrite:
@@ -601,4 +611,51 @@ func (d *DAV) removeCipherMount(ctx context.Context, user, np string, m *Incomin
 		}
 	}
 	return raw.RecalcAncestors(ctx, u.ID, parent, now)
+}
+
+// applyLockCipherMount is applyLock for a ciphertext mount: lock rows key on
+// the owner's ciphertext paths, so the indicator walk runs anchor-relative
+// over the raw lock store and stops at the share root — locks above the
+// mount are invisible through it, the same boundary checkLockCipherMount
+// enforces. u and anchor come from the caller's cipherShareTarget. Like
+// applyLock, every failure degrades to no indicator (display-only), but the
+// anchored walk succeeds for enrolled owners where the translating store's
+// owner-chain walk could not (ADR-0104 phase 3a).
+func (d *DAV) applyLockCipherMount(ctx context.Context, u *users.User, anchor *File, m *IncomingMount, np string, e *webdav.Entry) {
+	if d == nil || d.Locks == nil || e == nil {
+		return
+	}
+	names, _, err := d.cipherMountSeams()
+	if err != nil {
+		return
+	}
+	rawer, ok := d.Locks.(interface{ Raw() LockStore })
+	if !ok {
+		return
+	}
+	rawLocks := rawer.Raw()
+	now := d.now()
+	for cur := np; ; cur = parentFilePath(cur) {
+		ctCur, err := names.CipherPathUnder(ctx, anchor, m.OwnerCipherPath, mountRel(m, cur))
+		if err != nil {
+			return
+		}
+		lk, err := rawLocks.GetByPath(ctx, u.ID, ctCur)
+		if err == nil {
+			expired, err := d.expireLock(ctx, lk, now)
+			if err == nil && !expired {
+				e.LockToken = lk.Token
+				e.LockOwner = lk.Owner
+				rem := time.UnixMilli(lk.TimeoutMs).UTC().Sub(now)
+				if rem < 0 {
+					rem = 0
+				}
+				e.LockTimeout = rem
+				return
+			}
+		}
+		if cur == m.Mount {
+			return
+		}
+	}
 }

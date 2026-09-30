@@ -192,6 +192,27 @@ These become candidates for v2 (post-1.0).
 ## Change Log
 
 - **2026-09-30** — SSE **filename encryption phase-3a residual: ciphertext-mount
+  lock indicator** (ADR-0104 §7). Owner-side locks now surface in an enrolled
+  sharee's PROPFIND/Stat through a ciphertext mount — previously `applyLock`'s
+  translating-store walk over the owner's ancestor chain errored at every
+  level in the sharee's ctx and the indicator silently degraded to absent
+  (display-only). New `DAV.applyLockCipherMount` runs the indicator walk
+  anchor-relative over the raw lock store (lock rows key on the owner's
+  ciphertext paths) and stops at the share root — exactly the boundary
+  `checkLockCipherMount` enforces on writes, so an above-root lock now
+  neither blocks the sharee nor renders (the master-wrapped owner's old
+  full-walk display of above-root locks is aligned to the same boundary).
+  `toEntry` splits into `toEntryBare` + the plain-`applyLock` wrapper; all
+  four ciphertext verbs (stat/list/mkdir/write) wire the anchored indicator
+  (list hoists the anchor once). Failures stay display-only silent, but the
+  anchored walk always succeeds for enrolled owners. Pinned by
+  `TestNameCryptCipherMountLockIndicatorShown` (exact Stat fields + wire
+  token, file and list), `...InheritedFromRoot` (mount-root lock visible on
+  children), `...AboveRootHidden` (ancestor lock invisible), and
+  `...MasterOwnerSessionless` (master-wrapped-owner parity, no regression of
+  the previously working path).
+
+- **2026-09-30** — SSE **filename encryption phase-3a residual: ciphertext-mount
   DELETE** (ADR-0104 §7). An enrolled sharee's DELETE inside a ciphertext
   incoming mount no longer 403s. New `DAV.removeCipherMount` verb mirrors
   `Trash.MoveToTrash`'s orchestration anchored at the share root:

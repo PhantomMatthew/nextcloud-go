@@ -172,11 +172,21 @@ func storageKey(uid, rel string) (string, error) {
 }
 
 func (d *DAV) toEntry(ctx context.Context, userID int64, f *File) *webdav.Entry {
+	e := d.toEntryBare(ctx, userID, f)
+	d.applyLock(ctx, userID, f.Path, e)
+	return e
+}
+
+// toEntryBare is toEntry without the lock indicator: ciphertext-mount verbs
+// apply the anchored indicator (applyLockCipherMount) instead — the plain
+// walk runs the translating lock store over the owner's ancestor chain,
+// which an enrolled owner's sharee cannot resolve (ADR-0104 phase 3a).
+func (d *DAV) toEntryBare(ctx context.Context, userID int64, f *File) *webdav.Entry {
 	var id uint64
 	if f.ID > 0 {
 		id = uint64(f.ID)
 	}
-	e := &webdav.Entry{
+	return &webdav.Entry{
 		Path:        f.Path,
 		IsDir:       f.IsDir,
 		Size:        f.Size,
@@ -189,8 +199,6 @@ func (d *DAV) toEntry(ctx context.Context, userID int64, f *File) *webdav.Entry 
 		Checksum:    f.Checksum,
 		Favorite:    d.favoriteValue(ctx, userID, f.Path),
 	}
-	d.applyLock(ctx, userID, f.Path, e)
-	return e
 }
 
 func (d *DAV) favoriteValue(ctx context.Context, userID int64, p string) int {
