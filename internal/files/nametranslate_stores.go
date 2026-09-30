@@ -777,3 +777,124 @@ func (s *TranslatingUploadStore) Delete(ctx context.Context, userID int64, trans
 }
 
 var _ UploadStore = (*TranslatingUploadStore)(nil)
+
+// TranslatingPropsStore carries ciphertext paths in file_properties
+// (ADR-0104 §6 — oc:favorite is the only persisted path-keyed property;
+// ADR-0046 computes all other custom props live). Path arguments translate
+// on the way in and reads echo the caller's plaintext path back onto
+// returned rows, the TranslatingLockStore convention; ns/name/value are
+// user data, never path material, and pass through untouched.
+type TranslatingPropsStore struct {
+	raw PropertyStore
+	t   *NameTranslator
+}
+
+// NewTranslatingPropsStore wraps raw with filename translation.
+func NewTranslatingPropsStore(raw PropertyStore, t *NameTranslator) *TranslatingPropsStore {
+	return &TranslatingPropsStore{raw: raw, t: t}
+}
+
+// Raw returns the wrapped store (reserved for anchored ciphertext-mount
+// verbs, the TranslatingLockStore/TranslatingTrashStore convention).
+func (s *TranslatingPropsStore) Raw() PropertyStore { return s.raw }
+
+func (s *TranslatingPropsStore) Get(ctx context.Context, userID int64, filePath, ns, name string) (*FileProperty, error) {
+	np, err := NormalizePath(filePath)
+	if err != nil {
+		return nil, err
+	}
+	cp, err := s.t.cipherPath(ctx, newTranslateCache(), userID, np)
+	if err != nil {
+		return nil, err
+	}
+	p, err := s.raw.Get(ctx, userID, cp, ns, name)
+	if err != nil {
+		return nil, err
+	}
+	p.Path = np // echo the request path (rows carry ciphertext only)
+	return p, nil
+}
+
+func (s *TranslatingPropsStore) Set(ctx context.Context, p *FileProperty) error {
+	if p == nil {
+		return s.raw.Set(ctx, p)
+	}
+	np, err := NormalizePath(p.Path)
+	if err != nil {
+		return err
+	}
+	cp, err := s.t.cipherPath(ctx, newTranslateCache(), p.UserID, np)
+	if err != nil {
+		return err
+	}
+	p.Path = cp
+	err = s.raw.Set(ctx, p)
+	p.Path = np // echo the request path on the caller's struct
+	return err
+}
+
+func (s *TranslatingPropsStore) Remove(ctx context.Context, userID int64, filePath, ns, name string) error {
+	cp, err := s.t.cipherPath(ctx, newTranslateCache(), userID, filePath)
+	if err != nil {
+		return err
+	}
+	return s.raw.Remove(ctx, userID, cp, ns, name)
+}
+
+func (s *TranslatingPropsStore) ListByPath(ctx context.Context, userID int64, filePath string) ([]FileProperty, error) {
+	np, err := NormalizePath(filePath)
+	if err != nil {
+		return nil, err
+	}
+	cp, err := s.t.cipherPath(ctx, newTranslateCache(), userID, np)
+	if err != nil {
+		return nil, err
+	}
+	items, err := s.raw.ListByPath(ctx, userID, cp)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		items[i].Path = np // every row sits at the requested path
+	}
+	return items, nil
+}
+
+func (s *TranslatingPropsStore) DeleteByPath(ctx context.Context, userID int64, filePath string) error {
+	cp, err := s.t.cipherPath(ctx, newTranslateCache(), userID, filePath)
+	if err != nil {
+		return err
+	}
+	return s.raw.DeleteByPath(ctx, userID, cp)
+}
+
+// RenamePath translates both endpoints; the raw prefix rewrite is pure
+// string work on tokens (segment boundaries align at "/").
+func (s *TranslatingPropsStore) RenamePath(ctx context.Context, userID int64, srcPath, dstPath string) error {
+	c := newTranslateCache()
+	ctSrc, err := s.t.cipherPath(ctx, c, userID, srcPath)
+	if err != nil {
+		return err
+	}
+	ctDst, err := s.t.cipherPath(ctx, c, userID, dstPath)
+	if err != nil {
+		return err
+	}
+	return s.raw.RenamePath(ctx, userID, ctSrc, ctDst)
+}
+
+// CopyPath translates both endpoints, same as RenamePath.
+func (s *TranslatingPropsStore) CopyPath(ctx context.Context, userID int64, srcPath, dstPath string) error {
+	c := newTranslateCache()
+	ctSrc, err := s.t.cipherPath(ctx, c, userID, srcPath)
+	if err != nil {
+		return err
+	}
+	ctDst, err := s.t.cipherPath(ctx, c, userID, dstPath)
+	if err != nil {
+		return err
+	}
+	return s.raw.CopyPath(ctx, userID, ctSrc, ctDst)
+}
+
+var _ PropertyStore = (*TranslatingPropsStore)(nil)

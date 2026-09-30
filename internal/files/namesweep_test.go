@@ -35,6 +35,12 @@ func newSweepFixture(t *testing.T) (env *keyShareEnv, trashLoc string) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// A favorite mark — file_properties is a path-keyed satellite too.
+	if err := files.NewSQLPropertyStore(env.db).Set(ctx, &files.FileProperty{
+		UserID: env.ids["alice"], Path: "/a.txt", NS: files.PropNSOwnCloud, Name: files.PropFavorite, Value: "1",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	// Raw trash store: plaintext original_path and a plaintext-basename
 	// location id — the pre-sweep state.
 	if err := env.dav.Trash.MoveToTrash(ctx, "alice", "/docs/note.txt", "alice"); err != nil {
@@ -117,7 +123,7 @@ func TestNameSweepEncryptEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantStats := files.NameSweepStats{
-		FilesRows: 5, FoldersKeyed: 3, LocksRows: 1, VersionsRows: 1,
+		FilesRows: 5, FoldersKeyed: 3, LocksRows: 1, VersionsRows: 1, PropsRows: 1,
 		TrashRows: 1, TrashMoved: 1, SharesRows: 1, ShareWraps: 2, SkippedRows: 0,
 	}
 	if dry != wantStats {
@@ -210,17 +216,20 @@ SELECT id, parent_id, name, path, is_dir, key_uuid, name_scheme FROM files WHERE
 		}
 	}
 
-	// Locks and versions carry the /a.txt ciphertext path (deterministic
-	// tokens — identical to the files row's).
-	var lockPath, versionPath string
+	// Locks, versions and the favorite carry the /a.txt ciphertext path
+	// (deterministic tokens — identical to the files row's).
+	var lockPath, versionPath, propPath string
 	if err := env.db.QueryRow(ctx, `SELECT file_path FROM file_locks WHERE user_id = ?`, aliceID).Scan(&lockPath); err != nil {
 		t.Fatal(err)
 	}
 	if err := env.db.QueryRow(ctx, `SELECT file_path FROM file_versions WHERE user_id = ?`, aliceID).Scan(&versionPath); err != nil {
 		t.Fatal(err)
 	}
-	if lockPath != ctATxt || versionPath != ctATxt || ctATxt == "" {
-		t.Errorf("lock=%q version=%q files=%q — all three must be the /a.txt ciphertext path", lockPath, versionPath, ctATxt)
+	if err := env.db.QueryRow(ctx, `SELECT file_path FROM file_properties WHERE user_id = ?`, aliceID).Scan(&propPath); err != nil {
+		t.Fatal(err)
+	}
+	if lockPath != ctATxt || versionPath != ctATxt || propPath != ctATxt || ctATxt == "" {
+		t.Errorf("lock=%q version=%q prop=%q files=%q — all four must be the /a.txt ciphertext path", lockPath, versionPath, propPath, ctATxt)
 	}
 
 	// Trash: ciphertext original_path/name, token-based location id (the
@@ -337,7 +346,7 @@ func TestNameSweepDecryptRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := files.NameSweepStats{
-		FilesRows: 5, LocksRows: 1, VersionsRows: 1,
+		FilesRows: 5, LocksRows: 1, VersionsRows: 1, PropsRows: 1,
 		TrashRows: 1, TrashMoved: 1, SharesRows: 1, SkippedRows: 0,
 	}
 	if stats != want {
@@ -388,13 +397,16 @@ SELECT name, path, is_dir, key_uuid, name_scheme FROM files WHERE user_id = ? OR
 		t.Errorf("bob still holds %d wraps", got)
 	}
 
-	// Locks, versions, trash, shares are plaintext; the upload session is
-	// untouched as ever.
-	var lockPath, versionPath, trashOrig, trashLoc, sharePath, mountEnc, absEnc, dest string
+	// Locks, versions, props, trash, shares are plaintext; the upload session
+	// is untouched as ever.
+	var lockPath, versionPath, propPath, trashOrig, trashLoc, sharePath, mountEnc, absEnc, dest string
 	if err := env.db.QueryRow(ctx, `SELECT file_path FROM file_locks WHERE user_id = ?`, aliceID).Scan(&lockPath); err != nil {
 		t.Fatal(err)
 	}
 	if err := env.db.QueryRow(ctx, `SELECT file_path FROM file_versions WHERE user_id = ?`, aliceID).Scan(&versionPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.db.QueryRow(ctx, `SELECT file_path FROM file_properties WHERE user_id = ?`, aliceID).Scan(&propPath); err != nil {
 		t.Fatal(err)
 	}
 	if err := env.db.QueryRow(ctx, `SELECT original_path, location_id FROM trash_items WHERE user_id = ?`, aliceID).Scan(&trashOrig, &trashLoc); err != nil {
@@ -406,8 +418,8 @@ SELECT name, path, is_dir, key_uuid, name_scheme FROM files WHERE user_id = ? OR
 	if err := env.db.QueryRow(ctx, `SELECT destination FROM uploads WHERE user_id = ?`, aliceID).Scan(&dest); err != nil {
 		t.Fatal(err)
 	}
-	if lockPath != "/a.txt" || versionPath != "/a.txt" {
-		t.Errorf("lock=%q version=%q, want /a.txt", lockPath, versionPath)
+	if lockPath != "/a.txt" || versionPath != "/a.txt" || propPath != "/a.txt" {
+		t.Errorf("lock=%q version=%q prop=%q, want /a.txt", lockPath, versionPath, propPath)
 	}
 	if trashOrig != "/docs/note.txt" || trashLoc != oldTrashLoc {
 		t.Errorf("trash = (%q, %q), want (/docs/note.txt, %q)", trashOrig, trashLoc, oldTrashLoc)

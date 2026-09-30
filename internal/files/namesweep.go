@@ -21,7 +21,8 @@ import (
 // ADR-0104 phase 4: the per-user name-encryption sweeps. EncryptUser converts
 // an existing plaintext tree (users.name_scheme 0 → 1) — minting directory
 // keys for every folder, rewriting files/file_locks/file_versions/
-// trash_items/shares rows to NCGOFN1 ciphertext — and DecryptUser reverses it
+// file_properties/trash_items/shares rows to NCGOFN1 ciphertext — and
+// DecryptUser reverses it
 // (decommissioning/rollback). The conversion is ONE database transaction per
 // user: a mid-sweep mixed tree is unreadable because both the write switch
 // and the read path key off users.name_scheme, so the tree rewrite and the
@@ -79,6 +80,7 @@ type NameSweepStats struct {
 	FoldersKeyed int // folders that gained a fresh directory key (encrypt only)
 	LocksRows    int // file_locks rows rewritten
 	VersionsRows int // file_versions rows rewritten
+	PropsRows    int // file_properties rows rewritten
 	TrashRows    int // trash_items rows rewritten
 	TrashMoved   int // trash storage objects renamed
 	SharesRows   int // shares rows rewritten
@@ -198,6 +200,7 @@ func (s *NameSweep) run(ctx context.Context, uid string, encrypting bool) (NameS
 	stats.FilesRows = len(tree.rows)
 	stats.LocksRows = len(plan.locks)
 	stats.VersionsRows = len(plan.versions)
+	stats.PropsRows = len(plan.props)
 	stats.TrashRows = len(plan.trash)
 	stats.SharesRows = len(plan.shares)
 	stats.SkippedRows = plan.skipped
@@ -615,6 +618,12 @@ type sweepVersionPlan struct {
 	newPath string
 }
 
+// sweepPropPlan rewrites one file_properties row (oc:favorite marks).
+type sweepPropPlan struct {
+	id      int64
+	newPath string
+}
+
 // sweepTrashPlan rewrites one trash_items row and (when the location id
 // changes) moves its storage object.
 type sweepTrashPlan struct {
@@ -646,26 +655,31 @@ type sweepWrapPlan struct {
 type satellitePlan struct {
 	locks    []sweepLockPlan
 	versions []sweepVersionPlan
+	props    []sweepPropPlan
 	trash    []sweepTrashPlan
 	shares   []sweepSharePlan
 	wraps    []sweepWrapPlan
 	skipped  int
 }
 
-// planSatellites loads the user's file_locks / file_versions / trash_items /
-// shares rows and computes each one's converted form against the in-memory
-// tree. Rows whose paths no longer resolve (ancestors deleted after the row
-// was written) are skipped and counted — the documented phase-4 residual
-// (retention/expiry self-heals them). Shares need their target row (its own
-// key seals mount_name_enc/abs_path_enc exactly like phase-3a SealShareMeta);
-// a share whose target is gone is skipped. A trash row with an invalid
-// location id is skipped (its suffix cannot be trusted).
+// planSatellites loads the user's file_locks / file_versions /
+// file_properties / trash_items / shares rows and computes each one's
+// converted form against the in-memory tree. Rows whose paths no longer
+// resolve (ancestors deleted after the row was written) are skipped and
+// counted — the documented phase-4 residual (retention/expiry self-heals
+// them). Shares need their target row (its own key seals
+// mount_name_enc/abs_path_enc exactly like phase-3a SealShareMeta); a share
+// whose target is gone is skipped. A trash row with an invalid location id
+// is skipped (its suffix cannot be trusted).
 func (s *NameSweep) planSatellites(ctx context.Context, u *users.User, t *sweepTree, encrypting bool) (*satellitePlan, error) {
 	p := &satellitePlan{}
 	if err := s.planLocks(ctx, u.ID, t, encrypting, p); err != nil {
 		return nil, err
 	}
 	if err := s.planVersions(ctx, u.ID, t, encrypting, p); err != nil {
+		return nil, err
+	}
+	if err := s.planProps(ctx, u.ID, t, encrypting, p); err != nil {
 		return nil, err
 	}
 	if err := s.planTrash(ctx, u.ID, t, encrypting, p); err != nil {
@@ -752,6 +766,38 @@ func (s *NameSweep) planVersions(ctx context.Context, userID int64, t *sweepTree
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("list versions: %w", err)
+	}
+	return nil
+}
+
+// planProps converts file_properties rows (oc:favorite is the only
+// persisted path-keyed property) — same shape as planLocks.
+func (s *NameSweep) planProps(ctx context.Context, userID int64, t *sweepTree, encrypting bool, p *satellitePlan) error {
+	rows, err := s.DB.Query(ctx, `SELECT id, file_path FROM file_properties WHERE user_id = ? ORDER BY id`, userID)
+	if err != nil {
+		return fmt.Errorf("list props: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var stored string
+		if err := rows.Scan(&id, &stored); err != nil {
+			return fmt.Errorf("list props: %w", err)
+		}
+		out, ok, err := t.convertPath(stored, encrypting)
+		if err != nil {
+			return fmt.Errorf("prop id %d (%q): %w", id, stored, err)
+		}
+		if !ok {
+			p.skipped++
+			continue
+		}
+		if out != stored {
+			p.props = append(p.props, sweepPropPlan{id: id, newPath: out})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("list props: %w", err)
 	}
 	return nil
 }
@@ -1094,7 +1140,8 @@ func (s *NameSweep) compensateTrashMoves(ctx context.Context, moved []sweepTrash
 // rewrite, the satellite rewrites, and the write-switch flip commit
 // atomically. Write order: files rows (by id; minted folder key_uuids claim
 // with a key_uuid IS NULL race guard), file_locks, file_versions,
-// trash_items, shares, (decrypt only) folder wrap-row deletes, and LAST the
+// file_properties, trash_items, shares, (decrypt only) folder wrap-row
+// deletes, and LAST the
 // users flip guarded on the old scheme — a zero-row guard means a racing
 // sweep won and this tx rolls back loudly. Every update checks its
 // RowsAffected: a row that changed underneath the sweep fails the tx.
@@ -1170,6 +1217,12 @@ UPDATE file_locks SET file_path = ? WHERE id = ?`, l.newPath, l.id); err != nil 
 	for _, v := range p.versions {
 		if err := exec1(fmt.Sprintf("file_versions row %d", v.id), `
 UPDATE file_versions SET file_path = ? WHERE id = ?`, v.newPath, v.id); err != nil {
+			return err
+		}
+	}
+	for _, pr := range p.props {
+		if err := exec1(fmt.Sprintf("file_properties row %d", pr.id), `
+UPDATE file_properties SET file_path = ? WHERE id = ?`, pr.newPath, pr.id); err != nil {
 			return err
 		}
 	}

@@ -43,6 +43,10 @@ Verified facts that shape the design:
   sharee-side `files` row exists. There is no sharee-renamable mount name.
 - **No stored displayname**: PROPFIND `displayname` is `files.name`; plugin
   custom props are computed live (ADR-0046), not persisted per file.
+  (**refined 2026-09-30**: with one exception — `oc:favorite` IS persisted
+  path-keyed in `file_properties`. It is now covered like the other
+  satellites: `TranslatingPropsStore` tokenizes `file_path` at rest and the
+  phase-4 sweep rewrites existing rows (`PropsRows`).)
 - **Trash keeps no key reference**, yet trash restore works for v3 content only
   because `file_keys` rows are keyed by `key_uuid` with no FK to `files` and
   therefore *survive* file deletion implicitly. Permanent deletion orphans

@@ -52,6 +52,7 @@ func upgradeNameCrypt(t *testing.T, env *keyShareEnv, res *encrypt.SQLResolver) 
 	env.dav.Trash = files.NewTrash(env.dav.Storage, files.NewTranslatingTrashStore(files.NewSQLTrashStore(env.db), xlate), env.dav, env.users)
 	env.dav.Trash.LocationNamer = xlate.TrashLocationBase
 	env.dav.Versions = files.NewVersions(env.dav.Storage, files.NewTranslatingVersionStore(files.NewSQLVersionStore(env.db), xlate), env.dav, env.users)
+	env.dav.Props = files.NewTranslatingPropsStore(files.NewSQLPropertyStore(env.db), xlate)
 	// Phase 3b: upload sessions tokenize their destination.
 	uploadFS := files.NewUploads(env.dav.Storage, files.NewTranslatingUploadStore(files.NewSQLUploadStore(env.db), xlate), env.dav, env.users)
 	return &nameE2EEnv{keyShareEnv: env, tmeta: tmeta, xlate: xlate, uploadFS: uploadFS}

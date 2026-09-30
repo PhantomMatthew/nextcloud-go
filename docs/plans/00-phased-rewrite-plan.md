@@ -191,6 +191,30 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-30** — SSE **filename encryption: file_properties path
+  tokenization** (ADR-0104 §6, agent-59's P2 residual). `oc:favorite` is the
+  one persisted path-keyed property (every other custom prop computes live,
+  ADR-0046), and `file_properties.file_path` stored it in plaintext — the
+  phase-2 satellite wrappers covered locks/trash/versions (3b: uploads) but
+  not props, and the phase-4 sweep skipped the table. New
+  `TranslatingPropsStore` mirrors `TranslatingLockStore`: single-path verbs
+  translate via the shared core (scheme-0 passthrough stays bit-identical),
+  reads echo the caller's plaintext path back, `RenamePath`/`CopyPath`
+  translate both endpoints (the raw prefix rewrite is pure token string
+  work), and `Raw()` reserves the anchored-mount seam. Wired in `app.New`
+  with the other satellites; the sweep gains `planProps`/`PropsRows` so
+  existing favorites convert in the same transaction. Intentional behavior
+  note: a sharee no longer sees the OWNER's favorite through a ciphertext
+  mount of an enrolled owner (the walk fails in the sharee's ctx and the
+  display degrades to 0, same boundary philosophy as the lock indicator;
+  master-wrapped owners unaffected). Favorites survive trash+restore to the
+  same path (deterministic parent-DK token reproduces) and follow renames
+  and restore-to-elsewhere. Pinned by `TestTranslatingPropsStore` (exact
+  at-rest ciphertext, plaintext echo, dual-endpoint translation, scheme-0
+  passthrough), `TestNameCryptFavoriteLifecycle` (PROPPATCH → stat → move →
+  trash/restore → purge), and the sweep fixtures extended with a favorite
+  (`PropsRows: 1` in both directions).
+
 - **2026-09-30** — SSE **filename encryption: wrap-on-restore** (ADR-0104 §7,
   phase-2 gap). `ingestFromStorage` (the `Trash.Restore` funnel) now mirrors
   `mkdirOwned`'s wrap-on-write hook: a folder restored under a covering share

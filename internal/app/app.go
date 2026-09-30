@@ -336,6 +336,9 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	if nameTranslator != nil {
 		trashStore = files.NewTranslatingTrashStore(trashStore, nameTranslator)
 		versionStore = files.NewTranslatingVersionStore(versionStore, nameTranslator)
+		// file_properties too: oc:favorite is the one persisted path-keyed
+		// property (all other custom props compute live, ADR-0046).
+		dav.Props = files.NewTranslatingPropsStore(dav.Props, nameTranslator)
 	}
 	tr := files.NewTrash(st, trashStore, dav, a.Users)
 	if nameTranslator != nil {
