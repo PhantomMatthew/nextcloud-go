@@ -191,6 +191,35 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-09-30** — SSE **filename encryption phase-3a residual: ciphertext-mount
+  DELETE** (ADR-0104 §7). An enrolled sharee's DELETE inside a ciphertext
+  incoming mount no longer 403s. New `DAV.removeCipherMount` verb mirrors
+  `Trash.MoveToTrash`'s orchestration anchored at the share root:
+  `shares.file_path` IS the mount root's full ciphertext path, so the
+  target's ciphertext path derives via `NameTranslator.CipherPathUnder` and
+  its parent directory key is inside the sharee's wraps by construction — no
+  owner ancestor walk ever runs in the sharee's ctx. The trash item lands in
+  the OWNER's trashbin with ciphertext original_path/name verbatim (the new
+  `TranslatingTrashStore.Raw` seam; the translating store decrypts them in
+  the owner's own ctx on listing, restore re-ingests in the owner's ctx),
+  `DeletedBy` records the deleting SHAREE (an intentional improvement over
+  the owner-recording legacy path — not retrofitted), the location-id
+  uniqueness probe runs against the raw trash store (new
+  `Trash.uniqueLocationIDWith`, with `uniqueLocationID` a one-line forward)
+  so the sharee's ctx never decrypts the owner's existing trash rows, and
+  `capTrashBase(row.Name)` stays byte-identical to the phase-2
+  `TrashLocationBase` contract. Lock cleanup asserts the raw lock store
+  (checkLockCipherMount's convention); the share prefix-delete applies
+  verbatim (d.Shares already speaks ciphertext paths). Documented
+  boundaries: the mount root itself refuses DELETE (403 — unsharing goes
+  through OCS, owner deletes through their own tree), and a trash-less
+  wiring keeps 403 (the Purge fallback needs the same ancestor chain).
+  Pinned by `TestNameCryptCipherMountDeleteTrashes` (file + directory
+  delete, exact at-rest ciphertext fields, file_keys wrap preservation,
+  owner restore round-trip) plus the root-refused / no-perm / keyless /
+  locked variants; the phase-2 gap where a restored item's names are
+  unresolvable to the sharee stays documented, not asserted.
+
 - **2026-09-27** — SSE **appdata under per-user encryption** (ADR-0105).
   Ownerless storage keys (the `appdata_<instanceID>/` trees — preview cache,
   plugin system storage) no longer hit the resolver's loud Allocate failure:

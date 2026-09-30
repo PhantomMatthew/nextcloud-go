@@ -487,3 +487,118 @@ func (d *DAV) checkLockCipherMount(ctx context.Context, m *IncomingMount, p, ifH
 		}
 	}
 }
+
+// removeCipherMount is Trash.MoveToTrash for a ciphertext mount (the ADR-0104
+// phase-3a DELETE residual): the trashed row's ciphertext path derives from
+// the share-root anchor alone — shares.file_path IS the mount root's full
+// ciphertext path, and the target's parent directory key is inside the
+// sharee's wraps by construction — so no owner ancestor walk ever runs in the
+// sharee's ctx. The trash item lands in the OWNER's trashbin with ciphertext
+// original_path/name verbatim (the TranslatingTrashStore decrypts them in the
+// owner's own ctx on listing; restore re-ingests in the owner's ctx).
+func (d *DAV) removeCipherMount(ctx context.Context, user, np string, m *IncomingMount) error {
+	if d.Trash == nil {
+		// The Purge fallback needs the owner ancestor chain too, so a
+		// trash-less ciphertext mount delete stays forbidden (documented
+		// boundary, same as the design).
+		return webdav.ErrForbidden
+	}
+	if np == m.Mount {
+		// The share root itself is not deletable through the mount (file and
+		// folder shares alike): unsharing goes through OCS, owner deletes go
+		// through their own tree.
+		return webdav.ErrForbidden
+	}
+	_, raw, err := d.cipherMountSeams()
+	if err != nil {
+		return err
+	}
+	rawer, ok := d.Trash.Sessions.(interface{ Raw() TrashStore })
+	if !ok {
+		return fmt.Errorf("files: ciphertext mount trash without the raw trash store wiring")
+	}
+	rawSessions := rawer.Raw()
+	u, _, ctTarget, err := d.cipherShareTarget(ctx, m, np)
+	if err != nil {
+		return err
+	}
+	row, err := raw.GetByPath(ctx, u.ID, ctTarget)
+	if err != nil {
+		return mapMeta(err)
+	}
+	parent := row.ParentID
+	now := d.now()
+	rel := mountRel(m, np)
+	plainTarget := m.OwnerPath
+	if rel != "/" {
+		plainTarget += rel
+	}
+	// row.Name is the leaf ciphertext token, so capTrashBase(row.Name) is
+	// byte-identical to TrashLocationBase's capTrashBase(path.Base(cp))
+	// contract; the .d<ts>/-N shape stays inside makeLocationID/this helper.
+	// The probe runs against the raw store: the translating store would
+	// decrypt the owner's existing trash items in the sharee's ctx.
+	loc, err := d.Trash.uniqueLocationIDWith(ctx, rawSessions, u.ID, capTrashBase(row.Name), now)
+	if err != nil {
+		return err
+	}
+	from, err := storageKey(m.OwnerUID, plainTarget)
+	if err != nil {
+		return err
+	}
+	to, err := trashStorageKey(m.OwnerUID, loc)
+	if err != nil {
+		return err
+	}
+	if err := d.Trash.ensureTrashRoot(ctx, m.OwnerUID); err != nil {
+		return err
+	}
+	if err := d.Trash.Storage.Rename(ctx, from, to); err != nil {
+		return mapStorage(err)
+	}
+	// Ciphertext original_path/name verbatim — that IS
+	// TranslatingTrashStore.Insert's storage form. DeletedBy records the
+	// sharee who performed the delete (an intentional improvement over the
+	// non-ciphertext path, which records the owner; that path is not
+	// retrofitted).
+	item := &TrashItem{
+		UserID:       u.ID,
+		OriginalPath: ctTarget,
+		LocationID:   loc,
+		Name:         row.Name,
+		IsDir:        row.IsDir,
+		Size:         row.Size,
+		Deleted:      now,
+		DeletedBy:    user,
+	}
+	if err := rawSessions.Insert(ctx, item); err != nil {
+		if rb := d.Trash.Storage.Rename(ctx, to, from); rb != nil && !errors.Is(rb, storage.ErrNotFound) {
+			return errors.Join(mapMeta(err), rb)
+		}
+		return mapMeta(err)
+	}
+	// DeleteSubtree leaves file_keys rows alone — the wrap-preservation
+	// contract of phase 3a holds by construction.
+	if err := raw.DeleteSubtree(ctx, u.ID, ctTarget); err != nil {
+		return mapMeta(err)
+	}
+	if d.Locks != nil {
+		rawLockser, ok := d.Locks.(interface{ Raw() LockStore })
+		if !ok {
+			return fmt.Errorf("files: ciphertext mount lock cleanup without the raw lock store wiring")
+		}
+		if err := rawLockser.Raw().DeleteByPath(ctx, u.ID, ctTarget); err != nil {
+			return err
+		}
+	}
+	if d.Shares != nil {
+		// d.Shares is the raw share store — it speaks ciphertext paths (the
+		// translate-then-DeleteByPath convention in Purge proves it) — and
+		// ctTarget is already ciphertext, so the prefix delete applies
+		// verbatim (share rows under the deleted subtree go with it).
+		if err := d.Shares.DeleteByPath(ctx, u.ID, ctTarget); err != nil {
+			return err
+		}
+	}
+	return raw.RecalcAncestors(ctx, u.ID, parent, now)
+}

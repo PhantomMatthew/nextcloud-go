@@ -111,13 +111,21 @@ func makeLocationID(name string, ts time.Time) string {
 }
 
 func (t *Trash) uniqueLocationID(ctx context.Context, userID int64, name string, ts time.Time) (string, error) {
+	return t.uniqueLocationIDWith(ctx, t.Sessions, userID, name, ts)
+}
+
+// uniqueLocationIDWith probes uniqueness against an explicit store: the
+// ciphertext-mount delete path (ADR-0104 phase 3a) must probe the RAW trash
+// store — the translating store's GetByLocation would decrypt the owner's
+// existing trash items in the sharee's ctx and fail ErrKeyLocked.
+func (t *Trash) uniqueLocationIDWith(ctx context.Context, sessions TrashStore, userID int64, name string, ts time.Time) (string, error) {
 	base := makeLocationID(name, ts)
 	loc := base
 	for i := 0; i < 1000; i++ {
 		if i > 0 {
 			loc = base + "-" + strconv.Itoa(i)
 		}
-		_, err := t.Sessions.GetByLocation(ctx, userID, loc)
+		_, err := sessions.GetByLocation(ctx, userID, loc)
 		if errors.Is(err, ErrNotFound) {
 			return loc, nil
 		}

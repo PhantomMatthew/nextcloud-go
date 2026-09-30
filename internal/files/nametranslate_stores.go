@@ -594,6 +594,11 @@ func (s *TranslatingTrashStore) DeleteExpired(ctx context.Context, userID int64,
 	return s.raw.DeleteExpired(ctx, userID, before)
 }
 
+// Raw returns the untranslated store: ciphertext-mount deletes already hold
+// the ciphertext original path and insert it verbatim (the anchored verb
+// never runs the full owner-chain walk in the sharee's ctx).
+func (s *TranslatingTrashStore) Raw() TrashStore { return s.raw }
+
 var _ TrashStore = (*TranslatingTrashStore)(nil)
 
 // TranslatingVersionStore carries ciphertext in file_versions.file_path

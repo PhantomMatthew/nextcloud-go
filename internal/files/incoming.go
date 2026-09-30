@@ -252,6 +252,11 @@ func (d *DAV) removeMaybeIncoming(ctx context.Context, user, p string) error {
 		if m.Permissions&webdav.PermDelete == 0 {
 			return webdav.ErrForbidden
 		}
+		if m.OwnerCipherPath != "" {
+			// Ciphertext mount (ADR-0104 phase 3a): trash relocation anchored at
+			// the share root — the owner's ancestor chain is unresolvable here.
+			return d.removeCipherMount(ctx, user, np, m)
+		}
 		return d.removeOwned(ctx, m.OwnerUID, ownerPath)
 	} else if errors.Is(err, encrypt.ErrKeyLocked) {
 		return err
