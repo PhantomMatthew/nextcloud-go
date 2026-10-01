@@ -54,6 +54,18 @@ filecache path, unlike inbound placeholders.
 ### Neutral / follow-ups
 - `DefaultSharingProvider.Federation=true`, inbound DAV proxy, unshare
   notifications, HTTP Message Signatures, invites, federated user search.
+- （**landed 2026-10-01**: provider-side content serving）The shareType=6
+  token now authenticates on `/public.php/webdav/` — the exact endpoint our
+  OCM discovery advertises — so a remote server can pull share content with
+  `Basic(token, "")` per the protocol (previously 401: the public-DAV
+  resolver was link-only). `LookupValidPublicDAV`/`ResolvePublicDAV` accept
+  link + remote tokens only; the `/s/{token}` page stays link-only.
+  Write-back is gated by the share row's permission mask, and the outbound
+  notification's `protocol.options` now carries `permissions` so the
+  receiver mounts with the grant's actual mask. An ADR-0104 sealed owner's
+  rows open in the anonymous ctx exactly like public links (an enrolled
+  owner without an unlocked session is `ErrKeyLocked` → 403 — intended
+  boundary, not a regression).
 
 ## References
 

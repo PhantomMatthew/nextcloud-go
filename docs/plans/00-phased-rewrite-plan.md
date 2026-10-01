@@ -191,6 +191,33 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-10-01** — **OCM provider-side content serving** (ADR-0023 follow-up,
+  closing an undocumented outbound gap). Our discovery has always advertised
+  `/public.php/webdav/` as the OCM webdav protocol endpoint and outbound
+  shares mail the shareType=6 token to the remote as `sharedSecret`, but a
+  remote server pulling content with `Basic(token, "")` got **401**: the
+  public-DAV resolver (`LookupValid`) hard-rejected every non-link share, so
+  only the inbound direction (us mounting them) ever worked. The fix is a
+  single resolver: `lookupValidShare` factors the shared core
+  (token → expiry → owner), `LookupValid` stays link-only (the `/s/{token}`
+  page is unchanged), and the new `LookupValidPublicDAV`/`ResolvePublicDAV`
+  accept link AND remote tokens — wired into `TokenVerifier` and
+  `PublicDAV.Resolve`. Remote rows carry no password hash by construction
+  (`Create` clears it for non-link shares), so the remote's empty password
+  passes. The outbound notification's `protocol.options` now also carries
+  `permissions`, so the receiver mounts with the grant's actual mask instead
+  of defaulting to read-only. Everything downstream is reused as-is:
+  `PublicDAV`'s jail, its permission-mask write gating (the 3d6 client
+  write-back gains its provider counterpart), and the ADR-0104 sealed-row
+  opening in the anonymous ctx (an enrolled owner without an unlocked
+  session is `ErrKeyLocked` → 403, the public-link boundary — intended).
+  Pinned by `TestLookupValidPublicDAVRemoteShare` (remote resolves through
+  the DAV resolvers only, user shares never, expired never, links
+  unchanged), `TestTokenVerifierRemoteToken`, and
+  `TestPublicDAVRemoteShareRoundTrip` (read-only token reads bytes and is
+  403 on write; write-enabled token Writes/Mkdirs/Removes with owner-side
+  visibility).
+
 - **2026-10-01** — SSE **filename encryption: activity file-lifecycle
   stream** (ADR-0104 §9's first production writer, landing the section's
   forward-pin). The DAV verbs now emit one best-effort activity event per

@@ -66,6 +66,9 @@ type OutgoingNotice struct {
 	Sender       string
 	ResourceType string
 	Token        string
+	// Permissions rides protocol.options so the receiver mounts with the
+	// grant's actual permission mask (its parser defaults to read-only).
+	Permissions int
 }
 
 // UnshareNotice is the JSON posted to a remote POST /ocm/notifications.
@@ -140,7 +143,7 @@ func (c *Client) NotifyOutgoing(ctx context.Context, endPoint string, n Outgoing
 		ResourceType: n.ResourceType,
 		Protocol: outgoingProtocolJSON{
 			Name:    "webdav",
-			Options: outgoingProtocolOptionsJSON{SharedSecret: n.Token},
+			Options: outgoingProtocolOptionsJSON{SharedSecret: n.Token, Permissions: n.Permissions},
 		},
 	})
 	if err != nil {
@@ -442,6 +445,7 @@ type outgoingProtocolJSON struct {
 
 type outgoingProtocolOptionsJSON struct {
 	SharedSecret string `json:"sharedSecret"`
+	Permissions  int    `json:"permissions,omitempty"`
 }
 
 type unshareJSON struct {

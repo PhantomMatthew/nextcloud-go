@@ -13,6 +13,8 @@ import (
 )
 
 // TokenVerifier authenticates public DAV: username is the share token.
+// Accepts public-link and OCM remote-share tokens (ADR-0023: the remote
+// server authenticates with Basic(token, "") to pull share content).
 type TokenVerifier struct {
 	Service *Service
 }
@@ -21,7 +23,7 @@ func (v *TokenVerifier) Verify(ctx context.Context, user, password string) (*aut
 	if v == nil || v.Service == nil || user == "" {
 		return nil, auth.ErrInvalidCredentials
 	}
-	sh, _, err := v.Service.ResolvePublic(ctx, user, password)
+	sh, _, err := v.Service.ResolvePublicDAV(ctx, user, password)
 	if err != nil {
 		return nil, auth.ErrInvalidCredentials
 	}

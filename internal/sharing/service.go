@@ -306,6 +306,7 @@ func (s *Service) notifyRemote(ctx context.Context, owner *users.User, sh *files
 		Sender:       ownerCloud,
 		ResourceType: resType,
 		Token:        sh.Token,
+		Permissions:  sh.Permissions,
 	}); err != nil {
 		return errFederate
 	}
@@ -614,8 +615,9 @@ func (s *Service) notifyUnshare(ctx context.Context, sh *files.Share) error {
 	})
 }
 
-// LookupValid returns a non-expired share and its owner.
-func (s *Service) LookupValid(ctx context.Context, token string) (*files.Share, *users.User, error) {
+// lookupValidShare returns a non-expired share and its owner; the share-type
+// filter is the caller's job.
+func (s *Service) lookupValidShare(ctx context.Context, token string) (*files.Share, *users.User, error) {
 	sh, err := s.Store.GetByToken(ctx, token)
 	if err != nil {
 		return nil, nil, err
@@ -624,7 +626,7 @@ func (s *Service) LookupValid(ctx context.Context, token string) (*files.Share, 
 	if err != nil {
 		return nil, nil, err
 	}
-	if expired || sh.ShareType != files.ShareTypeLink {
+	if expired {
 		return nil, nil, files.ErrNotFound
 	}
 	owner, err := s.Users.GetByID(ctx, sh.OwnerUserID)
@@ -634,11 +636,34 @@ func (s *Service) LookupValid(ctx context.Context, token string) (*files.Share, 
 	return sh, owner, nil
 }
 
-func (s *Service) ResolvePublic(ctx context.Context, token, password string) (*files.Share, *users.User, error) {
-	sh, owner, err := s.LookupValid(ctx, token)
+// LookupValid returns a non-expired public-link share and its owner.
+func (s *Service) LookupValid(ctx context.Context, token string) (*files.Share, *users.User, error) {
+	sh, owner, err := s.lookupValidShare(ctx, token)
 	if err != nil {
 		return nil, nil, err
 	}
+	if sh.ShareType != files.ShareTypeLink {
+		return nil, nil, files.ErrNotFound
+	}
+	return sh, owner, nil
+}
+
+// LookupValidPublicDAV is the /public.php/webdav resolver: public-link shares
+// AND OCM federated shares (shareType 6) — a remote server pulls share
+// content with Basic(token, "") per the OCM webdav protocol our discovery
+// advertises (ADR-0023). No other share type ever resolves here.
+func (s *Service) LookupValidPublicDAV(ctx context.Context, token string) (*files.Share, *users.User, error) {
+	sh, owner, err := s.lookupValidShare(ctx, token)
+	if err != nil {
+		return nil, nil, err
+	}
+	if sh.ShareType != files.ShareTypeLink && sh.ShareType != files.ShareTypeRemote {
+		return nil, nil, files.ErrNotFound
+	}
+	return sh, owner, nil
+}
+
+func (s *Service) resolveWithPassword(sh *files.Share, owner *users.User, password string) (*files.Share, *users.User, error) {
 	if sh.PasswordHash != "" {
 		if s.Hasher == nil {
 			return nil, nil, errUnauthorized
@@ -649,6 +674,25 @@ func (s *Service) ResolvePublic(ctx context.Context, token, password string) (*f
 		}
 	}
 	return sh, owner, nil
+}
+
+func (s *Service) ResolvePublic(ctx context.Context, token, password string) (*files.Share, *users.User, error) {
+	sh, owner, err := s.LookupValid(ctx, token)
+	if err != nil {
+		return nil, nil, err
+	}
+	return s.resolveWithPassword(sh, owner, password)
+}
+
+// ResolvePublicDAV authenticates /public.php/webdav basic auth: link shares
+// (password honored) and OCM remote shares — Create clears PasswordHash for
+// non-link shares, so the remote's empty password passes by construction.
+func (s *Service) ResolvePublicDAV(ctx context.Context, token, password string) (*files.Share, *users.User, error) {
+	sh, owner, err := s.LookupValidPublicDAV(ctx, token)
+	if err != nil {
+		return nil, nil, err
+	}
+	return s.resolveWithPassword(sh, owner, password)
 }
 
 func (s *Service) SharePayload(ctx context.Context, r *http.Request, sh *files.Share) (any, error) {

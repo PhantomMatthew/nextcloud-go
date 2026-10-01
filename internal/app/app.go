@@ -308,7 +308,9 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	a.lookup = &sharing.LookupClient{BaseURL: cfg.Sharing.LookupServer}
 	dav.Incoming = files.MultiIncoming{a.shares, a.ocmStore}
 	dav.Remote = a.shares.OCM
-	a.publicFS = &files.PublicDAV{Files: dav, Resolve: a.shares.LookupValid}
+	// ADR-0023 provider side: /public.php/webdav serves OCM remote-share
+	// tokens (Basic(token, "")) in addition to public-link tokens.
+	a.publicFS = &files.PublicDAV{Files: dav, Resolve: a.shares.LookupValidPublicDAV}
 	if nameTranslator != nil {
 		// ADR-0104 phase 3a: the sharing service seals share rows
 		// (ciphertext file_path + grant-time sealed metadata copies), the
