@@ -143,6 +143,19 @@ func (c *Config) Validate() error {
 	if c.Previews.CacheMaxAge != 0 && c.Previews.CacheMaxAge < time.Hour {
 		errs = append(errs, &ValidationError{Field: "previews.cache_max_age", Reason: "must be at least 1h (0 selects the default)"})
 	}
+	if c.Previews.OfficeEnabled {
+		// Same dead-key rule as pregenerate_enabled: the rasterizer exists
+		// only on a generator, and the generator exists only with previews.
+		if !c.Previews.Enabled {
+			errs = append(errs, &ValidationError{Field: "previews.office_enabled", Reason: "requires previews.enabled (office rasterization without previews would be a dead key)"})
+		}
+		if !filepath.IsAbs(strings.TrimSpace(c.Previews.OfficeCommand)) {
+			errs = append(errs, &ValidationError{Field: "previews.office_command", Reason: "must be an absolute path to the headless office converter (e.g. /usr/bin/soffice) when previews.office_enabled is set"})
+		}
+		if c.Previews.OfficeTimeout < time.Second || c.Previews.OfficeTimeout > 5*time.Minute {
+			errs = append(errs, &ValidationError{Field: "previews.office_timeout", Reason: "must be between 1s and 5m"})
+		}
+	}
 
 	if strings.TrimSpace(c.Web.StaticRoot) != "" && !filepath.IsAbs(c.Web.StaticRoot) {
 		errs = append(errs, &ValidationError{Field: "web.static_root", Reason: "must be an absolute path"})

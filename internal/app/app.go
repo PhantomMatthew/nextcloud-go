@@ -375,6 +375,12 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	}
 	if cfg.Previews.Enabled {
 		a.previewGen = preview.NewGenerator(dav, st, "appdata_"+a.instanceID+"/previews", cfg.Previews.MaxDimension, logger)
+		if cfg.Previews.OfficeEnabled {
+			// ADR-0053's deferred scope: office documents rasterize through
+			// the admin-configured headless converter (soffice) behind the
+			// Rasterizer seam; off leaves the image whitelist bit-identical.
+			a.previewGen.Rasterizer = &preview.ExecRasterizer{Command: cfg.Previews.OfficeCommand, Timeout: cfg.Previews.OfficeTimeout}
+		}
 		var gcRaw storage.Storage
 		var gcEncPrefix string
 		if keyResolver != nil {

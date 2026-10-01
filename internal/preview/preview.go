@@ -97,6 +97,10 @@ type Generator struct {
 	CacheRaw   storage.Storage
 	SourceKeys SourceKeys
 	Keys       KeyResolver
+	// Rasterizer, when set (previews.office_*), converts office documents
+	// the image sniff rejects into raster bytes (ADR-0053's deferred
+	// external-renderer scope). Nil keeps the image whitelist bit-identical.
+	Rasterizer Rasterizer
 	MaxDim     int
 	Logger     *slog.Logger
 
@@ -297,7 +301,14 @@ func (g *Generator) generate(ctx context.Context, rc io.Reader, key string, x, y
 	if err != nil || len(data) > maxSourceBytes {
 		return nil, errNotPreviewable
 	}
-	out, err := render(data, x, y, fill)
+	// Office fallback (Rasterizer seam): a document the image sniff rejects
+	// renders through the external converter; its raster output re-enters
+	// the same sniff/decode/bounds path as any original.
+	img, err := g.sourceImage(ctx, data)
+	if err != nil {
+		return nil, err
+	}
+	out, err := render(img, x, y, fill)
 	if err != nil {
 		return nil, err
 	}
@@ -396,6 +407,13 @@ func (g *Generator) Pregenerate(ctx context.Context, uid, path string, boxes []i
 	}
 	switch http.DetectContentType(head) {
 	case mimeJPEG, mimePNG, mimeGIF, mimeWebp:
+	case mimePDF, mimeZIP:
+		// Office containers discriminate only after a full read (the ZIP
+		// directory sits at the tail); read on only when a rasterizer can
+		// actually convert them — otherwise today's quiet skip holds.
+		if g.Rasterizer == nil {
+			return nil
+		}
 	default:
 		return nil
 	}
@@ -409,6 +427,12 @@ func (g *Generator) Pregenerate(ctx context.Context, uid, path string, boxes []i
 	if len(data) > maxSourceBytes {
 		return nil
 	}
+	// The office fallback rasterizes ONCE per document, not per box.
+	img, err := g.sourceImage(ctx, data)
+	if err != nil {
+		return nil
+	}
+	data = img
 
 	src := g.sourceSeal(ctx, uid, np)
 	for _, b := range boxes {

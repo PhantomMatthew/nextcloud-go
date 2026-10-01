@@ -145,8 +145,24 @@ Constraints shaping the design:
 
 ### Follow-ups (explicit, not in v1)
 
-- **Document/office previews** via an external service (Collabora/OnlyOffice
-  rendering pipeline) — deferred scope.
+- ~~**Document/office previews** via an external service (Collabora/OnlyOffice
+  rendering pipeline) — deferred scope.~~ (**landed 2026-10-01**, external
+  headless-converter flavor): a `Rasterizer` seam on the Generator converts
+  office documents the image sniff rejects. Dispatch keeps this ADR's
+  sniff-first stance — the uploader-supplied MIME is never trusted; a
+  ZIP-sniffed container is dispatched only after `archive/zip` inspection
+  finds the OOXML `[Content_Types].xml` manifest plus a main-part entry
+  (docx/xlsx/pptx) or the ODF `mimetype` entry, and PDF passes through
+  exactly. The rasterized output re-enters the same
+  sniff/decode/bounds-check/scale/encode path as any original (bomb guards,
+  cache keying, sealing, pregeneration unchanged); any rasterizer failure
+  collapses to the uniform 404 — source bytes are never served. The
+  production implementation is `ExecRasterizer` driving `soffice --headless
+  --convert-to png` (admin-configured absolute path, fixed args, ctx
+  timeout, 0600 temp input, size-capped output), wired by
+  `previews.office_enabled`/`office_command`/`office_timeout` (default off —
+  nil seam, bit-identical whitelist). Collabora/OnlyOffice *editing* (WOPI)
+  remains v2 scope, untouched.
 - ~~**Fill/crop `mode`** support (aspect-fill with center crop).~~ (**fill resolved by ADR-0086**; offset `crop` remains unsupported and falls back to fit)
 - ~~**Preview pre-generation cron** on upload events for hot sizes.~~ (**resolved by ADR-0084**)
 - ~~**Cache GC** of orphaned etag-keyed entries.~~ (**resolved by ADR-0085**)

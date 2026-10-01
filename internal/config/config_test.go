@@ -27,7 +27,9 @@ func TestDefaultSnapshot(t *testing.T) {
 	}
 	if !got.Previews.Enabled || got.Previews.MaxDimension != 2048 ||
 		got.Previews.PregenerateEnabled || !slices.Equal(got.Previews.PregenerateSizes, []int{32, 256}) ||
-		got.Previews.CacheMaxAge != 720*time.Hour {
+		got.Previews.CacheMaxAge != 720*time.Hour ||
+		got.Previews.OfficeEnabled || got.Previews.OfficeCommand != "" ||
+		got.Previews.OfficeTimeout != 30*time.Second {
 		t.Errorf("previews defaults: %+v", got.Previews)
 	}
 	if got.Web.StaticRoot != "" {
@@ -494,6 +496,29 @@ func TestValidateRules(t *testing.T) {
 			c.Previews.PregenerateSizes = nil
 		}, "previews.pregenerate_sizes"},
 		{"previews_cache_max_age_low", func(c *Config) { c.Previews.CacheMaxAge = 30 * time.Minute }, "previews.cache_max_age"},
+		{"previews_office_without_enabled", func(c *Config) {
+			c.Previews.Enabled = false
+			c.Previews.OfficeEnabled = true
+			c.Previews.OfficeCommand = "/usr/bin/soffice"
+		}, "previews.office_enabled"},
+		{"previews_office_command_empty", func(c *Config) {
+			c.Previews.OfficeEnabled = true
+			c.Previews.OfficeCommand = ""
+		}, "previews.office_command"},
+		{"previews_office_command_relative", func(c *Config) {
+			c.Previews.OfficeEnabled = true
+			c.Previews.OfficeCommand = "soffice"
+		}, "previews.office_command"},
+		{"previews_office_timeout_low", func(c *Config) {
+			c.Previews.OfficeEnabled = true
+			c.Previews.OfficeCommand = "/usr/bin/soffice"
+			c.Previews.OfficeTimeout = 500 * time.Millisecond
+		}, "previews.office_timeout"},
+		{"previews_office_timeout_high", func(c *Config) {
+			c.Previews.OfficeEnabled = true
+			c.Previews.OfficeCommand = "/usr/bin/soffice"
+			c.Previews.OfficeTimeout = 10 * time.Minute
+		}, "previews.office_timeout"},
 		{"web_static_root_relative", func(c *Config) { c.Web.StaticRoot = "relative/web" }, "web.static_root"},
 	}
 	for _, tt := range tests {

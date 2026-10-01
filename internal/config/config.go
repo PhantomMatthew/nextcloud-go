@@ -109,13 +109,19 @@ type EncryptionConfig struct {
 // box edges for the hot client sizes — ahead of any request, from
 // files.uploaded events; it requires Enabled. CacheMaxAge (ADR-0085) is
 // the TTL the preview.gc sweep applies to cache entries; 0 selects the
-// host default (720h).
+// host default (720h). OfficeEnabled (ADR-0053's deferred external-renderer
+// scope) converts office documents through the headless converter at
+// OfficeCommand (an absolute soffice path) behind the preview.Rasterizer
+// seam; it requires Enabled. OfficeTimeout bounds one conversion.
 type PreviewsConfig struct {
 	Enabled            bool          `koanf:"enabled"`
 	MaxDimension       int           `koanf:"max_dimension"`
 	PregenerateEnabled bool          `koanf:"pregenerate_enabled"`
 	PregenerateSizes   []int         `koanf:"pregenerate_sizes"`
 	CacheMaxAge        time.Duration `koanf:"cache_max_age"`
+	OfficeEnabled      bool          `koanf:"office_enabled"`
+	OfficeCommand      string        `koanf:"office_command"`
+	OfficeTimeout      time.Duration `koanf:"office_timeout"`
 }
 
 // WebConfig controls serving the pre-compiled Nextcloud web frontend

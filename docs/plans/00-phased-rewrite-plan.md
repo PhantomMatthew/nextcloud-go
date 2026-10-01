@@ -191,6 +191,34 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-10-01** — **Office document previews** (ADR-0053's last open
+  follow-up, external-renderer flavor). A `Rasterizer` seam on the preview
+  Generator converts office documents the image sniff rejects; dispatch
+  keeps the sniff-first stance — a ZIP container is dispatched only after
+  `archive/zip` inspection finds the OOXML `[Content_Types].xml` manifest
+  plus a main-part entry (docx/xlsx/pptx) or the ODF `mimetype` entry, PDF
+  passes through exactly, and a plain archive never reaches the converter.
+  The rasterized output re-enters the same sniff/decode/bounds/scale/encode
+  pipeline as any original — bomb guards, cache keying, NCGOPV1 sealing,
+  and singleflight unchanged — and any conversion failure collapses to the
+  uniform 404 (source bytes are never served). Pregeneration admits
+  pdf/zip heads only when a rasterizer exists and rasterizes ONCE per
+  document (hoisted out of the box loop). The production implementation is
+  `ExecRasterizer` driving `soffice --headless --convert-to png` —
+  admin-configured absolute path, fixed args without a shell, ctx timeout
+  (default 30s), 0600 temp input, size-capped output — wired by
+  `previews.office_enabled`/`office_command`/`office_timeout` (default off:
+  nil seam, bit-identical image whitelist; `office_enabled` requires
+  `previews.enabled`, `office_command` must be absolute, timeout 1s–5m).
+  Zero new dependencies (stdlib `archive/zip` + `os/exec`). WOPI/Collabora
+  editing stays v2 scope. Pinned by `TestOfficeMime` (11-case container
+  discrimination), `TestPreviewOfficeViaRasterizer` (fake-rasterizer
+  pipeline: 200 PNG, exact dims, cache hit reconverts nothing),
+  `TestPreviewOfficeRasterizerErrors` (nil seam / unhandled / convert
+  error / non-image output all uniform 404),
+  `TestPreviewOfficePregenerate` (+ its no-rasterizer early-exit twin),
+  exec Handles/missing-binary units, and config default/validation cases.
+
 - **2026-10-01** — **OCM provider-side content serving** (ADR-0023 follow-up,
   closing an undocumented outbound gap). Our discovery has always advertised
   `/public.php/webdav/` as the OCM webdav protocol endpoint and outbound
