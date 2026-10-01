@@ -191,6 +191,19 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-10-02** — **WOPI token revocation hardening** (ADR-0106's last
+  open follow-up; office epic increment 6 — the epic is now complete).
+  `Authenticate` requires the token's user to exist and be ENABLED, so a
+  disabled account revokes its outstanding tokens on the next callback
+  (one undifferentiated 401). The share side was already live —
+  `resolve` re-runs `ListIncoming` per callback — and is now pinned:
+  a downgraded share turns the next write into 403 even when the token
+  was minted with `can_write=true`, a revoked share turns every
+  callback into 404, TTL notwithstanding
+  (`TestTokenRevocationShareGoneLive`,
+  `TestTokenRevocationDisabledUser`). The TTL still bounds only an
+  owner's own tokens (no grant to revoke).
+
 - **2026-10-02** — **WOPI extended ops: PutRelativeFile + RenameFile**
   (ADR-0106 follow-up; office epic increment 5). `PUT_RELATIVE` (POST
   {id}/contents) lands the body as a NEW sibling file — exact

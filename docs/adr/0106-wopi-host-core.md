@@ -146,9 +146,15 @@ mounts with no share-specific code in the handler; version snapshots
 fire on PutFile through the normal DAV write path.
 
 **Negative.** WOPI tokens are plaintext at rest (accepted, §
-Alternatives). A minted token outlives a permission change (revoke /
-unshare) until expiry — the TTL bounds the window; per-request re-checks
-are a possible hardening follow-up.
+Alternatives). （**refined 2026-10-02**: revocation hardening）A minted
+token no longer outlives a permission change: `Authenticate` now requires
+the token's user to exist and be ENABLED (a disabled account revokes its
+tokens on the next callback, one undifferentiated 401), and the share
+side was always live — `resolve` re-runs `ListIncoming` per callback, so
+a revoked share turns callbacks into 404 and a downgraded share turns
+writes into 403 without waiting for the TTL (both directions pinned by
+`TestTokenRevocationShareGoneLive`). What the TTL still bounds: an
+owner's own tokens while the owner stays enabled (no grant to revoke).
 
 **Neutral / follow-ups.** Enrolled password-wrapped users hit the
 documented ErrKeyLocked → 403 boundary on the anonymous callbacks; the

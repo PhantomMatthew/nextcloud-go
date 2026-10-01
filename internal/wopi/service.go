@@ -198,11 +198,24 @@ func (s *Service) friendlyName(ctx context.Context, uid string) string {
 }
 
 // Authenticate redeems an access_token: missing and expired rows both yield
-// ErrTokenNotFound (the handler maps it to 401).
+// ErrTokenNotFound (the handler maps it to 401). The token's user must still
+// exist and be ENABLED — a disabled account revokes its outstanding tokens
+// on the next callback (ADR-0106 revocation hardening; share revocation is
+// already live via resolve's per-request ListIncoming).
 func (s *Service) Authenticate(ctx context.Context, accessToken string) (*Token, error) {
 	t, err := s.Store.GetByToken(ctx, accessToken, s.clock())
 	if err != nil {
 		return nil, err
+	}
+	u, err := s.Users.GetByUID(ctx, t.UID)
+	if err != nil {
+		if errors.Is(err, users.ErrNotFound) {
+			return nil, ErrTokenNotFound
+		}
+		return nil, err
+	}
+	if !u.Enabled {
+		return nil, ErrTokenNotFound
 	}
 	return t, nil
 }
