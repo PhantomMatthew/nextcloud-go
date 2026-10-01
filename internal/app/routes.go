@@ -222,8 +222,8 @@ func (a *App) mountRoutes() error {
 		router.HandlePrefix(httpx.MethodAny, "/ocs/v2.php/apps/notifications/api/v2/notifications", notifV2, httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
 	}
 	if a.activityStore != nil {
-		actV1 := actpkg.Handler{Store: a.activityStore, Users: a.Users, Version: ocs.V1}
-		actV2 := actpkg.Handler{Store: a.activityStore, Users: a.Users, Version: ocs.V2}
+		actV1 := actpkg.Handler{Store: a.activityStore, Users: a.Users, Version: ocs.V1, Subjects: a.activitySubjects}
+		actV2 := actpkg.Handler{Store: a.activityStore, Users: a.Users, Version: ocs.V2, Subjects: a.activitySubjects}
 		router.HandlePrefix(httpx.MethodAny, "/ocs/v1.php/apps/activity/api/v2/activity", actV1, httpx.Middleware(ocs.Auth(ocs.V1, authCfg)))
 		router.HandlePrefix(httpx.MethodAny, "/ocs/v2.php/apps/activity/api/v2/activity", actV2, httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
 	}

@@ -553,6 +553,14 @@ func TestNewAppPerUserKeysWiresKeySharer(t *testing.T) {
 	if a.notifSubjects != nil {
 		t.Error("notification subject decryptor wired without filename_encryption")
 	}
+	if a.activitySubjects != nil {
+		t.Error("activity subject decryptor wired without filename_encryption")
+	}
+	// ADR-0104 §9: the file-lifecycle producer wires unconditionally — the
+	// activity store is flag-independent (only the token seam is gated).
+	if dav.Activity == nil {
+		t.Error("DAV.Activity not wired (file-lifecycle stream)")
+	}
 	// ADR-0104 phase 4, flag off: no name sweep, so no login-conversion hook.
 	if a.nameSweep != nil {
 		t.Error("name sweep built without filename_encryption")
@@ -649,6 +657,12 @@ func TestNewAppFilenameEncryptionWiresDirKeys(t *testing.T) {
 	}
 	if a.notifSubjects == nil {
 		t.Error("notification subject decryptor not wired with filename_encryption on")
+	}
+	if a.activitySubjects == nil {
+		t.Error("activity subject decryptor not wired with filename_encryption on")
+	}
+	if dav.Activity == nil {
+		t.Error("DAV.Activity not wired with filename_encryption on")
 	}
 	// Phase 4: the per-user name sweep exists so the login-conversion hook
 	// (enrolled users, bootstrap admin) can close over it.

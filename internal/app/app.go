@@ -60,38 +60,39 @@ type App struct {
 	metrics    *observability.Registry
 	tracing    *sdktrace.TracerProvider
 
-	hasher        auth.PasswordHasher
-	authStore     *auth.SQLStore
-	loginStore    login.Store
-	sessions      session.Store
-	keyResolver   *encrypt.SQLResolver
-	secret        string
-	instanceID    string
-	memCache      *cache.Memory
-	redisCache    *cache.Redis
-	fileMeta      files.Store
-	nameSweep     *files.NameSweep
-	davFS         webdav.FS
-	uploadsFS     webdav.FS
-	trashFS       *files.Trash
-	versionsFS    *files.Versions
-	publicFS      *files.PublicDAV
-	shares        *sharing.Service
-	jobs          jobs.Runner
-	jobsStore     *jobs.SQLStore
-	calendarStore *caldav.SQLStore
-	calendarFS    *caldav.DAV
-	contactsStore *carddav.SQLStore
-	contactsFS    *carddav.DAV
-	notifStore    *notifications.SQLStore
-	notifSubjects notifications.SubjectDecryptor
-	activityStore *activity.SQLStore
-	ocmStore      *ocm.SQLStore
-	lookup        *sharing.LookupClient
-	principalFS   *caldav.PrincipalDAV
-	davRootFS     *caldav.RootDAV
-	previewGen    *preview.Generator
-	staticUI      *web.StaticUI
+	hasher           auth.PasswordHasher
+	authStore        *auth.SQLStore
+	loginStore       login.Store
+	sessions         session.Store
+	keyResolver      *encrypt.SQLResolver
+	secret           string
+	instanceID       string
+	memCache         *cache.Memory
+	redisCache       *cache.Redis
+	fileMeta         files.Store
+	nameSweep        *files.NameSweep
+	davFS            webdav.FS
+	uploadsFS        webdav.FS
+	trashFS          *files.Trash
+	versionsFS       *files.Versions
+	publicFS         *files.PublicDAV
+	shares           *sharing.Service
+	jobs             jobs.Runner
+	jobsStore        *jobs.SQLStore
+	calendarStore    *caldav.SQLStore
+	calendarFS       *caldav.DAV
+	contactsStore    *carddav.SQLStore
+	contactsFS       *carddav.DAV
+	notifStore       *notifications.SQLStore
+	notifSubjects    notifications.SubjectDecryptor
+	activityStore    *activity.SQLStore
+	activitySubjects activity.SubjectDecryptor
+	ocmStore         *ocm.SQLStore
+	lookup           *sharing.LookupClient
+	principalFS      *caldav.PrincipalDAV
+	davRootFS        *caldav.RootDAV
+	previewGen       *preview.Generator
+	staticUI         *web.StaticUI
 }
 
 // New opens dependencies and mounts routes.
@@ -325,9 +326,10 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	}
 	a.uploadsFS = files.NewUploads(st, uploadStore, dav, a.Users)
 	if nameTranslator != nil {
-		// The notifications render decrypts ADR-0104 §9 subject tokens in the
-		// viewer's ctx (nil seam = verbatim passthrough).
+		// The notifications and activity renders decrypt ADR-0104 §9 subject
+		// tokens in the viewer's ctx (nil seam = verbatim passthrough).
 		a.notifSubjects = nameTranslator
+		a.activitySubjects = nameTranslator
 	}
 	// Trash and versions carry ciphertext paths when filename encryption is
 	// on (ADR-0104 §6) through thin wrappers on the same translation core.
@@ -401,6 +403,11 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	a.contactsStore = cardStore
 	a.contactsFS = &carddav.DAV{Store: cardStore, Users: a.Users}
 	a.activityStore = activity.NewSQLStore(db)
+	// ADR-0104 §9's first production writer: the DAV verbs emit the
+	// file-lifecycle stream into the owner's activities rows (best-effort,
+	// scheme-1 names tokenized by the producer). Unconditional — nil would
+	// only ever come from a miswired store.
+	dav.Activity = a.activityStore
 	a.principalFS = &caldav.PrincipalDAV{Users: a.Users}
 	a.davRootFS = &caldav.RootDAV{Users: a.Users}
 

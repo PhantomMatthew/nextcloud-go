@@ -91,7 +91,7 @@ func (d *DAV) writeConditional(ctx context.Context, user, p string, r io.Reader,
 				}
 				unlock := d.writeLocks.lock(m.OwnerUID + "\x00" + ownerPath)
 				defer unlock()
-				ent, created, werr := d.writeCipherMount(ctx, np, m, r, mtime, snapshot, cond)
+				ent, created, werr := d.writeCipherMount(ctx, user, np, m, r, mtime, snapshot, cond)
 				return incomingEntry(ent, np, m.Permissions), created, werr
 			}
 			need := webdav.PermUpdate
@@ -110,7 +110,7 @@ func (d *DAV) writeConditional(ctx context.Context, user, p string, r io.Reader,
 	}
 	unlock := d.writeLocks.lock(wUser + "\x00" + wPath)
 	defer unlock()
-	ent, created, werr := d.write(ctx, wUser, wPath, r, mtime, snapshot, cond)
+	ent, created, werr := d.write(ctx, user, wUser, wPath, r, mtime, snapshot, cond)
 	if mount != nil {
 		return incomingEntry(ent, np, mount.Permissions), created, werr
 	}

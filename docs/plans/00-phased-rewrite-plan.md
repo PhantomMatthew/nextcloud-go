@@ -191,6 +191,48 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-10-01** — SSE **filename encryption: activity file-lifecycle
+  stream** (ADR-0104 §9's first production writer, landing the section's
+  forward-pin). The DAV verbs now emit one best-effort activity event per
+  successful operation into the OWNER's stream: `file_created`/
+  `file_changed` from the write cores (own tree, incoming share, and
+  ciphertext mount — created vs changed on overwrite) and both mkdir paths,
+  `file_deleted` from the trash delete paths (name material pre-captured
+  while the row still exists; the trash-less Purge fallback stays silent,
+  upstream purge parity), one `file_renamed` per move carrying BOTH the new
+  and the pre-move name, one `file_created` per copy for the destination
+  (the inner Mkdir/Write verbs run ctx-muted so a folder copy does not fan
+  out per child), and `file_restored` from the trashbin restore. A scheme-1
+  owner's names store as the §9 token — the same `ShareSubjectMeta`
+  primitive the share-bell producer uses, so the token is byte-identical
+  construction under the row's own key — with the `"ncgoNameScheme"` marker
+  naming the sealing key's UUID hex; a token-derivation failure SKIPS the
+  event (never a plaintext fallback), every other failure is Warn-logged.
+  Rename concretes §9 per sealed param: the exact marker seals `"file"` and
+  a `"ncgoNameScheme:oldfile"` marker seals the pre-move name. The OCS
+  activity render gains the notifications-style subject decryptor (viewer
+  ctx): every marker key is stripped, each sealed param's name decrypts
+  (any failure degrades THAT name to the `"encrypted file"` placeholder —
+  per item, never failing the list, never emitting the token), the subject
+  rebuilds from the rich template, and `object_name` takes the decrypted
+  `"file"` name (it stores the token, kept off the wire). Documented
+  residual: an ENROLLED mount owner's in-mount writes by a sharee skip the
+  capture (the owner root walk is unresolvable in the sharee's ctx — the §9
+  skip rule), the write itself unaffected. Wired in `app.New`
+  unconditionally (`dav.Activity`), with the render seam (`Subjects`) gated
+  on filename encryption like the notifications one. Pinned by
+  `TestActivityFileLifecycleScheme0` (every verb's exact plaintext row
+  shape, OCS desc order + `X-Activity-Last-Given`), `TestActivityPurgeSilent`,
+  `TestActivityFileLifecycleScheme1Master` (at-rest token shape, OCS
+  decryption, full-token leak absence), `TestActivityRenameScheme1DoubleMarker`
+  (dual params/markers, same-dir + cross-dir), `TestActivityDeleteScheme1PreCapture`,
+  `TestActivityFileLifecycleEnrolledPW` (unlocked vs app-password placeholder
+  views), `TestActivityCipherMountWriteFlowsToOwner`,
+  `TestActivityCipherMountEnrolledSkipsCapture`,
+  `TestActivitySubjectTamperDegrades`, and renderer unit tests; the
+  `activity/001-list` golden gains exactly the one expected new row from
+  the seed fixture's write.
+
 - **2026-09-30** — SSE **filename encryption: file_properties path
   tokenization** (ADR-0104 §6, agent-59's P2 residual). `oc:favorite` is the
   one persisted path-keyed property (every other custom prop computes live,

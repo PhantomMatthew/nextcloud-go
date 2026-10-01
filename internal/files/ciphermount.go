@@ -155,8 +155,9 @@ func (d *DAV) listCipherShare(ctx context.Context, np string, m *IncomingMount) 
 // in ciphertext form — anchored tokenization under the share root, raw
 // insert, the fresh directory key minted for the OWNER (Allocate needs no
 // session, ADR-0100) and wrapped for every covering-share recipient
-// (WrapForWrite matches ciphertext share paths, phase 3a).
-func (d *DAV) mkdirCipherMount(ctx context.Context, np string, m *IncomingMount) (*webdav.Entry, error) {
+// (WrapForWrite matches ciphertext share paths, phase 3a). actorUID is the
+// sharee performing the MKCOL; the activity event flows to the mount owner.
+func (d *DAV) mkdirCipherMount(ctx context.Context, actorUID, np string, m *IncomingMount) (*webdav.Entry, error) {
 	_, raw, err := d.cipherMountSeams()
 	if err != nil {
 		return nil, err
@@ -221,6 +222,9 @@ func (d *DAV) mkdirCipherMount(ctx context.Context, np string, m *IncomingMount)
 	if err != nil {
 		return nil, mapMeta(err)
 	}
+	// ADR-0104 §9: folder creation to the mount owner's stream, actor the
+	// sharee — same shape as mkdirOwned's hook.
+	d.emitFileActivity(ctx, u.ID, actorUID, activityFileCreated, templateActivityCreated, plainTarget)
 	got.Name = path.Base(np)
 	got.Path = plainTarget
 	e := d.toEntryBare(ctx, u.ID, got)
@@ -234,7 +238,10 @@ func (d *DAV) mkdirCipherMount(ctx context.Context, np string, m *IncomingMount)
 // hooks run with the ciphertext path (Covering matches it). Version
 // snapshots pin the ciphertext owner path into file_versions via the raw
 // version store. Callers hold the writeLocks stripe for (owner, plainTarget).
-func (d *DAV) writeCipherMount(ctx context.Context, np string, m *IncomingMount, r io.Reader, mtime *time.Time, snapshot bool, cond *webdav.WriteCond) (*webdav.Entry, bool, error) {
+// actorUID is the sharee performing the write; the activity event flows to
+// the mount owner's stream (token derivation resolves anchor-scoped in the
+// sharee's ctx — an enrolled owner's root-walk failure skips the event).
+func (d *DAV) writeCipherMount(ctx context.Context, actorUID, np string, m *IncomingMount, r io.Reader, mtime *time.Time, snapshot bool, cond *webdav.WriteCond) (*webdav.Entry, bool, error) {
 	_, raw, err := d.cipherMountSeams()
 	if err != nil {
 		return nil, false, err
@@ -377,6 +384,13 @@ func (d *DAV) writeCipherMount(ctx context.Context, np string, m *IncomingMount,
 	// it into the mount namespace.
 	got.Name = path.Base(np)
 	got.Path = plainTarget
+	// ADR-0104 §9: created vs changed, to the mount owner's stream, actor the
+	// sharee — same shape as write()'s hook.
+	typ, template := activityFileCreated, templateActivityCreated
+	if !created {
+		typ, template = activityFileChanged, templateActivityChanged
+	}
+	d.emitFileActivity(ctx, u.ID, actorUID, typ, template, plainTarget)
 	e := d.toEntryBare(ctx, u.ID, got)
 	d.applyLockCipherMount(ctx, u, anchor, m, np, e)
 	return e, created, nil
@@ -543,6 +557,10 @@ func (d *DAV) removeCipherMount(ctx context.Context, user, np string, m *Incomin
 	if rel != "/" {
 		plainTarget += rel
 	}
+	// ADR-0104 §9: pre-capture the delete event's name material while the row
+	// still exists (the token derivation reads it), emit after the relocation
+	// succeeds — a capture failure skips the event, never blocks the delete.
+	name, captured := d.captureActivityName(ctx, u.ID, plainTarget)
 	// row.Name is the leaf ciphertext token, so capTrashBase(row.Name) is
 	// byte-identical to TrashLocationBase's capTrashBase(path.Base(cp))
 	// contract; the .d<ts>/-N shape stays inside makeLocationID/this helper.
@@ -610,7 +628,15 @@ func (d *DAV) removeCipherMount(ctx context.Context, user, np string, m *Incomin
 			return err
 		}
 	}
-	return raw.RecalcAncestors(ctx, u.ID, parent, now)
+	if err := raw.RecalcAncestors(ctx, u.ID, parent, now); err != nil {
+		return err
+	}
+	// ADR-0104 §9: the pre-captured delete event flows to the mount owner's
+	// stream, actor the sharee.
+	if captured {
+		d.emitActivity(ctx, u.ID, user, activityFileDeleted, templateActivityDeleted, name, nil)
+	}
+	return nil
 }
 
 // applyLockCipherMount is applyLock for a ciphertext mount: lock rows key on

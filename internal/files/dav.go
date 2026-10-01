@@ -15,6 +15,7 @@ import (
 
 	"github.com/vmihailenco/msgpack/v5"
 
+	"github.com/PhantomMatthew/nextcloud-go/internal/activity"
 	"github.com/PhantomMatthew/nextcloud-go/internal/events"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage/encrypt"
@@ -68,6 +69,13 @@ type DAV struct {
 	LiveProps webdav.LivePropProvider
 	// Events, when set, receives files.uploaded after a successful Write.
 	Events *events.Bus
+	// Activity, when set, receives the file-lifecycle stream (ADR-0104 §9's
+	// first production writer): created/changed/deleted/renamed/restored
+	// events flow to the OWNER's stream after the verb succeeds. Scheme-1
+	// owners store the name as a token with the "ncgoNameScheme" marker
+	// (activity.go); a token failure skips the event — never a plaintext
+	// fallback. Nil disables emission with zero overhead.
+	Activity activity.Store
 	// writeLocks serializes same-path writes in-process (ADR-0094).
 	writeLocks writeLockTable
 }
@@ -604,7 +612,9 @@ func (d *DAV) emitUploaded(ctx context.Context, user string, ent *webdav.Entry, 
 // write is the locked write core: callers must hold the writeLocks stripe
 // for (user, p) — see writeConditional. Inside the lock only Versions,
 // Storage, and Meta calls happen, none of which re-enter write locking.
-func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *time.Time, snapshot bool, cond *webdav.WriteCond) (*webdav.Entry, bool, error) {
+// actorUID is the request principal (user is the OWNER for incoming-share
+// writes) for the activity stream; the event emits after the row persists.
+func (d *DAV) write(ctx context.Context, actorUID, user, p string, r io.Reader, mtime *time.Time, snapshot bool, cond *webdav.WriteCond) (*webdav.Entry, bool, error) {
 	u, err := d.resolveUser(ctx, user)
 	if err != nil {
 		return nil, false, err
@@ -750,6 +760,13 @@ func (d *DAV) write(ctx context.Context, user, p string, r io.Reader, mtime *tim
 	if err != nil {
 		return nil, false, mapMeta(err)
 	}
+	// ADR-0104 §9: the file-lifecycle event flows to the owner's stream
+	// (created vs changed on overwrite), best-effort after the row persists.
+	typ, template := activityFileCreated, templateActivityCreated
+	if !created {
+		typ, template = activityFileChanged, templateActivityChanged
+	}
+	d.emitFileActivity(ctx, u.ID, actorUID, typ, template, np)
 	return d.toEntry(ctx, u.ID, got), created, nil
 }
 
@@ -838,7 +855,10 @@ func (d *DAV) shareKeyPath(ctx context.Context, userID int64, np string) (string
 	return np, nil
 }
 
-func (d *DAV) mkdirOwned(ctx context.Context, user, p string) (*webdav.Entry, error) {
+// mkdirOwned creates one folder in user's own tree. actorUID is the request
+// principal (user is the mount owner for incoming-share MKCOL) for the
+// activity stream; the event emits after the row persists.
+func (d *DAV) mkdirOwned(ctx context.Context, actorUID, user, p string) (*webdav.Entry, error) {
 	u, err := d.resolveUser(ctx, user)
 	if err != nil {
 		return nil, err
@@ -909,6 +929,8 @@ func (d *DAV) mkdirOwned(ctx context.Context, user, p string) (*webdav.Entry, er
 	if err != nil {
 		return nil, mapMeta(err)
 	}
+	// ADR-0104 §9: folder creation flows to the owner's stream, best-effort.
+	d.emitFileActivity(ctx, u.ID, actorUID, activityFileCreated, templateActivityCreated, np)
 	return d.toEntry(ctx, u.ID, got), nil
 }
 
@@ -916,11 +938,32 @@ func (d *DAV) Remove(ctx context.Context, user, p string) error {
 	return d.removeMaybeIncoming(ctx, user, p)
 }
 
-func (d *DAV) removeOwned(ctx context.Context, user, p string) error {
-	if d.Trash != nil {
-		return d.Trash.MoveToTrash(ctx, user, p, user)
+// removeOwned deletes path from user's own tree. The trash path emits
+// file_deleted to the owner's stream (actorUID is the request principal —
+// user is the mount owner for incoming-share deletes): the name material is
+// pre-captured BEFORE the relocation (the row must still exist for the §9
+// token derivation), and the event emits only after the delete succeeds. A
+// trash-less Purge emits nothing (upstream purge parity).
+func (d *DAV) removeOwned(ctx context.Context, actorUID, user, p string) error {
+	if d.Trash == nil {
+		return d.Purge(ctx, user, p)
 	}
-	return d.Purge(ctx, user, p)
+	var name activityName
+	var ownerID int64
+	captured := false
+	if d.Activity != nil && !activityMuted(ctx) {
+		if u, err := d.Users.GetByUID(ctx, user); err == nil {
+			ownerID = u.ID
+			name, captured = d.captureActivityName(ctx, ownerID, p)
+		}
+	}
+	if err := d.Trash.MoveToTrash(ctx, user, p, user); err != nil {
+		return err
+	}
+	if captured {
+		d.emitActivity(ctx, ownerID, actorUID, activityFileDeleted, templateActivityDeleted, name, nil)
+	}
+	return nil
 }
 
 // Purge permanently deletes path from storage and filecache.
@@ -1059,6 +1102,10 @@ func (d *DAV) Move(ctx context.Context, srcUser, srcPath, dstUser, dstPath strin
 	if err := d.checkNameBudget(ctx, u.ID, dst); err != nil {
 		return nil, false, err
 	}
+	// ADR-0104 §9: pre-capture the OLD name material while the row still sits
+	// at src (the token derivation reads it); a failure skips the event,
+	// never blocks the move.
+	oldName, oldCaptured := d.captureActivityName(ctx, u.ID, src)
 	from, err := storageKey(srcUser, src)
 	if err != nil {
 		return nil, false, err
@@ -1131,6 +1178,14 @@ func (d *DAV) Move(ctx context.Context, srcUser, srcPath, dstUser, dstPath strin
 	if err != nil {
 		return nil, false, mapMeta(err)
 	}
+	// ADR-0104 §9: one file_renamed carries both names — "file" (new, sealed
+	// by "ncgoNameScheme") and "oldfile" (pre-move, sealed by
+	// "ncgoNameScheme:oldfile", the old parent key's marker).
+	if oldCaptured {
+		if newName, ok := d.captureActivityName(ctx, u.ID, dst); ok {
+			d.emitActivity(ctx, u.ID, srcUser, activityFileRenamed, templateActivityRenamed, newName, &oldName)
+		}
+	}
 	return d.toEntry(ctx, u.ID, got), created, nil
 }
 
@@ -1155,12 +1210,18 @@ func (d *DAV) Copy(ctx context.Context, srcUser, srcPath, dstUser, dstPath strin
 			return nil, false, err
 		}
 	}
-	if err := d.copyOne(ctx, srcUser, srcPath, dstPath, srcEntry.IsDir, depthInfinity); err != nil {
+	// ADR-0104 §9: a copy is recorded as ONE file_created for the destination
+	// (upstream parity) — the inner Mkdir/Write verbs of copyOne run muted so
+	// a folder copy does not fan out per child.
+	if err := d.copyOne(withActivityMuted(ctx), srcUser, srcPath, dstPath, srcEntry.IsDir, depthInfinity); err != nil {
 		return nil, false, err
 	}
 	got, err := d.Stat(ctx, srcUser, dstPath)
 	if err != nil {
 		return nil, false, err
+	}
+	if u, uerr := d.Users.GetByUID(ctx, srcUser); uerr == nil {
+		d.emitFileActivity(ctx, u.ID, srcUser, activityFileCreated, templateActivityCreated, dstPath)
 	}
 	return got, created, nil
 }

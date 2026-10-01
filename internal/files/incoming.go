@@ -225,14 +225,14 @@ func (d *DAV) mkdirMaybeIncoming(ctx context.Context, user, p string) (*webdav.E
 		if m.OwnerCipherPath != "" {
 			// Ciphertext mount (ADR-0104 phase 3a): the row is built in
 			// ciphertext form, anchored at the share root.
-			return d.mkdirCipherMount(ctx, np, m)
+			return d.mkdirCipherMount(ctx, user, np, m)
 		}
-		e, merr := d.mkdirOwned(ctx, m.OwnerUID, ownerPath)
+		e, merr := d.mkdirOwned(ctx, user, m.OwnerUID, ownerPath)
 		return incomingEntry(e, np, m.Permissions), merr
 	} else if errors.Is(err, encrypt.ErrKeyLocked) {
 		return nil, err
 	}
-	return d.mkdirOwned(ctx, user, np)
+	return d.mkdirOwned(ctx, user, user, np)
 }
 
 func (d *DAV) removeMaybeIncoming(ctx context.Context, user, p string) error {
@@ -241,7 +241,7 @@ func (d *DAV) removeMaybeIncoming(ctx context.Context, user, p string) error {
 		return mapMeta(err)
 	}
 	if _, err := d.statOwned(ctx, user, np); err == nil {
-		return d.removeOwned(ctx, user, np)
+		return d.removeOwned(ctx, user, user, np)
 	} else if err != nil && !errors.Is(err, webdav.ErrNotFound) {
 		return err
 	}
@@ -257,11 +257,11 @@ func (d *DAV) removeMaybeIncoming(ctx context.Context, user, p string) error {
 			// the share root — the owner's ancestor chain is unresolvable here.
 			return d.removeCipherMount(ctx, user, np, m)
 		}
-		return d.removeOwned(ctx, m.OwnerUID, ownerPath)
+		return d.removeOwned(ctx, user, m.OwnerUID, ownerPath)
 	} else if errors.Is(err, encrypt.ErrKeyLocked) {
 		return err
 	}
-	return d.removeOwned(ctx, user, np)
+	return d.removeOwned(ctx, user, user, np)
 }
 
 func (d *DAV) writeRemote(ctx context.Context, np string, m *IncomingMount, r io.Reader) (*webdav.Entry, bool, error) {

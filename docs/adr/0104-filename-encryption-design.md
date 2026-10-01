@@ -252,11 +252,17 @@ and buy nothing at personal-cloud scale.
 
 ### 9. Activity and notifications
 
-**Activity**: the activities table has no production writer yet (store + OCS
-read API only), so the token-subject rule below is forward-pinned for the
-first activity producer: names/paths inside `subject`/
-`subject_rich_parameters` are written as ciphertext tokens with the
-`"ncgoNameScheme"` marker, and rendering decrypts with the viewer's wraps.
+**Activity** (landed 2026-10-01, file lifecycle): the activities table's
+first production writer is the DAV file-lifecycle stream
+(`file_created`/`file_changed`/`file_deleted`/`file_renamed`/
+`file_restored` — one best-effort event per successful verb in the owner's
+stream), landing the token-subject rule this section forward-pinned:
+names/paths inside `subject`/`subject_rich_parameters` are written as
+ciphertext tokens with the `"ncgoNameScheme"` marker, and rendering
+decrypts with the viewer's wraps. A rename carries two sealed names — the
+exact marker seals `"file"` (the new name) and a `"ncgoNameScheme:<param>"`
+marker seals that param (`"oldfile"`, the pre-move name) — the per-param
+concretion of the same rule; every marker key is stripped at render.
 
 **Notifications** (landed phase 3b): the one live subject producer is the
 share bell (`notifyShareCreated`, user and group shares). For a scheme-1

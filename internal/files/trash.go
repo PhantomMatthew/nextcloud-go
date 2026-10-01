@@ -374,6 +374,9 @@ func (t *Trash) Restore(ctx context.Context, user, locationID, destUser, destPat
 	if err != nil {
 		return nil, false, err
 	}
+	// ADR-0104 §9: the restore event flows to the dest user's stream (the
+	// post-ingest row is rebuilt, so the name capture resolves normally).
+	t.Files.emitFileActivity(ctx, usr.ID, destUser, activityFileRestored, templateActivityRestored, dest)
 	return got, !exists, nil
 }
 

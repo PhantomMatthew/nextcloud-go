@@ -22,6 +22,10 @@ type Handler struct {
 	Store   Store
 	Users   users.Store
 	Version ocs.Version
+	// Subjects, when set (ADR-0104 filename encryption, §9), decrypts
+	// tokenized subject names in the viewer's ctx at render time. Nil keeps
+	// every row verbatim (flag off — bit-identical).
+	Subjects SubjectDecryptor
 }
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -76,6 +80,7 @@ func (h Handler) list(w http.ResponseWriter, r *http.Request, userID int64) {
 	}
 	data := make([]any, 0, len(items))
 	for i := range items {
+		h.decryptSubject(r.Context(), &items[i])
 		payload, err := eventPayload(&items[i])
 		if err != nil {
 			writeOCS(w, r, h.Version, ocs.RespondServerError, "Internal Server Error", nil)
