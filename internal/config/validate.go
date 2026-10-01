@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -159,6 +160,16 @@ func (c *Config) Validate() error {
 
 	if strings.TrimSpace(c.Web.StaticRoot) != "" && !filepath.IsAbs(c.Web.StaticRoot) {
 		errs = append(errs, &ValidationError{Field: "web.static_root", Reason: "must be an absolute path"})
+	}
+
+	if c.Office.Enabled {
+		u, err := url.Parse(strings.TrimSpace(c.Office.CollaboraURL))
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs = append(errs, &ValidationError{Field: "office.collabora_url", Reason: "must be an absolute http(s) URL when office.enabled is set"})
+		}
+		if c.Office.TokenTTL < time.Minute || c.Office.TokenTTL > 24*time.Hour {
+			errs = append(errs, &ValidationError{Field: "office.token_ttl", Reason: "must be between 1m and 24h"})
+		}
 	}
 
 	return errors.Join(errs...)

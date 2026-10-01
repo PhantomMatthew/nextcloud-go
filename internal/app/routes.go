@@ -26,6 +26,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
 	"github.com/PhantomMatthew/nextcloud-go/internal/web"
 	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
+	"github.com/PhantomMatthew/nextcloud-go/internal/wopi"
 )
 
 type appPasswordIssuer struct {
@@ -75,6 +76,7 @@ func (a *App) mountRoutes() error {
 			"/public.php/webdav",
 			"/public.php/webdav/",
 			"/ocm/",
+			"/index.php/apps/richdocuments/wopi/files/",
 			"/.well-known/caldav",
 			"/.well-known/carddav",
 		},
@@ -289,6 +291,17 @@ func (a *App) mountRoutes() error {
 		for _, p := range []string{"/index.php/core/preview", "/index.php/core/preview.png", "/core/preview", "/core/preview.png"} {
 			router.Handle(http.MethodGet, p, a.previewGen, httpx.Middleware(webdav.Auth(authCfg)))
 		}
+	}
+
+	if a.wopiSvc != nil {
+		// ADR-0106: the mint endpoint is session-authed (the session ctx
+		// carries an enrolled user's unlocked key); the Collabora callbacks
+		// mount WITHOUT session middleware — the access_token query param is
+		// their only credential, validated inside the handler before any
+		// file resolution (CSRF path-bypassed above: Collabora POSTs carry
+		// no session cookie).
+		router.Handle(http.MethodGet, "/index.php/apps/richdocuments/wopi/token", &wopi.MintHandler{Svc: a.wopiSvc}, httpx.Middleware(webdav.Auth(authCfg)))
+		router.HandlePrefix(httpx.MethodAny, wopi.WopiFilesPrefix, &wopi.FilesHandler{Svc: a.wopiSvc})
 	}
 
 	davHandler, err := webdav.NewHandler("/remote.php/dav/files/", a.davFS, a.instanceID)

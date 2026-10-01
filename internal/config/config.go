@@ -18,6 +18,17 @@ type Config struct {
 	Maintenance   MaintenanceConfig   `koanf:"maintenance"`
 	Instance      InstanceConfig      `koanf:"instance"`
 	Sharing       SharingConfig       `koanf:"sharing"`
+	Office        OfficeConfig        `koanf:"office"`
+}
+
+// OfficeConfig controls Collabora/OnlyOffice editing integration (WOPI host,
+// ADR-0106). CollaboraURL is the Collabora Online server's base URL, used by
+// the (follow-up) viewer page; TokenTTL is the lifetime of a minted WOPI
+// access token.
+type OfficeConfig struct {
+	Enabled      bool          `koanf:"enabled"`
+	CollaboraURL string        `koanf:"collabora_url"`
+	TokenTTL     time.Duration `koanf:"token_ttl"`
 }
 
 // SharingConfig controls sharing integrations. LookupServer is the base URL

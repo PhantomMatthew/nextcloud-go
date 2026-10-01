@@ -32,6 +32,9 @@ func TestDefaultSnapshot(t *testing.T) {
 		got.Previews.OfficeTimeout != 30*time.Second {
 		t.Errorf("previews defaults: %+v", got.Previews)
 	}
+	if got.Office.Enabled || got.Office.CollaboraURL != "" || got.Office.TokenTTL != 10*time.Hour {
+		t.Errorf("office defaults: %+v", got.Office)
+	}
 	if got.Web.StaticRoot != "" {
 		t.Errorf("web defaults: %+v", got.Web)
 	}
@@ -520,6 +523,29 @@ func TestValidateRules(t *testing.T) {
 			c.Previews.OfficeTimeout = 10 * time.Minute
 		}, "previews.office_timeout"},
 		{"web_static_root_relative", func(c *Config) { c.Web.StaticRoot = "relative/web" }, "web.static_root"},
+		{"office_enabled_without_url", func(c *Config) { c.Office.Enabled = true }, "office.collabora_url"},
+		{"office_url_relative", func(c *Config) {
+			c.Office.Enabled = true
+			c.Office.CollaboraURL = "collabora.example.com"
+		}, "office.collabora_url"},
+		{"office_url_bad_scheme", func(c *Config) {
+			c.Office.Enabled = true
+			c.Office.CollaboraURL = "ftp://collabora.example.com"
+		}, "office.collabora_url"},
+		{"office_url_missing_host", func(c *Config) {
+			c.Office.Enabled = true
+			c.Office.CollaboraURL = "https://"
+		}, "office.collabora_url"},
+		{"office_ttl_low", func(c *Config) {
+			c.Office.Enabled = true
+			c.Office.CollaboraURL = "https://collabora.example.com"
+			c.Office.TokenTTL = 30 * time.Second
+		}, "office.token_ttl"},
+		{"office_ttl_high", func(c *Config) {
+			c.Office.Enabled = true
+			c.Office.CollaboraURL = "https://collabora.example.com"
+			c.Office.TokenTTL = 25 * time.Hour
+		}, "office.token_ttl"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

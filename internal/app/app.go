@@ -40,6 +40,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/version"
 	"github.com/PhantomMatthew/nextcloud-go/internal/web"
 	"github.com/PhantomMatthew/nextcloud-go/internal/webdav"
+	"github.com/PhantomMatthew/nextcloud-go/internal/wopi"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
@@ -92,6 +93,7 @@ type App struct {
 	principalFS      *caldav.PrincipalDAV
 	davRootFS        *caldav.RootDAV
 	previewGen       *preview.Generator
+	wopiSvc          *wopi.Service
 	staticUI         *web.StaticUI
 }
 
@@ -398,6 +400,29 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		// preview.gc is periodic, and Start seeds periodic jobs only for
 		// names already registered — so this must precede jr.Start.
 		if err := jr.Register(preview.NewGCJobSealed(st, a.previewGen.CachePrefix, gcRaw, gcEncPrefix, cfg.Previews.CacheMaxAge, time.Now, logger)); err != nil {
+			if cerr := a.closeResources(ctx); cerr != nil {
+				return nil, errors.Join(err, cerr)
+			}
+			return nil, err
+		}
+	}
+	if cfg.Office.Enabled {
+		// ADR-0106 (WOPI host core): the service shares the app's DAV (with
+		// its TranslatingStore Meta — never the raw store) and the sharing
+		// service for sharee resolution; the mint route resolves in the
+		// caller's session ctx, the Collabora callbacks in the anonymous one.
+		wopiStore := wopi.NewSQLStore(db)
+		a.wopiSvc = &wopi.Service{
+			Store:  wopiStore,
+			Files:  dav,
+			Users:  a.Users,
+			Shares: a.shares,
+			TTL:    cfg.Office.TokenTTL,
+			Clock:  time.Now,
+		}
+		// Same ordering rule as preview.gc: wopi.tokens.gc is periodic, and
+		// Start seeds periodic jobs only for names already registered.
+		if err := jr.Register(wopi.NewGCJob(wopiStore, time.Now)); err != nil {
 			if cerr := a.closeResources(ctx); cerr != nil {
 				return nil, errors.Join(err, cerr)
 			}

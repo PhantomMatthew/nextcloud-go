@@ -50,6 +50,7 @@ func hardcodedDefault() *Config {
 			},
 		},
 		Previews: PreviewsConfig{Enabled: true, MaxDimension: 2048, PregenerateEnabled: false, PregenerateSizes: []int{32, 256}, CacheMaxAge: 720 * time.Hour},
+		Office:   OfficeConfig{Enabled: false, CollaboraURL: "", TokenTTL: 10 * time.Hour},
 		Auth: AuthConfig{
 			Argon2id: Argon2idConfig{MemoryKB: 65536, Iterations: 3, Parallelism: 4},
 		},
@@ -101,6 +102,9 @@ func defaultFlat() map[string]any {
 		"previews.office_enabled":             false,
 		"previews.office_command":             "",
 		"previews.office_timeout":             30 * time.Second,
+		"office.enabled":                      false,
+		"office.collabora_url":                "",
+		"office.token_ttl":                    10 * time.Hour,
 		"web.static_root":                     "",
 		"auth.argon2id.memory_kb":             uint32(65536),
 		"auth.argon2id.iterations":            uint32(3),

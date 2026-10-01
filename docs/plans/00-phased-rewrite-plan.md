@@ -191,6 +191,41 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-10-01** — **WOPI host core** (ADR-0106; v2 office epic increment
+  1). The server side of Collabora Online editing lands behind
+  `office.enabled` with upstream richdocuments path parity: a
+  session-authed mint endpoint (`GET /index.php/apps/richdocuments/wopi/
+  token?fileId=N`) issues plaintext bearer tokens from the new
+  `wopi_tokens` table (migration 0025, three dialects; expiry filtered in
+  SQL, `wopi.tokens.gc` periodic sweep joining the runner's seeded
+  periodic set), and the token-authed WOPI callbacks under
+  `/index.php/apps/richdocuments/wopi/files/{id}[/contents]` serve
+  CheckFileInfo / GetFile / PutFile / LOCK / UNLOCK / REFRESH_LOCK with
+  the token validated — including its binding to the URL's file id —
+  before any file resolution, so a bad token never learns whether a file
+  exists. Resolution goes through the app-wired TranslatingStore (never
+  the raw store): the owner gets her own path, sharees resolve through
+  `ListIncoming` to their mount path with the share's permissions, and an
+  enrolled password-wrapped user mints in her unlocked session ctx but
+  hits the documented `ErrKeyLocked` → 403 boundary on the anonymous
+  Collabora callbacks (token-bound key wrap is a follow-up mirroring
+  ADR-0102). Because WOPI lock ids are client-chosen, `*files.DAV` gains
+  a verbatim-token seam — `LockWithToken` / `UnlockWithToken` /
+  `LockTokenAt`, mirroring dav.Lock/Unlock plus CheckLock's
+  incoming-share dispatch, so a sharee's lock lands in the owner's
+  namespace — reusing the existing LockStore and timeout constants.
+  Config gains the `office` section (collabora_url validated as an
+  absolute http(s) URL, token_ttl 1m–24h, only when enabled); the
+  callbacks prefix joins the CSRF PathBypass (Collabora POSTs are
+  cookie-less). Viewer page, discovery fetch, capabilities block, and
+  further WOPI ops remain v2 follow-ups. Pinned by wopi store units,
+  httptest e2e (mint fields, CheckFileInfo exact JSON, byte-exact
+  GetFile, the full lock-conflict matrix with one version snapshot per
+  locked PutFile, 401s for bad/expired/cross-file/missing tokens,
+  sharee read-only gating, directory rejection), files seam units
+  (verbatim token, frozen-clock expiry, owner-namespace share locks),
+  the app route-gate test, and config default/validation cases.
+
 - **2026-10-01** — **Office document previews** (ADR-0053's last open
   follow-up, external-renderer flavor). A `Rasterizer` seam on the preview
   Generator converts office documents the image sniff rejects; dispatch

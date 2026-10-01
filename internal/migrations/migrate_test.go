@@ -29,8 +29,8 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("up: %v", err)
 	}
-	if n != 24 {
-		t.Errorf("applied = %d, want 24", n)
+	if n != 25 {
+		t.Errorf("applied = %d, want 25", n)
 	}
 
 	want := []string{
@@ -38,7 +38,7 @@ func TestSQLiteUpDownUp(t *testing.T) {
 		"app_passwords", "login_flows", "jobs", "module_config", "files", "uploads", "trash_items", "file_versions", "file_properties", "file_locks", "shares",
 		"calendars", "calendar_objects", "addressbooks", "addressbook_objects",
 		"notifications", "activities", "ocm_incoming", "calendar_shares", "plugins", "plugin_routes", "appconfig", "plugin_webdav_props", "addressbook_shares",
-		"user_keys", "file_keys", "user_key_pw", "app_token_keys",
+		"user_keys", "file_keys", "user_key_pw", "app_token_keys", "wopi_tokens",
 	}
 	for _, table := range want {
 		var name string
@@ -91,7 +91,7 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version: %v", err)
 	}
-	if v != 24 || dirty {
+	if v != 25 || dirty {
 		t.Errorf("version=%d dirty=%v", v, dirty)
 	}
 
@@ -110,8 +110,30 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("version after down: %v", err)
 	}
-	if v != 23 || dirty {
+	if v != 24 || dirty {
 		t.Errorf("after down version=%d dirty=%v", v, dirty)
+	}
+	// 0025's table is gone at v24; 0024's columns remain.
+	var wopiAt24 string
+	err = db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "wopi_tokens").Scan(&wopiAt24)
+	if err == nil {
+		t.Error("table wopi_tokens still present after down to v24")
+	}
+	var mountEncAt24 string
+	err = db.QueryRow(ctx, `SELECT name FROM pragma_table_info('shares') WHERE name='mount_name_enc'`).Scan(&mountEncAt24)
+	if err != nil {
+		t.Errorf("shares.mount_name_enc column missing after down to v24: %v", err)
+	}
+
+	if err := Down(ctx, std, database.DialectSQLite, 1, logger); err != nil {
+		t.Fatalf("second down: %v", err)
+	}
+	v, dirty, err = Version(ctx, std, database.DialectSQLite)
+	if err != nil {
+		t.Fatalf("version after second down: %v", err)
+	}
+	if v != 23 || dirty {
+		t.Errorf("after second down version=%d dirty=%v", v, dirty)
 	}
 	// 0024's columns are gone at v23; 0023's remain.
 	var mountEncAt23 string
@@ -131,14 +153,14 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	}
 
 	if err := Down(ctx, std, database.DialectSQLite, 1, logger); err != nil {
-		t.Fatalf("second down: %v", err)
+		t.Fatalf("third down: %v", err)
 	}
 	v, dirty, err = Version(ctx, std, database.DialectSQLite)
 	if err != nil {
-		t.Fatalf("version after second down: %v", err)
+		t.Fatalf("version after third down: %v", err)
 	}
 	if v != 22 || dirty {
-		t.Errorf("after second down version=%d dirty=%v", v, dirty)
+		t.Errorf("after third down version=%d dirty=%v", v, dirty)
 	}
 	// 0023's columns are gone at v22; 0022's table remains.
 	var filesSchemeAt22 string
@@ -157,14 +179,14 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	}
 
 	if err := Down(ctx, std, database.DialectSQLite, 1, logger); err != nil {
-		t.Fatalf("third down: %v", err)
+		t.Fatalf("fourth down: %v", err)
 	}
 	v, dirty, err = Version(ctx, std, database.DialectSQLite)
 	if err != nil {
-		t.Fatalf("version after third down: %v", err)
+		t.Fatalf("version after fourth down: %v", err)
 	}
 	if v != 21 || dirty {
-		t.Errorf("after third down version=%d dirty=%v", v, dirty)
+		t.Errorf("after fourth down version=%d dirty=%v", v, dirty)
 	}
 	// 0022's object is gone at v21; 0021's remain.
 	var tokenKeysName string
@@ -178,14 +200,14 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	}
 
 	if err := Down(ctx, std, database.DialectSQLite, 1, logger); err != nil {
-		t.Fatalf("fourth down: %v", err)
+		t.Fatalf("fifth down: %v", err)
 	}
 	v, dirty, err = Version(ctx, std, database.DialectSQLite)
 	if err != nil {
-		t.Fatalf("version after fourth down: %v", err)
+		t.Fatalf("version after fifth down: %v", err)
 	}
 	if v != 20 || dirty {
-		t.Errorf("after fourth down version=%d dirty=%v", v, dirty)
+		t.Errorf("after fifth down version=%d dirty=%v", v, dirty)
 	}
 	// 0021's objects are gone at v20; 0020's remain.
 	var pwName string
@@ -209,14 +231,14 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	}
 
 	if err := Down(ctx, std, database.DialectSQLite, 1, logger); err != nil {
-		t.Fatalf("fifth down: %v", err)
+		t.Fatalf("sixth down: %v", err)
 	}
 	v, dirty, err = Version(ctx, std, database.DialectSQLite)
 	if err != nil {
-		t.Fatalf("version after fifth down: %v", err)
+		t.Fatalf("version after sixth down: %v", err)
 	}
 	if v != 19 || dirty {
-		t.Errorf("after fifth down version=%d dirty=%v", v, dirty)
+		t.Errorf("after sixth down version=%d dirty=%v", v, dirty)
 	}
 	var userKeysName string
 	err = db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "user_keys").Scan(&userKeysName)
@@ -267,14 +289,14 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("up after down: %v", err)
 	}
-	if n != 5 {
-		t.Errorf("re-up applied = %d, want 5", n)
+	if n != 6 {
+		t.Errorf("re-up applied = %d, want 6", n)
 	}
 	v, dirty, err = Version(ctx, std, database.DialectSQLite)
 	if err != nil {
 		t.Fatalf("version after re-up: %v", err)
 	}
-	if v != 24 || dirty {
+	if v != 25 || dirty {
 		t.Errorf("after re-up version=%d dirty=%v", v, dirty)
 	}
 }

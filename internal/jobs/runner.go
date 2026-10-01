@@ -13,6 +13,7 @@ const (
 	JobLocksExpire        = "locks.expire"
 	JobPreviewPregenerate = "preview.pregenerate"
 	JobPreviewGC          = "preview.gc"
+	JobWOPITokensGC       = "wopi.tokens.gc" //nolint:gosec // G101: job name, not a credential
 )
 
 // maxUnknownJobAttempts bounds how many times a row whose name no runner
@@ -57,7 +58,7 @@ func NewRunner(store Store, clock func() time.Time, workers int, poll time.Durat
 		workers:  workers,
 		poll:     poll,
 		jobs:     map[string]Job{},
-		periodic: map[string]struct{}{JobSharesExpire: {}, JobLocksExpire: {}, JobPreviewGC: {}},
+		periodic: map[string]struct{}{JobSharesExpire: {}, JobLocksExpire: {}, JobPreviewGC: {}, JobWOPITokensGC: {}},
 	}
 }
 
@@ -119,7 +120,7 @@ func (r *SQLRunner) Start(ctx context.Context) error {
 	r.cancel = cancel
 	r.mu.Unlock()
 
-	for _, name := range []string{JobSharesExpire, JobLocksExpire, JobPreviewGC} {
+	for _, name := range []string{JobSharesExpire, JobLocksExpire, JobPreviewGC, JobWOPITokensGC} {
 		r.mu.Lock()
 		_, ok := r.jobs[name]
 		r.mu.Unlock()
