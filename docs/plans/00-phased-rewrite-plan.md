@@ -191,6 +191,27 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-10-01** — **WOPI viewer page + Collabora discovery** (ADR-0106
+  follow-up; the browser-visible half of the office epic). The viewer
+  (`GET /index.php/apps/richdocuments/index?fileId=N`, upstream path
+  parity, session-authed) mints a TTL WOPI token, resolves the editor URL
+  from the Collabora discovery document, and renders an embedded
+  form-post bootstrap into the Collabora iframe — the standard WOPI flow,
+  so no Nextcloud credential ever reaches the Collabora session and the
+  filename is html/template-escaped. The new `wopi.Discovery` fetches
+  `{office.collabora_url}/hosting/discovery` server-side (admin-owned
+  target, no SSRF surface), parses it with stdlib `encoding/xml` into an
+  ext→{edit,view} action map, and caches it for an hour with injectable
+  Clock/HTTP; the edit vs view action is chosen by the token's write
+  grant (a read-only sharee lands on the view urlsrc). Error mapping:
+  uneditable extension → 404, discovery outage → 502, dir → 400. Pinned
+  by 8 new tests: discovery action selection/caching/failure modes, the
+  viewer's exact form-post HTML (token value, TTL, urlsrc + escaped
+  WOPISrc, title), the read-only-sharee view action, the failure matrix,
+  a `<script>` filename-escaping pin, and app route mounting both ways.
+  Zero new dependencies. Still open: the richdocuments capabilities
+  block, token-bound key wraps, extended WOPI ops.
+
 - **2026-10-01** — **WOPI host core** (ADR-0106; v2 office epic increment
   1). The server side of Collabora Online editing lands behind
   `office.enabled` with upstream richdocuments path parity: a

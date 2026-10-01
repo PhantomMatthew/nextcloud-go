@@ -302,6 +302,9 @@ func (a *App) mountRoutes() error {
 		// no session cookie).
 		router.Handle(http.MethodGet, "/index.php/apps/richdocuments/wopi/token", &wopi.MintHandler{Svc: a.wopiSvc}, httpx.Middleware(webdav.Auth(authCfg)))
 		router.HandlePrefix(httpx.MethodAny, wopi.WopiFilesPrefix, &wopi.FilesHandler{Svc: a.wopiSvc})
+		// The viewer page (upstream richdocuments path): session-authed,
+		// renders the form-post bootstrap into the Collabora iframe.
+		router.Handle(http.MethodGet, "/index.php/apps/richdocuments/index", &wopi.ViewerHandler{Svc: a.wopiSvc, Disc: a.wopiDisc}, httpx.Middleware(webdav.Auth(authCfg)))
 	}
 
 	davHandler, err := webdav.NewHandler("/remote.php/dav/files/", a.davFS, a.instanceID)

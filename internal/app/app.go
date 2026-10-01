@@ -94,6 +94,7 @@ type App struct {
 	davRootFS        *caldav.RootDAV
 	previewGen       *preview.Generator
 	wopiSvc          *wopi.Service
+	wopiDisc         *wopi.Discovery
 	staticUI         *web.StaticUI
 }
 
@@ -420,6 +421,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 			TTL:    cfg.Office.TokenTTL,
 			Clock:  time.Now,
 		}
+		a.wopiDisc = &wopi.Discovery{BaseURL: cfg.Office.CollaboraURL, Clock: time.Now}
 		// Same ordering rule as preview.gc: wopi.tokens.gc is periodic, and
 		// Start seeds periodic jobs only for names already registered.
 		if err := jr.Register(wopi.NewGCJob(wopiStore, time.Now)); err != nil {

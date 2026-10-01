@@ -153,10 +153,17 @@ are a possible hardening follow-up.
 **Neutral / follow-ups.** Enrolled password-wrapped users hit the
 documented ErrKeyLocked → 403 boundary on the anonymous callbacks; the
 token-bound key wrap (mirroring ADR-0102's app-token wraps) closes that.
-Still open for the next epic increments: the viewer HTML page, the
-Collabora discovery fetch (`/hosting/discovery`), the richdocuments
-capabilities block, and additional WOPI operations
-(PutRelativeFile, RenameFile).
+（**landed 2026-10-01**: viewer page + discovery fetch）The viewer HTML page
+(`/index.php/apps/richdocuments/index`, upstream path parity, session-authed)
+mints a token, resolves the editor URL from the cached Collabora discovery
+document (`{collabora_url}/hosting/discovery`, parsed with stdlib
+`encoding/xml`, refreshed at most hourly, edit vs view action chosen by the
+token's write grant), and renders an embedded form-post bootstrap into the
+Collabora iframe — no Nextcloud credential ever reaches the Collabora
+session, and the filename is html/template-escaped. Discovery outages map
+to 502, an uneditable extension to 404. Still open for the next epic
+increments: the richdocuments capabilities block and additional WOPI
+operations (PutRelativeFile, RenameFile).
 
 ## Verification
 

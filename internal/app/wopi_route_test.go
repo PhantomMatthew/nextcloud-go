@@ -43,9 +43,13 @@ func TestWOPIRoutes(t *testing.T) {
 	if on.wopiSvc == nil {
 		t.Fatal("office.enabled: wopiSvc is nil")
 	}
+	if on.wopiDisc == nil {
+		t.Fatal("office.enabled: wopiDisc is nil")
+	}
 	for _, path := range []string{
 		"/index.php/apps/richdocuments/wopi/token?fileId=1",
 		"/index.php/apps/richdocuments/wopi/files/1",
+		"/index.php/apps/richdocuments/index?fileId=1",
 	} {
 		rr := httptest.NewRecorder()
 		on.Handler().ServeHTTP(rr, httptest.NewRequestWithContext(ctx, http.MethodGet, path, nil))
@@ -75,5 +79,10 @@ func TestWOPIRoutes(t *testing.T) {
 	off.Handler().ServeHTTP(rr, httptest.NewRequestWithContext(ctx, http.MethodGet, "/index.php/apps/richdocuments/wopi/files/1", nil))
 	if rr.Code == http.StatusUnauthorized {
 		t.Error("office disabled: callback route answered 401 (mounted?)")
+	}
+	rr = httptest.NewRecorder()
+	off.Handler().ServeHTTP(rr, httptest.NewRequestWithContext(ctx, http.MethodGet, "/index.php/apps/richdocuments/index?fileId=1", nil))
+	if rr.Code == http.StatusUnauthorized {
+		t.Error("office disabled: viewer route answered 401 (mounted?)")
 	}
 }
