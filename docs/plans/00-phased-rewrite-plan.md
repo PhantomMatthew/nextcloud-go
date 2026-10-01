@@ -191,6 +191,20 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-10-02** — **richdocuments capabilities block** (ADR-0106
+  follow-up; office epic increment 3). Clients now discover Collabora
+  editing from the OCS capabilities payload whenever the WOPI host is
+  enabled: `version`, `productName: "Collabora Online"`, a curated
+  `mimetypes` set (ODF + OOXML + legacy Office, 9 entries) with
+  `application/pdf` under `mimetypesNoDefaultOpen`, and
+  `templates`/`direct_editing` false. The capabilities surface is
+  synchronous (no ctx), so it cannot consult the discovery document —
+  the curated list advertises the common set while the viewer stays the
+  per-file source of truth. Registration is gated on `a.wopiSvc != nil`,
+  so the default-off deployment's capabilities goldens are unchanged.
+  Pinned by provider shape/merge unit tests and route-level assertions
+  both ways.
+
 - **2026-10-01** — **WOPI viewer page + Collabora discovery** (ADR-0106
   follow-up; the browser-visible half of the office epic). The viewer
   (`GET /index.php/apps/richdocuments/index?fileId=N`, upstream path

@@ -118,6 +118,11 @@ func (a *App) mountRoutes() error {
 	capManager.Register(capabilities.DefaultDAVProvider())
 	capManager.Register(capabilities.DefaultFilesProvider())
 	capManager.Register(capabilities.DefaultSharingProvider())
+	if a.wopiSvc != nil {
+		// ADR-0106: clients discover Collabora editing (and its mimetype
+		// set) only when the WOPI host is enabled.
+		capManager.Register(capabilities.DefaultRichdocumentsProvider())
+	}
 	capHandler := capabilities.Handler{Manager: capManager}
 	for _, m := range []string{"GET", "HEAD"} {
 		router.Handle(m, "/ocs/v1.php/cloud/capabilities", capHandler.ServeOCS(ocs.V1))

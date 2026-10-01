@@ -163,7 +163,15 @@ Collabora iframe — no Nextcloud credential ever reaches the Collabora
 session, and the filename is html/template-escaped. Discovery outages map
 to 502, an uneditable extension to 404. Still open for the next epic
 increments: the richdocuments capabilities block and additional WOPI
-operations (PutRelativeFile, RenameFile).
+operations (PutRelativeFile, RenameFile). （**landed 2026-10-02**:
+capabilities block）The `richdocuments` capability block is registered
+whenever the WOPI host is enabled: `version`, the curated common Collabora
+`mimetypes` set (ODF + OOXML + legacy Office) with `application/pdf` under
+`mimetypesNoDefaultOpen`, `productName`, `templates`/`direct_editing`
+false. The capabilities surface is synchronous (no ctx), so it cannot
+consult the discovery document — the curated list advertises the common
+set while the viewer stays the per-file source of truth (404 when
+discovery offers no action).
 
 ## Verification
 

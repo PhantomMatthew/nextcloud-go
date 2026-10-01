@@ -65,6 +65,13 @@ func TestWOPIRoutes(t *testing.T) {
 	if rr.Code != http.StatusUnauthorized {
 		t.Errorf("POST contents unauthenticated: status = %d, want 401 (mounted, CSRF bypassed)", rr.Code)
 	}
+	// The capabilities payload advertises Collabora editing only when the
+	// WOPI host is enabled (fixed block key, exact-match safe).
+	rr = httptest.NewRecorder()
+	on.Handler().ServeHTTP(rr, httptest.NewRequestWithContext(ctx, http.MethodGet, "/ocs/v2.php/cloud/capabilities?format=json", nil))
+	if !strings.Contains(rr.Body.String(), `"richdocuments"`) {
+		t.Error("office enabled: capabilities payload lacks the richdocuments block")
+	}
 
 	off := newApp(t, false)
 	if off.wopiSvc != nil {
@@ -84,5 +91,10 @@ func TestWOPIRoutes(t *testing.T) {
 	off.Handler().ServeHTTP(rr, httptest.NewRequestWithContext(ctx, http.MethodGet, "/index.php/apps/richdocuments/index?fileId=1", nil))
 	if rr.Code == http.StatusUnauthorized {
 		t.Error("office disabled: viewer route answered 401 (mounted?)")
+	}
+	rr = httptest.NewRecorder()
+	off.Handler().ServeHTTP(rr, httptest.NewRequestWithContext(ctx, http.MethodGet, "/ocs/v2.php/cloud/capabilities?format=json", nil))
+	if strings.Contains(rr.Body.String(), `"richdocuments"`) {
+		t.Error("office disabled: capabilities payload carries the richdocuments block")
 	}
 }
