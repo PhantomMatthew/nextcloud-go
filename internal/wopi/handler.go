@@ -134,9 +134,13 @@ func (h *FilesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && contents:
 		h.getFile(w, r, fsUser, fsPath)
 	case r.Method == http.MethodPost && contents:
-		h.putFile(w, r, fsUser, fsPath, canWrite)
+		if strings.EqualFold(r.Header.Get("X-WOPI-Override"), "PUT_RELATIVE") {
+			h.putRelativeFile(w, r, fsUser, fsPath, canWrite)
+		} else {
+			h.putFile(w, r, fsUser, fsPath, canWrite)
+		}
 	case r.Method == http.MethodPost:
-		h.postOp(w, r, fsUser, fsPath, canWrite)
+		h.postOp(w, r, id, fsUser, fsPath, canWrite)
 	default:
 		w.Header().Set("Allow", "GET, POST")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -218,10 +222,155 @@ func (h *FilesHandler) putFile(w http.ResponseWriter, r *http.Request, fsUser, f
 	})
 }
 
-// postOp dispatches the X-WOPI-Override lock operations on POST {id}.
-func (h *FilesHandler) postOp(w http.ResponseWriter, r *http.Request, fsUser, fsPath string, canWrite bool) {
+// putRelativeFile is the WOPI PutRelativeFile operation (POST {id}/contents
+// with X-WOPI-Override: PUT_RELATIVE): the body lands as a NEW file next to
+// the current one. X-WOPI-RelativeTarget names it exactly (409 on conflict
+// unless X-WOPI-OverwriteRelativeTarget: true); X-WOPI-SuggestedTarget gets
+// deduplicated with a numeric suffix (a bare ".ext" suggestion keeps the
+// current file's base name). Exactly one of the two headers is required.
+func (h *FilesHandler) putRelativeFile(w http.ResponseWriter, r *http.Request, fsUser, fsPath string, canWrite bool) {
+	if !canWrite {
+		http.Error(w, "read only", http.StatusForbidden)
+		return
+	}
+	rel := r.Header.Get("X-WOPI-RelativeTarget")
+	suggested := r.Header.Get("X-WOPI-SuggestedTarget")
+	if (rel == "") == (suggested == "") {
+		http.Error(w, "exactly one of X-WOPI-RelativeTarget and X-WOPI-SuggestedTarget is required", http.StatusBadRequest)
+		return
+	}
+	overwrite := strings.EqualFold(r.Header.Get("X-WOPI-OverwriteRelativeTarget"), "true")
+	name, err := relativeTargetName(fsPath, rel, suggested)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	parent := path.Dir(fsPath)
+	// A suggested target dedupes against existing siblings.
+	if suggested != "" {
+		name = dedupeSiblingName(r, h.Svc, fsUser, parent, name)
+	}
+	newPath := joinSibling(parent, name)
+	if !overwrite {
+		if _, err := h.Svc.Files.Stat(r.Context(), fsUser, newPath); err == nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "file exists"})
+			return
+		}
+	}
+	if _, _, err := h.Svc.Files.Write(r.Context(), fsUser, newPath, r.Body, nil); err != nil {
+		mapError(w, err)
+		return
+	}
+	entry, err := h.Svc.Files.Stat(r.Context(), fsUser, newPath)
+	if err != nil {
+		mapError(w, err)
+		return
+	}
+	//nolint:gosec // G115: filecache IDs are positive serial keys
+	h.writeNewFileURLs(w, r, name, int64(entry.NumericID))
+}
+
+// renameFile is the WOPI RenameFile operation (POST {id} with
+// X-WOPI-Override: RENAME_FILE): the file moves to X-WOPI-RequestedName
+// within its directory, keeping its filecache id — so the caller's token
+// stays valid across the rename. A locked file renames only with the
+// current lock id.
+func (h *FilesHandler) renameFile(w http.ResponseWriter, r *http.Request, id int64, fsUser, fsPath string, canWrite bool) {
+	if !canWrite {
+		http.Error(w, "read only", http.StatusForbidden)
+		return
+	}
+	name, err := sanitizeWOPIName(r.Header.Get("X-WOPI-RequestedName"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	current, locked, err := h.Svc.Files.LockTokenAt(r.Context(), fsUser, fsPath)
+	if err != nil {
+		mapError(w, err)
+		return
+	}
+	if locked && r.Header.Get("X-WOPI-Lock") != current {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "locked"})
+		return
+	}
+	newPath := joinSibling(path.Dir(fsPath), name)
+	if _, _, err := h.Svc.Files.Move(r.Context(), fsUser, fsPath, fsUser, newPath, false); err != nil {
+		mapError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"Name": name,
+		"Url":  absoluteBase(r) + WopiFilesPrefix + strconv.FormatInt(id, 10),
+	})
+}
+
+// writeNewFileURLs answers PutRelativeFile with the new file's WOPI and
+// viewer URLs (host URLs share the viewer page for both view and edit).
+func (h *FilesHandler) writeNewFileURLs(w http.ResponseWriter, r *http.Request, name string, newID int64) {
+	wopiURL := absoluteBase(r) + WopiFilesPrefix + strconv.FormatInt(newID, 10)
+	viewerURL := absoluteBase(r) + "/index.php/apps/richdocuments/index?fileId=" + strconv.FormatInt(newID, 10)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"Name":        name,
+		"Url":         wopiURL,
+		"HostViewUrl": viewerURL,
+		"HostEditUrl": viewerURL,
+	})
+}
+
+// relativeTargetName resolves the new file's name from the two target
+// headers; a suggested ".ext" keeps the current base name.
+func relativeTargetName(fsPath, rel, suggested string) (string, error) {
+	if rel != "" {
+		return sanitizeWOPIName(rel)
+	}
+	if strings.HasPrefix(suggested, ".") {
+		base := strings.TrimSuffix(path.Base(fsPath), path.Ext(fsPath))
+		return sanitizeWOPIName(base + suggested)
+	}
+	return sanitizeWOPIName(suggested)
+}
+
+// sanitizeWOPIName rejects names that would escape the file's directory or
+// name nothing.
+func sanitizeWOPIName(name string) (string, error) {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\") {
+		return "", errors.New("invalid target file name")
+	}
+	return name, nil
+}
+
+// dedupeSiblingName appends " N" before the extension until the name is
+// free (bounded; the final candidate's write still races safely through
+// the overwrite=false stat gate the caller applies).
+func dedupeSiblingName(r *http.Request, svc *Service, fsUser, parent, name string) string {
+	ext := path.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	candidate := name
+	for n := 1; n < 100; n++ {
+		if _, err := svc.Files.Stat(r.Context(), fsUser, joinSibling(parent, candidate)); err != nil {
+			return candidate
+		}
+		candidate = base + " " + strconv.Itoa(n) + ext
+	}
+	return candidate
+}
+
+func joinSibling(parent, name string) string {
+	if parent == "/" || parent == "." {
+		return "/" + name
+	}
+	return parent + "/" + name
+}
+
+// postOp dispatches the X-WOPI-Override operations on POST {id}: the lock
+// verbs and RENAME_FILE (PutRelativeFile rides POST {id}/contents instead).
+func (h *FilesHandler) postOp(w http.ResponseWriter, r *http.Request, id int64, fsUser, fsPath string, canWrite bool) {
 	lockID := r.Header.Get("X-WOPI-Lock")
 	switch r.Header.Get("X-WOPI-Override") {
+	case "RENAME_FILE":
+		h.renameFile(w, r, id, fsUser, fsPath, canWrite)
+		return
 	case "LOCK":
 		if lockID == "" {
 			http.Error(w, "missing X-WOPI-Lock", http.StatusBadRequest)

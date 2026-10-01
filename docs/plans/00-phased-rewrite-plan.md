@@ -191,6 +191,22 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-10-02** — **WOPI extended ops: PutRelativeFile + RenameFile**
+  (ADR-0106 follow-up; office epic increment 5). `PUT_RELATIVE` (POST
+  {id}/contents) lands the body as a NEW sibling file — exact
+  `X-WOPI-RelativeTarget` (409 on conflict unless
+  `X-WOPI-OverwriteRelativeTarget: true`) or deduplicated
+  `X-WOPI-SuggestedTarget` (a bare ".ext" keeps the current base name,
+  " N" suffix bounded at 100) — answering Name/Url/HostViewUrl/
+  HostEditUrl with the new file's ids. `RENAME_FILE` renames within the
+  directory under the same lock handshake as PutFile, keeping the
+  filecache id so the caller's token survives the rename (pinned by a
+  post-rename CheckFileInfo on the same token). Target names are
+  directory-scoped (separators and dot-names rejected). Both operations
+  require the write grant; read-only sharees get 403. Pinned by five
+  tests covering the exact/suggested/dedupe/conflict/overwrite matrix,
+  header validation, the rename lock handshake, and sharee denial.
+
 - **2026-10-02** — **WOPI token-bound key wraps** (ADR-0107; office epic
   increment 4, closing ADR-0106's documented 403 boundary). Mirroring
   ADR-0102's app-token wraps, each WOPI token minted by an enrolled
