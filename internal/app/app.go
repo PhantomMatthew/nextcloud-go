@@ -24,6 +24,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/httpx"
 	"github.com/PhantomMatthew/nextcloud-go/internal/jobs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/login"
+	"github.com/PhantomMatthew/nextcloud-go/internal/mail"
 	"github.com/PhantomMatthew/nextcloud-go/internal/migrations"
 	"github.com/PhantomMatthew/nextcloud-go/internal/notifications"
 	"github.com/PhantomMatthew/nextcloud-go/internal/observability"
@@ -95,6 +96,7 @@ type App struct {
 	previewGen       *preview.Generator
 	wopiSvc          *wopi.Service
 	wopiDisc         *wopi.Discovery
+	mailSvc          *mail.Service
 	staticUI         *web.StaticUI
 }
 
@@ -465,6 +467,17 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	a.secret = cfg.Instance.Secret
 	if a.secret == "" {
 		a.secret = randomHex(logger, 32, "NCGO_SECRET / instance.secret")
+	}
+	if cfg.Mail.Enabled {
+		// ADR-0108 (Mail M1): the service seals account credentials under a
+		// key derived from the instance secret — deliberately independent of
+		// the per-user-keys encryption module (keyResolver), so the M2+
+		// background sync opens credentials without any user's unlocked key.
+		// The wiring must follow the secret resolution above.
+		a.mailSvc = &mail.Service{
+			Store:  mail.NewSQLStore(db),
+			Secret: a.secret,
+		}
 	}
 	// Event-driven (not periodic): one jobs row per upload, with the
 	// files.uploaded msgpack payload forwarded verbatim (ADR-0084).

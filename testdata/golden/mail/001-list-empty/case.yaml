@@ -1,0 +1,24 @@
+schema_version: 1
+id: mail/001-list-empty
+description: |
+  List the caller's mail accounts when none exist: an empty JSON array.
+provenance:
+  capture: synthetic
+  source: hand-authored for nextcloud-go Mail epic M1 (ADR-0108)
+  captured_at: "2026-10-02T00:00:00Z"
+request:
+  body_kind: empty
+response:
+  body_kind: json
+  normalize:
+    - drop_headers: [Date, X-Request-Id, Set-Cookie]
+    - replace_header:
+        name: Server
+        with: nginx
+assertions:
+  - kind: status_eq
+    value: 200
+replayable: true
+mutating: false
+synthetic: true
+tags: [mail, json, m1]

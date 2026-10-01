@@ -14,6 +14,7 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/files"
 	"github.com/PhantomMatthew/nextcloud-go/internal/httpx"
 	"github.com/PhantomMatthew/nextcloud-go/internal/login"
+	"github.com/PhantomMatthew/nextcloud-go/internal/mail"
 	notifpkg "github.com/PhantomMatthew/nextcloud-go/internal/notifications"
 	"github.com/PhantomMatthew/nextcloud-go/internal/observability"
 	"github.com/PhantomMatthew/nextcloud-go/internal/ocm"
@@ -122,6 +123,11 @@ func (a *App) mountRoutes() error {
 		// ADR-0106: clients discover Collabora editing (and its mimetype
 		// set) only when the WOPI host is enabled.
 		capManager.Register(capabilities.DefaultRichdocumentsProvider())
+	}
+	if a.mailSvc != nil {
+		// ADR-0108: the "mail" block advertises the Mail app only when
+		// mail.enabled is on.
+		capManager.Register(capabilities.MailProvider{})
 	}
 	capHandler := capabilities.Handler{Manager: capManager}
 	for _, m := range []string{"GET", "HEAD"} {
@@ -310,6 +316,17 @@ func (a *App) mountRoutes() error {
 		// The viewer page (upstream richdocuments path): session-authed,
 		// renders the form-post bootstrap into the Collabora iframe.
 		router.Handle(http.MethodGet, "/index.php/apps/richdocuments/index", &wopi.ViewerHandler{Svc: a.wopiSvc, Disc: a.wopiDisc}, httpx.Middleware(webdav.Auth(authCfg)))
+	}
+
+	if a.mailSvc != nil {
+		// ADR-0108 (Mail M1): the JSON accounts API mounts session-authed
+		// (webdav.Auth, same as the WOPI mint). One MethodAny prefix route:
+		// the router has no path parameters, so the handler parses the
+		// {id} tail itself (the WOPI FilesHandler pattern). No CSRF path
+		// bypass: unsafe verbs arrive either with OCS-APIRequest: true
+		// (API clients) or a session cookie + requesttoken (the auth
+		// middleware's 403 check), same as every non-DAV API.
+		router.HandlePrefix(httpx.MethodAny, mail.AccountsPrefix, &mail.Handler{Svc: a.mailSvc}, httpx.Middleware(webdav.Auth(authCfg)))
 	}
 
 	davHandler, err := webdav.NewHandler("/remote.php/dav/files/", a.davFS, a.instanceID)

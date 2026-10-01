@@ -191,6 +191,22 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-10-02** — **Mail M1: account foundations** (ADR-0108; mail epic
+  increment 1). Migration 0027 `mail_accounts` (three dialects) plus the
+  `/apps/mail/api/accounts*` JSON REST API (official Mail app field names,
+  session-authed, cross-user rows are 404) behind a new `mail.enabled`
+  config flag with a matching capabilities block. IMAP/SMTP passwords seal
+  at rest as `salt || nonce || AES-256-GCM` under
+  `HKDF-SHA256(instance.secret)`, with associated data binding the blob to
+  (user, imap host, imap login) — independent of the per-user-keys
+  encryption module so background sync (M2) can open credentials without
+  any user's unlocked key. M1 is validate-only (no IMAP dial); passwords
+  never appear in any response. Pinned by seal tamper-matrix tests, store
+  CRUD + user-scoping tests, table-driven handler tests behind the real
+  auth middleware (every response asserted password-free, sealed-at-rest
+  verified by direct row read), the app mount-gate test, and one golden
+  replay case. Zero new third-party dependencies.
+
 - **2026-10-02** — **WOPI token revocation hardening** (ADR-0106's last
   open follow-up; office epic increment 6 — the epic is now complete).
   `Authenticate` requires the token's user to exist and be ENABLED, so a

@@ -19,6 +19,7 @@ type Config struct {
 	Instance      InstanceConfig      `koanf:"instance"`
 	Sharing       SharingConfig       `koanf:"sharing"`
 	Office        OfficeConfig        `koanf:"office"`
+	Mail          MailConfig          `koanf:"mail"`
 }
 
 // OfficeConfig controls Collabora/OnlyOffice editing integration (WOPI host,
@@ -29,6 +30,13 @@ type OfficeConfig struct {
 	Enabled      bool          `koanf:"enabled"`
 	CollaboraURL string        `koanf:"collabora_url"`
 	TokenTTL     time.Duration `koanf:"token_ttl"`
+}
+
+// MailConfig controls the v2 Mail epic (ADR-0108). Enabled mounts the
+// /apps/mail/api account routes and advertises the "mail" capabilities
+// block; off leaves the server bit-identical to pre-mail builds.
+type MailConfig struct {
+	Enabled bool `koanf:"enabled"`
 }
 
 // SharingConfig controls sharing integrations. LookupServer is the base URL

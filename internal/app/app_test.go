@@ -77,6 +77,10 @@ func TestGoldenReplay(t *testing.T) {
 			areaCfg.Storage.Backends = map[string]config.BackendConfig{
 				"local": {Type: "localfs", Root: t.TempDir()},
 			}
+			if area == "mail" {
+				// ADR-0108: the mail routes mount only under mail.enabled.
+				areaCfg.Mail.Enabled = true
+			}
 			a, err := New(ctx, areaCfg, logger)
 			if err != nil {
 				t.Fatal(err)
@@ -241,7 +245,7 @@ func TestCaptureWebDAVGoldens(t *testing.T) {
 	}
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	for _, area := range []string{"activity", "search", "sharing", "capabilities", "webdav", "caldav", "carddav", "notifications", "ocm"} {
+	for _, area := range []string{"activity", "search", "sharing", "capabilities", "webdav", "caldav", "carddav", "notifications", "ocm", "mail"} {
 		if want := os.Getenv("GOLDEN_AREA"); want != "" && want != area {
 			continue
 		}
@@ -249,6 +253,9 @@ func TestCaptureWebDAVGoldens(t *testing.T) {
 		areaCfg.Database.DSN = "file:ncgo-golden-" + area + "?mode=memory&cache=shared"
 		areaCfg.Storage.Backends = map[string]config.BackendConfig{
 			"local": {Type: "localfs", Root: t.TempDir()},
+		}
+		if area == "mail" {
+			areaCfg.Mail.Enabled = true
 		}
 		a, err := New(ctx, areaCfg, logger)
 		if err != nil {
