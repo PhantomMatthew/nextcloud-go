@@ -84,9 +84,12 @@ SELECT sealed_uk, salt FROM wopi_token_keys WHERE token = ?`, wopiTokOne).Scan(&
 	if _, err := res.UnlockForWOPIToken(ctx, wopiTokOne, 8); !errors.Is(err, ErrIntegrity) {
 		t.Errorf("wrong file id err = %v, want ErrIntegrity", err)
 	}
-	// A tampered blob fails the same way.
+	// A tampered blob fails the same way. Flip a bit (not a fixed 0xff
+	// overwrite): sealed[0] is random, so a fixed byte is a 1/256 no-op.
+	tampered := bytes.Clone(sealed)
+	tampered[0] ^= 0xff
 	if _, err := db.Exec(ctx, `UPDATE wopi_token_keys SET sealed_uk = ? WHERE token = ?`,
-		append([]byte{0xff}, sealed[1:]...), wopiTokOne); err != nil {
+		tampered, wopiTokOne); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := res.UnlockForWOPIToken(ctx, wopiTokOne, 7); !errors.Is(err, ErrIntegrity) {

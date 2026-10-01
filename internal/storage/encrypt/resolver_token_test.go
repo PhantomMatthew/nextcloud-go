@@ -86,9 +86,12 @@ SELECT sealed_uk, salt FROM app_token_keys WHERE app_password_id = 'tok-1'`).Sca
 	if _, err := res.UnlockForToken(ctx, "hash-1", tokenRawTwo); !errors.Is(err, ErrIntegrity) {
 		t.Errorf("wrong token err = %v, want ErrIntegrity", err)
 	}
-	// A tampered blob fails the same way.
+	// A tampered blob fails the same way. Flip a bit (not a fixed 0xff
+	// overwrite): sealed[0] is random, so a fixed byte is a 1/256 no-op.
+	tampered := bytes.Clone(sealed)
+	tampered[0] ^= 0xff
 	if _, err := db.Exec(ctx, `UPDATE app_token_keys SET sealed_uk = ? WHERE app_password_id = 'tok-1'`,
-		append([]byte{0xff}, sealed[1:]...)); err != nil {
+		tampered); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := res.UnlockForToken(ctx, "hash-1", tokenRawOne); !errors.Is(err, ErrIntegrity) {
