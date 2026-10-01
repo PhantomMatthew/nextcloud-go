@@ -98,3 +98,56 @@ func TestWOPIRoutes(t *testing.T) {
 		t.Error("office disabled: capabilities payload carries the richdocuments block")
 	}
 }
+
+// TestWOPITokenKeysWiring pins the ADR-0107 seam: with office enabled, the
+// wopi service's Keys is the key resolver exactly when encryption with
+// per-user keys is on (widened only when non-nil — a typed nil would make
+// every mint/callback dispatch to a nil receiver); encryption off leaves
+// Keys nil (keyless mints, store-only GC).
+func TestWOPITokenKeysWiring(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	newApp := func(t *testing.T, dsn string, encryption bool) *App {
+		t.Helper()
+		cfg := DevConfig()
+		cfg.Database.DSN = dsn
+		cfg.Storage.Backends = map[string]config.BackendConfig{
+			"local": {Type: "localfs", Root: t.TempDir()},
+		}
+		cfg.Office.Enabled = true
+		cfg.Office.CollaboraURL = "https://collabora.example.com"
+		if encryption {
+			cfg.Encryption.Enabled = true
+			cfg.Encryption.MasterKeyPath = writeTestMasterKey(t)
+			cfg.Encryption.PerUserKeys = true
+		}
+		a, err := New(ctx, cfg, logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = a.Close(ctx) })
+		return a
+	}
+
+	enc := newApp(t, "file:"+t.Name()+"-enc?mode=memory&cache=shared", true)
+	if enc.wopiSvc == nil {
+		t.Fatal("office enabled: wopiSvc is nil")
+	}
+	if enc.keyResolver == nil {
+		t.Fatal("encryption + per-user keys: keyResolver is nil")
+	}
+	if enc.wopiSvc.Keys == nil {
+		t.Error("office + encryption: wopiSvc.Keys not wired (ADR-0107)")
+	}
+
+	plain := newApp(t, "file:"+t.Name()+"-plain?mode=memory&cache=shared", false)
+	if plain.wopiSvc == nil {
+		t.Fatal("office enabled: wopiSvc is nil")
+	}
+	if plain.keyResolver != nil {
+		t.Fatal("encryption off: keyResolver is non-nil")
+	}
+	if plain.wopiSvc.Keys != nil {
+		t.Error("office without encryption: wopiSvc.Keys wired, want nil")
+	}
+}

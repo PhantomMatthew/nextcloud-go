@@ -421,10 +421,19 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 			TTL:    cfg.Office.TokenTTL,
 			Clock:  time.Now,
 		}
+		// ADR-0107 (token-bound key wraps): widen only a non-nil resolver —
+		// a typed nil *SQLResolver would become a non-nil interface and key
+		// handling would dispatch to a nil receiver (routes.go's idiom).
+		// Nil keeps mint keyless and the GC sweep store-only.
+		var wopiGCKeys wopi.TokenKeyCleaner
+		if keyResolver != nil {
+			a.wopiSvc.Keys = keyResolver
+			wopiGCKeys = keyResolver
+		}
 		a.wopiDisc = &wopi.Discovery{BaseURL: cfg.Office.CollaboraURL, Clock: time.Now}
 		// Same ordering rule as preview.gc: wopi.tokens.gc is periodic, and
 		// Start seeds periodic jobs only for names already registered.
-		if err := jr.Register(wopi.NewGCJob(wopiStore, time.Now)); err != nil {
+		if err := jr.Register(wopi.NewGCJob(wopiStore, time.Now, wopiGCKeys, logger)); err != nil {
 			if cerr := a.closeResources(ctx); cerr != nil {
 				return nil, errors.Join(err, cerr)
 			}

@@ -21,8 +21,9 @@ const WopiFilesPrefix = "/index.php/apps/richdocuments/wopi/files/"
 
 // MintHandler serves GET /index.php/apps/richdocuments/wopi/token?fileId=N,
 // mounted WITH session auth (webdav.Auth): the session ctx carries an
-// enrolled user's unlocked key, which is what makes minting work for them
-// while anonymous callbacks hit the documented 403 boundary.
+// enrolled user's unlocked key, which is what makes minting work for them —
+// and, with Keys wired (ADR-0107), seals that key under the new token so the
+// anonymous callbacks open it instead of hitting the 403 boundary.
 type MintHandler struct {
 	Svc *Service
 }
@@ -69,7 +70,8 @@ func (h *MintHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // WopiFilesPrefix, mounted WITHOUT session middleware: the access_token
 // query parameter is the only credential (a bearer token for exactly one
 // file id), validated BEFORE any file resolution so a bad token never
-// learns whether a file exists.
+// learns whether a file exists. With Keys wired, a token carrying an
+// ADR-0107 key wrap also unlocks the minter's key into the request ctx.
 type FilesHandler struct {
 	Svc *Service
 }
@@ -98,6 +100,27 @@ func (h *FilesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// resolved, so nothing about the file leaks.
 		http.Error(w, "invalid access token", http.StatusUnauthorized)
 		return
+	}
+	if h.Svc.Keys != nil {
+		// Token-bound key wrap (ADR-0107): a token minted by an enrolled
+		// user opens its wrap here, so the callback resolves the file
+		// through the minter's own unlocked key instead of hitting the
+		// anonymous ErrKeyLocked → 403 boundary. No wrap row (nil priv)
+		// keeps the anonymous ctx — pre-0026 and keylessly-minted tokens
+		// keep the documented boundary. A wrap error maps through mapError
+		// (ErrIntegrity → 500, fail-closed): a corrupt wrap must NEVER
+		// degrade to a silent keyless 403.
+		priv, err := h.Svc.Keys.UnlockForWOPIToken(r.Context(), tok.Token, tok.FileID)
+		if err != nil {
+			mapError(w, err)
+			return
+		}
+		if len(priv) > 0 {
+			// Best-effort zeroing once the request completes, mirroring the
+			// auth middleware's key hygiene (middleware.go).
+			defer clear(priv)
+			r = r.WithContext(auth.WithUser(r.Context(), &auth.Principal{UID: tok.UID, Enabled: true, UnlockedKey: priv}))
+		}
 	}
 	fsUser, fsPath, perms, err := h.Svc.resolve(r.Context(), tok.UID, id)
 	if err != nil {

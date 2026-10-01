@@ -30,7 +30,13 @@ type Store interface {
 	// GetByToken returns the token when it exists and has not expired at
 	// now; missing and expired rows both yield ErrTokenNotFound.
 	GetByToken(ctx context.Context, token string, now time.Time) (*Token, error)
+	// Delete removes exactly one token row (the mint-time wrap-failure
+	// rollback, ADR-0107); a missing row is a no-op.
+	Delete(ctx context.Context, token string) error
 	DeleteExpired(ctx context.Context, now time.Time) (int64, error)
+	// ExpiredTokens lists the tokens expiring at or before now — the GC
+	// sweep reads them so their key wraps go first (ADR-0107).
+	ExpiredTokens(ctx context.Context, now time.Time) ([]string, error)
 }
 
 // SQLStore is a Store backed by database.DB.
@@ -83,10 +89,37 @@ WHERE token = ? AND expires_at > ?`, token, now.UTC().UnixMilli()).
 	return &t, nil
 }
 
+func (s *SQLStore) Delete(ctx context.Context, token string) error {
+	if _, err := s.db.Exec(ctx, `DELETE FROM wopi_tokens WHERE token = ?`, token); err != nil {
+		return fmt.Errorf("wopi: delete: %w", err)
+	}
+	return nil
+}
+
 func (s *SQLStore) DeleteExpired(ctx context.Context, now time.Time) (int64, error) {
 	res, err := s.db.Exec(ctx, `DELETE FROM wopi_tokens WHERE expires_at <= ?`, now.UTC().UnixMilli())
 	if err != nil {
 		return 0, fmt.Errorf("wopi: delete expired: %w", err)
 	}
 	return res.RowsAffected()
+}
+
+func (s *SQLStore) ExpiredTokens(ctx context.Context, now time.Time) ([]string, error) {
+	rows, err := s.db.Query(ctx, `SELECT token FROM wopi_tokens WHERE expires_at <= ?`, now.UTC().UnixMilli())
+	if err != nil {
+		return nil, fmt.Errorf("wopi: list expired: %w", err)
+	}
+	defer rows.Close()
+	var tokens []string
+	for rows.Next() {
+		var tok string
+		if err := rows.Scan(&tok); err != nil {
+			return nil, fmt.Errorf("wopi: list expired: %w", err)
+		}
+		tokens = append(tokens, tok)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("wopi: list expired: %w", err)
+	}
+	return tokens, nil
 }

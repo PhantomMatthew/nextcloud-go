@@ -152,7 +152,8 @@ are a possible hardening follow-up.
 
 **Neutral / follow-ups.** Enrolled password-wrapped users hit the
 documented ErrKeyLocked → 403 boundary on the anonymous callbacks; the
-token-bound key wrap (mirroring ADR-0102's app-token wraps) closes that.
+token-bound key wrap (mirroring ADR-0102's app-token wraps) closes
+that.（**landed 2026-10-02**: token-bound key wrap, ADR-0107）
 （**landed 2026-10-01**: viewer page + discovery fetch）The viewer HTML page
 (`/index.php/apps/richdocuments/index`, upstream path parity, session-authed)
 mints a token, resolves the editor URL from the cached Collabora discovery

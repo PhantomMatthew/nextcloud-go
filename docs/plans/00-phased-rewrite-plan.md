@@ -191,6 +191,24 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-10-02** — **WOPI token-bound key wraps** (ADR-0107; office epic
+  increment 4, closing ADR-0106's documented 403 boundary). Mirroring
+  ADR-0102's app-token wraps, each WOPI token minted by an enrolled
+  password-wrapped user now carries its own wrap of the user's X25519
+  private key: `KEK = HKDF-SHA256(tokenRaw, salt, "NCGOWK1" || be64(user)
+  || be64(file))` over the plaintext-stored token (no hash dance), sealed
+  at mint in the session ctx and opened per anonymous Collabora callback,
+  which then resolves the file through the minter's own `file_keys` wraps
+  exactly like a session request. Mint failures are loud (500 + token-row
+  rollback), callback open failures fail closed (`ErrIntegrity` → 500,
+  never a silent keyless 403), and the token GC bulk-deletes the reaped
+  tokens' wraps plus an orphan prune — cryptographic revocation. Migration
+  0026 (`wopi_token_keys`, three dialects in lockstep); pre-0026 and
+  keylessly-minted tokens keep the documented ErrKeyLocked → 403 boundary.
+  Pinned by resolver round-trip/integrity/file-binding units, wopi
+  mint/callback/GC tests, and app wiring assertions both ways; zero new
+  dependencies.
+
 - **2026-10-02** — **richdocuments capabilities block** (ADR-0106
   follow-up; office epic increment 3). Clients now discover Collabora
   editing from the OCS capabilities payload whenever the WOPI host is

@@ -83,3 +83,59 @@ func TestSQLStoreTokens(t *testing.T) {
 		t.Fatalf("second DeleteExpired = %d %v, want 0", n, err)
 	}
 }
+
+func TestSQLStoreDeleteAndExpiredTokens(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+	store := NewSQLStore(db)
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+
+	for _, tok := range []*Token{
+		{Token: "tok-old-1", UID: "alice", FileID: 1, ExpiresAt: now.Add(-time.Minute)},
+		{Token: "tok-old-2", UID: "bob", FileID: 2, ExpiresAt: now}, // expiry AT now is expired (<=)
+		{Token: "tok-live", UID: "alice", FileID: 3, CanWrite: true, ExpiresAt: now.Add(time.Hour)},
+	} {
+		if err := store.Insert(ctx, tok); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// ExpiredTokens names exactly the expired rows (the GC reads it to reap
+	// the matching key wraps first, ADR-0107).
+	expired, err := store.ExpiredTokens(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(expired) != 2 {
+		t.Fatalf("ExpiredTokens = %v, want 2 rows", expired)
+	}
+	seen := map[string]bool{expired[0]: true, expired[1]: true}
+	if !seen["tok-old-1"] || !seen["tok-old-2"] {
+		t.Errorf("ExpiredTokens = %v, want [tok-old-1 tok-old-2]", expired)
+	}
+
+	// Delete removes exactly one row; a missing row is a no-op (the mint
+	// rollback and the GC both rely on it being safe).
+	if err := store.Delete(ctx, "tok-old-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetByToken(ctx, "tok-old-1", now.Add(-2*time.Minute)); !errors.Is(err, ErrTokenNotFound) {
+		t.Errorf("deleted token = %v, want ErrTokenNotFound", err)
+	}
+	if err := store.Delete(ctx, "tok-old-1"); err != nil {
+		t.Errorf("second Delete = %v, want no-op nil", err)
+	}
+	if err := store.Delete(ctx, "never-existed"); err != nil {
+		t.Errorf("Delete of a missing token = %v, want no-op nil", err)
+	}
+	if _, err := store.GetByToken(ctx, "tok-live", now); err != nil {
+		t.Errorf("Delete took the live token: %v", err)
+	}
+	expired, err = store.ExpiredTokens(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(expired) != 1 || expired[0] != "tok-old-2" {
+		t.Errorf("ExpiredTokens after Delete = %v, want [tok-old-2]", expired)
+	}
+}

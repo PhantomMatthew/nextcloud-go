@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
 	"github.com/PhantomMatthew/nextcloud-go/internal/files"
 	"github.com/PhantomMatthew/nextcloud-go/internal/storage/encrypt"
 	"github.com/PhantomMatthew/nextcloud-go/internal/users"
@@ -31,6 +32,13 @@ type IncomingLister interface {
 	ListIncoming(ctx context.Context, uid string) ([]files.IncomingMount, error)
 }
 
+// TokenKeyWrapper mirrors ADR-0102's app-token wraps for WOPI tokens
+// (satisfied structurally by *encrypt.SQLResolver).
+type TokenKeyWrapper interface {
+	WrapKeyForWOPIToken(ctx context.Context, tokenRaw string, fileID int64, priv []byte) error
+	UnlockForWOPIToken(ctx context.Context, tokenRaw string, fileID int64) ([]byte, error)
+}
+
 // Service mints and redeems WOPI access tokens.
 type Service struct {
 	Store Store
@@ -38,6 +46,10 @@ type Service struct {
 	Users users.Store
 	// Shares, when non-nil, resolves files shared INTO the minter's jail.
 	Shares IncomingLister
+	// Keys, when non-nil, seals the minter's unlocked key under the new
+	// token at mint and opens it on the anonymous callbacks (ADR-0107);
+	// nil disables wrap support (encryption off).
+	Keys TokenKeyWrapper
 	// NewToken, when non-nil, generates the bearer token string.
 	NewToken func() string
 	TTL      time.Duration
@@ -63,9 +75,16 @@ func (s *Service) ttl() time.Duration {
 
 // Mint issues a WOPI access token for fileID in the CALLER's session ctx:
 // for an enrolled password-wrapped user (ADR-0100) that ctx carries the
-// unlocked key, so name resolution succeeds here while the later anonymous
-// WOPI callback hits the documented ErrKeyLocked → 403 boundary (until the
-// token-bound key-wrap follow-up, mirroring ADR-0102).
+// unlocked key, so name resolution succeeds here. When Keys is wired and the
+// session principal holds a 32-byte unlocked key, the key is also sealed
+// under the new token (ADR-0107, wrap-at-mint mirroring ADR-0102), so the
+// later anonymous WOPI callback opens it instead of hitting the ErrKeyLocked
+// → 403 boundary. A wrap failure fails the mint LOUDLY (mirroring
+// login_v2.go's grant): the token row is rolled back and the error returned
+// — a silently unwrapped token would 403 every callback. With no Keys or no
+// usable unlocked key (app-password-auth minter, unenrolled user) the wrap
+// is skipped silently: the token authenticates but its callbacks keep the
+// documented 403 boundary (ADR-0102 §3's pinned no-wrap behavior).
 func (s *Service) Mint(ctx context.Context, uid string, fileID int64) (string, time.Time, bool, error) {
 	_, _, perms, err := s.resolve(ctx, uid, fileID)
 	if err != nil {
@@ -85,6 +104,16 @@ func (s *Service) Mint(ctx context.Context, uid string, fileID int64) (string, t
 	}
 	if err := s.Store.Insert(ctx, row); err != nil {
 		return "", time.Time{}, false, err
+	}
+	if s.Keys != nil {
+		if p, ok := auth.UserFromContext(ctx); ok && len(p.UnlockedKey) == 32 {
+			if err := s.Keys.WrapKeyForWOPIToken(ctx, tok, fileID, p.UnlockedKey); err != nil {
+				if derr := s.Store.Delete(ctx, tok); derr != nil {
+					return "", time.Time{}, false, errors.Join(err, derr)
+				}
+				return "", time.Time{}, false, err
+			}
+		}
 	}
 	return tok, expiresAt, row.CanWrite, nil
 }
