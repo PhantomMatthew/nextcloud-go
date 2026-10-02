@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
+	"github.com/PhantomMatthew/nextcloud-go/internal/mail/imap"
 )
 
 // AccountsPrefix is the JSON REST mount path mirroring the official
@@ -19,15 +20,20 @@ const AccountsPrefix = "/apps/mail/api/accounts"
 
 // Handler serves the session-authed accounts API:
 //
-//	POST   /apps/mail/api/accounts        create (201)
-//	GET    /apps/mail/api/accounts        list the caller's accounts
-//	GET    /apps/mail/api/accounts/{id}   one account (+ "mailboxes": [] placeholder)
-//	PUT    /apps/mail/api/accounts/{id}   partial update
-//	DELETE /apps/mail/api/accounts/{id}   delete (200 {})
+//	POST   /apps/mail/api/accounts                  create (201)
+//	GET    /apps/mail/api/accounts                  list the caller's accounts
+//	GET    /apps/mail/api/accounts/{id}             one account (+ synced mailboxes)
+//	PUT    /apps/mail/api/accounts/{id}             partial update
+//	DELETE /apps/mail/api/accounts/{id}             delete (200 {})
+//	GET    /apps/mail/api/accounts/{id}/mailboxes   synced mailboxes with counts
+//	POST   /apps/mail/api/accounts/{id}/sync        run one sync pass (200 {newMessages})
 //
 // Passwords never appear in any response; cross-user rows are 404, not 403.
 type Handler struct {
 	Svc *Service
+	// Syncer runs the M3 mailbox sync for POST .../sync; nil leaves that
+	// endpoint a 500 (a miswiring, not a client error).
+	Syncer *Syncer
 }
 
 // accountResponse is the account JSON shape (official app field names).
@@ -46,11 +52,37 @@ type accountResponse struct {
 	SMTPUser     string `json:"smtpUser"`
 }
 
-// accountDetailResponse adds the forward-compat mailboxes placeholder the
-// official app's single-account response carries (populated by M2 sync).
+// accountDetailResponse adds the synced mailbox list (M3) the official
+// app's single-account response carries.
 type accountDetailResponse struct {
 	accountResponse
-	Mailboxes []any `json:"mailboxes"`
+	Mailboxes []mailboxResponse `json:"mailboxes"`
+}
+
+// mailboxResponse is one synced mailbox (M3): name is the DISPLAY name
+// (the wire name mUTF7-decoded), counts come from the summary rows.
+type mailboxResponse struct {
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	SpecialUse string `json:"specialUse"`
+	Selectable bool   `json:"selectable"`
+	Unread     int64  `json:"unread"`
+	Total      int64  `json:"total"`
+}
+
+func respondMailboxes(counts []MailboxCounts) []mailboxResponse {
+	out := make([]mailboxResponse, 0, len(counts))
+	for i := range counts {
+		out = append(out, mailboxResponse{
+			ID:         counts[i].ID,
+			Name:       imap.DecodeMailboxName(counts[i].Name),
+			SpecialUse: counts[i].SpecialUse,
+			Selectable: counts[i].Selectable,
+			Unread:     counts[i].Unread,
+			Total:      counts[i].Total,
+		})
+	}
+	return out
 }
 
 func respondAccount(a *Account) accountResponse {
@@ -88,9 +120,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	id, ok := parseAccountTail(tail)
+	id, sub, ok := parseAccountTail(tail)
 	if !ok {
 		writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
+	if sub != "" {
+		// Sub-resources: GET mailboxes, POST sync. Everything else is 405.
+		switch {
+		case sub == "mailboxes" && r.Method == http.MethodGet:
+			h.mailboxes(w, r, p.UID, id)
+		case sub == "sync" && r.Method == http.MethodPost:
+			h.sync(w, r, p.UID, id)
+		default:
+			w.Header().Set("Allow", "GET, POST")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
 		return
 	}
 	switch r.Method {
@@ -106,18 +151,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// parseAccountTail extracts the {id} from "/{id}"; anything else (extra
-// segments, non-numeric, non-positive) is not an account path.
-func parseAccountTail(tail string) (int64, bool) {
-	idStr, ok := strings.CutPrefix(tail, "/")
-	if !ok || idStr == "" || strings.Contains(idStr, "/") {
-		return 0, false
+// parseAccountTail extracts the {id} and optional sub-resource from
+// "/{id}" or "/{id}/<sub>"; anything else (extra segments, non-numeric,
+// non-positive, unknown sub-resource) is not an account path.
+func parseAccountTail(tail string) (id int64, sub string, ok bool) {
+	rest, ok := strings.CutPrefix(tail, "/")
+	if !ok || rest == "" {
+		return 0, "", false
+	}
+	idStr, sub, _ := strings.Cut(rest, "/")
+	if strings.Contains(sub, "/") {
+		return 0, "", false
 	}
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil || id <= 0 {
-		return 0, false
+		return 0, "", false
 	}
-	return id, true
+	switch sub {
+	case "", "mailboxes", "sync":
+		return id, sub, true
+	}
+	return 0, "", false
 }
 
 // createRequest is the POST body (official app field names). An empty
@@ -175,10 +229,54 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request, uid string, id int
 		mapServiceError(w, err)
 		return
 	}
+	counts, err := h.Svc.Store.ListMailboxCounts(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 	writeJSON(w, http.StatusOK, accountDetailResponse{
 		accountResponse: respondAccount(a),
-		Mailboxes:       []any{},
+		Mailboxes:       respondMailboxes(counts),
 	})
+}
+
+// mailboxes lists the account's synced mailboxes with unread/total counts
+// (M3). The account lookup enforces ownership: cross-user is the same 404
+// as a missing account.
+func (h *Handler) mailboxes(w http.ResponseWriter, r *http.Request, uid string, id int64) {
+	if _, err := h.Svc.Get(r.Context(), uid, id); err != nil {
+		mapServiceError(w, err)
+		return
+	}
+	counts, err := h.Svc.Store.ListMailboxCounts(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, respondMailboxes(counts))
+}
+
+// sync runs one synchronous sync pass over the account (M3's primary test
+// seam). A sync failure is 502 — the account exists and the request was
+// valid (unlike 404/400), but the upstream IMAP side failed.
+func (h *Handler) sync(w http.ResponseWriter, r *http.Request, uid string, id int64) {
+	a, err := h.Svc.Get(r.Context(), uid, id)
+	if err != nil {
+		mapServiceError(w, err)
+		return
+	}
+	if h.Syncer == nil {
+		writeError(w, http.StatusInternalServerError, "sync is not configured")
+		return
+	}
+	n, err := h.Syncer.SyncAccount(r.Context(), a)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "sync failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		NewMessages int `json:"newMessages"`
+	}{NewMessages: n})
 }
 
 // updateRequest is the PUT body: pointer fields distinguish "absent" (keep)

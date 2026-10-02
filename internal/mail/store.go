@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -45,14 +46,96 @@ type Account struct {
 	UpdatedAt      time.Time
 }
 
-// Store persists mail accounts. Every read/write is scoped to the owning
-// user: a row another user owns is indistinguishable from a missing one.
+// Mailbox is one synced IMAP mailbox row (mail_mailboxes, migration 0028).
+// Name keeps the verbatim WIRE form (RFC 2152 modified UTF-7) so it
+// round-trips into EXAMINE without re-encoding; the REST layer derives the
+// display name with imap.DecodeMailboxName. LastSeenUID is the sync cursor:
+// the highest UID the local copy has ever fetched (0 = never synced, which
+// is also how the arrival event distinguishes the initial bulk sync).
+type Mailbox struct {
+	ID          int64
+	AccountID   int64
+	Name        string
+	Delimiter   string
+	UIDValidity int64
+	UIDNext     int64
+	LastSeenUID int64
+	Selectable  bool
+	SpecialUse  string
+}
+
+// MailboxCounts is a Mailbox plus its list-view counts for the REST API.
+type MailboxCounts struct {
+	Mailbox
+	Total  int64
+	Unread int64
+}
+
+// Message is one synced list-view summary row (mail_messages, 0028) — M3
+// syncs summaries only; body fetch is M4. Flags keeps the storage-wrapped
+// form (see PackFlags): tokens separated by single spaces with one leading
+// and one trailing space, so the unread predicate stays token-exact
+// (flags NOT LIKE '% Seen %' never matches a hypothetical "SeenX").
+type Message struct {
+	ID        int64
+	MailboxID int64
+	UID       int64
+	MessageID string
+	Subject   string
+	FromAddr  string
+	ToAddrs   string
+	DateUnix  int64
+	Flags     string
+	Size      int64
+}
+
+// PackFlags renders flag tokens (already backslash-free: "Seen", "Flagged")
+// into the storage form ' Seen Flagged ' — single-space separated with one
+// leading and one trailing space. The empty set stores as ”.
+func PackFlags(flags []string) string {
+	if len(flags) == 0 {
+		return ""
+	}
+	return " " + strings.Join(flags, " ") + " "
+}
+
+// Store persists mail accounts, mailboxes, and message summaries. Every
+// account read/write is scoped to the owning user: a row another user owns
+// is indistinguishable from a missing one. Mailbox/message methods key off
+// the account/mailbox ids their callers resolved through the owning user.
 type Store interface {
 	Create(ctx context.Context, a *Account) error
 	GetByID(ctx context.Context, userID string, id int64) (*Account, error)
 	ListByUser(ctx context.Context, userID string) ([]Account, error)
+	// ListAll returns every account of every user — the background sync job
+	// (mail.sync) fans out over all users, unlike the per-user API paths.
+	ListAll(ctx context.Context) ([]Account, error)
 	Update(ctx context.Context, a *Account) error
 	Delete(ctx context.Context, userID string, id int64) error
+
+	// UpsertMailbox inserts the mailbox or refreshes its LIST-derived
+	// columns (delimiter, selectable, special_use) when (account, name)
+	// already exists; the sync cursors (uidvalidity/uidnext/last_seen_uid)
+	// are never clobbered on update. m is repopulated from the row.
+	UpsertMailbox(ctx context.Context, m *Mailbox) error
+	ListMailboxes(ctx context.Context, accountID int64) ([]Mailbox, error)
+	ListMailboxCounts(ctx context.Context, accountID int64) ([]MailboxCounts, error)
+	// DeleteMailboxes removes the given mailbox rows and their messages
+	// (vanished-from-server cleanup and the account cascade share this).
+	DeleteMailboxes(ctx context.Context, ids []int64) error
+
+	ListMessageUIDs(ctx context.Context, mailboxID int64) ([]int64, error)
+	// RecentMessageUIDs returns up to limit uids, highest first (the flag
+	// refresh window).
+	RecentMessageUIDs(ctx context.Context, mailboxID int64, limit int) ([]int64, error)
+	// InsertMessages batch-inserts summary rows; the caller chunks.
+	InsertMessages(ctx context.Context, msgs []Message) error
+	DeleteMessagesByUID(ctx context.Context, mailboxID int64, uids []int64) error
+	// DeleteAllMessages wipes one mailbox's rows (UIDVALIDITY change).
+	DeleteAllMessages(ctx context.Context, mailboxID int64) error
+	UpdateMailboxSyncState(ctx context.Context, mailboxID, uidValidity, uidNext, lastSeenUID int64) error
+	// SetMessageFlags rewrites one row's flags only when they changed.
+	SetMessageFlags(ctx context.Context, mailboxID, uid int64, flags string) error
 }
 
 // ErrNotFound reports a missing (or not-owned) account row.

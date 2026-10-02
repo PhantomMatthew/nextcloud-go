@@ -130,6 +130,30 @@ permanently and adds nothing a 5-minute poll doesn't deliver for the v1
 feature set. Job rows survive restarts, so a crash mid-sync resumes from
 the watermark rather than re-fetching the mailbox.
 
+（**landed 2026-10-02 (M3)**: the sync engine landed in
+`internal/mail/sync.go` with migration 0028 (`mail_mailboxes` +
+`mail_messages`, no DB-level FKs — account delete cascades at the app
+layer inside one transaction). Refinements against the sketch above: one
+`mail.sync` job syncs every account **sequentially** (2-minute per-account
+ctx) instead of fanning out per-account child rows — simpler and the poll
+interval bounds total work; and the incremental fetch is a full uid-set
+**diff** (`EXAMINE` — read-only, never SELECT — then `UID SEARCH ALL`
+against the local uid list) rather than `UID FETCH <last+1>:*`, so a
+server-side delete converges too. New uids fetch summaries in
+**500-per-UID-FETCH batches capped at 2000 per mailbox per run** (the
+remainder resumes next run through the same diff); a **200-uid flag
+refresh window** each run gives poll-mode convergence without CONDSTORE.
+A UIDVALIDITY change wipes and re-syncs the mailbox. Still poll-only — no
+IDLE, no CONDSTORE in v1 — and v1 accepts the runner's global
+`jobs.poll_interval` (no per-job interval). New messages in `INBOX`
+publish `mail.message.arrived` (msgpack) only when the mailbox's previous
+cursor was non-zero, so the initial bulk sync never rings; the app
+subscriber inserts one bell notification per event. Landed REST:
+`GET /apps/mail/api/accounts/{id}/mailboxes` (counts + mUTF7-decoded
+display names; GET-one-account's placeholder now returns the same synced
+list) and `POST /apps/mail/api/accounts/{id}/sync` (synchronous pass,
+200 `{newMessages}` / 502). Message body fetch/list APIs are M4.）
+
 ### 6. `golang.org/x/text` promoted to direct in M4 (charset decoding)
 
 Message bodies arrive in arbitrary charsets; M4 (message rendering)

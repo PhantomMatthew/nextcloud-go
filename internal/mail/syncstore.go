@@ -1,0 +1,352 @@
+package mail
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/PhantomMatthew/nextcloud-go/internal/database"
+)
+
+// syncstore.go is the M3 mailbox/message half of SQLStore (migration 0028,
+// ADR-0108 §5): mailbox upsert/list/counts for the REST API and the sync
+// engine's cursor + summary persistence. The sync engine is the sole writer
+// of these tables and runs one account at a time; the REST API only reads.
+
+// inChunk bounds one IN (...) placeholder list so even the oldest sqlite
+// variable limit stays far away.
+const inChunk = 400
+
+const mailboxColumns = `id, account_id, name, delimiter, uidvalidity, uidnext, last_seen_uid, selectable, special_use`
+
+func (s *SQLStore) ListAll(ctx context.Context) ([]Account, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT `+accountColumns+`
+FROM mail_accounts ORDER BY id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("mail: list all accounts: %w", err)
+	}
+	defer rows.Close()
+	out := make([]Account, 0)
+	for rows.Next() {
+		a, err := scanAccount(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mail: list all accounts: %w", err)
+	}
+	return out, nil
+}
+
+func (s *SQLStore) UpsertMailbox(ctx context.Context, m *Mailbox) error {
+	if m == nil || m.AccountID <= 0 || m.Name == "" {
+		return fmt.Errorf("%w: mailbox", ErrInvalid)
+	}
+	if m.Delimiter == "" {
+		m.Delimiter = "/"
+	}
+	res, err := s.db.Exec(ctx, `
+UPDATE mail_mailboxes SET delimiter = ?, selectable = ?, special_use = ?
+WHERE account_id = ? AND name = ?`, m.Delimiter, m.Selectable, m.SpecialUse, m.AccountID, m.Name)
+	if err != nil {
+		return fmt.Errorf("mail: upsert mailbox: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mail: upsert mailbox: %w", err)
+	}
+	if n == 0 {
+		if _, err := s.db.Exec(ctx, `
+INSERT INTO mail_mailboxes (account_id, name, delimiter, uidvalidity, uidnext, last_seen_uid, selectable, special_use)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			m.AccountID, m.Name, m.Delimiter, m.UIDValidity, m.UIDNext, m.LastSeenUID, m.Selectable, m.SpecialUse); err != nil {
+			return fmt.Errorf("mail: insert mailbox: %w", err)
+		}
+	}
+	got, err := scanMailbox(s.db.QueryRow(ctx, `
+SELECT `+mailboxColumns+`
+FROM mail_mailboxes WHERE account_id = ? AND name = ?`, m.AccountID, m.Name))
+	if err != nil {
+		return err
+	}
+	*m = *got
+	return nil
+}
+
+func (s *SQLStore) ListMailboxes(ctx context.Context, accountID int64) ([]Mailbox, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT `+mailboxColumns+`
+FROM mail_mailboxes WHERE account_id = ? ORDER BY id ASC`, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("mail: list mailboxes: %w", err)
+	}
+	defer rows.Close()
+	out := make([]Mailbox, 0)
+	for rows.Next() {
+		m, err := scanMailbox(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mail: list mailboxes: %w", err)
+	}
+	return out, nil
+}
+
+// ListMailboxCounts joins each mailbox with its message counts. The unread
+// predicate is token-exact by construction: flags stores ' Seen Flagged '
+// (PackFlags), so '% Seen %' cannot match a longer token.
+func (s *SQLStore) ListMailboxCounts(ctx context.Context, accountID int64) ([]MailboxCounts, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT m.id, m.account_id, m.name, m.delimiter, m.uidvalidity, m.uidnext, m.last_seen_uid, m.selectable, m.special_use,
+       COUNT(msg.id), COALESCE(SUM(CASE WHEN msg.flags NOT LIKE '% Seen %' THEN 1 ELSE 0 END), 0)
+FROM mail_mailboxes m LEFT JOIN mail_messages msg ON msg.mailbox_id = m.id
+WHERE m.account_id = ?
+GROUP BY m.id
+ORDER BY m.id ASC`, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("mail: list mailbox counts: %w", err)
+	}
+	defer rows.Close()
+	out := make([]MailboxCounts, 0)
+	for rows.Next() {
+		var mc MailboxCounts
+		if err := rows.Scan(&mc.ID, &mc.AccountID, &mc.Name, &mc.Delimiter, &mc.UIDValidity, &mc.UIDNext,
+			&mc.LastSeenUID, &mc.Selectable, &mc.SpecialUse, &mc.Total, &mc.Unread); err != nil {
+			return nil, fmt.Errorf("mail: scan mailbox counts: %w", err)
+		}
+		out = append(out, mc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mail: list mailbox counts: %w", err)
+	}
+	return out, nil
+}
+
+// DeleteMailboxes removes the given mailboxes and all their messages in one
+// transaction. An empty id list is a no-op.
+func (s *SQLStore) DeleteMailboxes(ctx context.Context, ids []int64) (err error) {
+	if len(ids) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("mail: delete mailboxes: begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		if rerr := tx.Rollback(); rerr != nil {
+			err = errors.Join(err, rerr)
+		}
+	}()
+	for start := 0; start < len(ids); start += inChunk {
+		chunk := ids[start:min(start+inChunk, len(ids))]
+		ph := placeholders(len(chunk))
+		if _, err := tx.Exec(ctx, `DELETE FROM mail_messages WHERE mailbox_id IN (`+ph+`)`, int64Args(chunk)...); err != nil {
+			return fmt.Errorf("mail: delete mailboxes: messages: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM mail_mailboxes WHERE id IN (`+ph+`)`, int64Args(chunk)...); err != nil {
+			return fmt.Errorf("mail: delete mailboxes: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("mail: delete mailboxes: commit: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+func (s *SQLStore) ListMessageUIDs(ctx context.Context, mailboxID int64) ([]int64, error) {
+	return s.queryUIDs(ctx, `
+SELECT uid FROM mail_messages WHERE mailbox_id = ? ORDER BY uid ASC`, mailboxID)
+}
+
+// RecentMessageUIDs returns up to limit uids, highest first — the flag
+// refresh window.
+func (s *SQLStore) RecentMessageUIDs(ctx context.Context, mailboxID int64, limit int) ([]int64, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	return s.queryUIDs(ctx, `
+SELECT uid FROM mail_messages WHERE mailbox_id = ? ORDER BY uid DESC LIMIT ?`, mailboxID, limit)
+}
+
+func (s *SQLStore) queryUIDs(ctx context.Context, q string, args ...any) ([]int64, error) {
+	rows, err := s.db.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("mail: query message uids: %w", err)
+	}
+	defer rows.Close()
+	out := make([]int64, 0)
+	for rows.Next() {
+		var uid int64
+		if err := rows.Scan(&uid); err != nil {
+			return nil, fmt.Errorf("mail: scan message uid: %w", err)
+		}
+		out = append(out, uid)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mail: query message uids: %w", err)
+	}
+	return out, nil
+}
+
+const messageColumns = `mailbox_id, uid, message_id, subject, from_addr, to_addrs, date_unix, flags, size`
+
+// insertChunk bounds one multi-row INSERT's placeholder count.
+const insertChunk = 250
+
+func (s *SQLStore) InsertMessages(ctx context.Context, msgs []Message) error {
+	for start := 0; start < len(msgs); start += insertChunk {
+		end := min(start+insertChunk, len(msgs))
+		chunk := msgs[start:end]
+		var b strings.Builder
+		b.WriteString(`INSERT INTO mail_messages (` + messageColumns + `) VALUES `)
+		args := make([]any, 0, len(chunk)*9)
+		for i := range chunk {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(`(?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			m := &chunk[i]
+			args = append(args, m.MailboxID, m.UID, m.MessageID, m.Subject, m.FromAddr, m.ToAddrs, m.DateUnix, m.Flags, m.Size)
+		}
+		if _, err := s.db.Exec(ctx, b.String(), args...); err != nil {
+			return fmt.Errorf("mail: insert messages: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *SQLStore) DeleteMessagesByUID(ctx context.Context, mailboxID int64, uids []int64) error {
+	for start := 0; start < len(uids); start += inChunk {
+		chunk := uids[start:min(start+inChunk, len(uids))]
+		args := append([]any{mailboxID}, int64Args(chunk)...)
+		if _, err := s.db.Exec(ctx,
+			`DELETE FROM mail_messages WHERE mailbox_id = ? AND uid IN (`+placeholders(len(chunk))+`)`, args...); err != nil {
+			return fmt.Errorf("mail: delete messages by uid: %w", err)
+		}
+	}
+	return nil
+}
+
+// DeleteAllMessages wipes one mailbox's rows (UIDVALIDITY change).
+func (s *SQLStore) DeleteAllMessages(ctx context.Context, mailboxID int64) error {
+	if _, err := s.db.Exec(ctx, `DELETE FROM mail_messages WHERE mailbox_id = ?`, mailboxID); err != nil {
+		return fmt.Errorf("mail: delete all messages: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLStore) UpdateMailboxSyncState(ctx context.Context, mailboxID, uidValidity, uidNext, lastSeenUID int64) error {
+	res, err := s.db.Exec(ctx, `
+UPDATE mail_mailboxes SET uidvalidity = ?, uidnext = ?, last_seen_uid = ? WHERE id = ?`,
+		uidValidity, uidNext, lastSeenUID, mailboxID)
+	if err != nil {
+		return fmt.Errorf("mail: update mailbox sync state: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mail: update mailbox sync state: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("%w: mailbox %d", ErrNotFound, mailboxID)
+	}
+	return nil
+}
+
+// SetMessageFlags rewrites one row's flags only when they actually changed,
+// so the poll-mode refresh costs nothing on a quiet mailbox.
+func (s *SQLStore) SetMessageFlags(ctx context.Context, mailboxID, uid int64, flags string) error {
+	if _, err := s.db.Exec(ctx, `
+UPDATE mail_messages SET flags = ? WHERE mailbox_id = ? AND uid = ? AND flags <> ?`,
+		flags, mailboxID, uid, flags); err != nil {
+		return fmt.Errorf("mail: set message flags: %w", err)
+	}
+	return nil
+}
+
+// deleteAccountCascade removes one account and everything it owns in one
+// transaction — the app-level cascade ADR-0108 §5 prescribes (migration
+// 0028 declares no DB-level FK): messages first, then mailboxes, then the
+// account row itself. The account statement carries the (userID, id) scope,
+// so a missing or not-owned row rolls the whole cascade back as
+// ErrNotFound.
+func (s *SQLStore) deleteAccountCascade(ctx context.Context, userID string, id int64) (err error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("mail: delete account: begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		if rerr := tx.Rollback(); rerr != nil {
+			err = errors.Join(err, rerr)
+		}
+	}()
+	if _, err := tx.Exec(ctx, `
+DELETE FROM mail_messages WHERE mailbox_id IN (SELECT id FROM mail_mailboxes WHERE account_id = ?)`, id); err != nil {
+		return fmt.Errorf("mail: delete account: messages: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM mail_mailboxes WHERE account_id = ?`, id); err != nil {
+		return fmt.Errorf("mail: delete account: mailboxes: %w", err)
+	}
+	res, err := tx.Exec(ctx, `DELETE FROM mail_accounts WHERE user_id = ? AND id = ?`, userID, id)
+	if err != nil {
+		return fmt.Errorf("mail: delete account: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mail: delete account: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("mail: delete account: commit: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+type mailboxScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanMailbox(row mailboxScanner) (*Mailbox, error) {
+	var m Mailbox
+	if err := row.Scan(&m.ID, &m.AccountID, &m.Name, &m.Delimiter, &m.UIDValidity, &m.UIDNext,
+		&m.LastSeenUID, &m.Selectable, &m.SpecialUse); err != nil {
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, database.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("mail: scan mailbox: %w", err)
+	}
+	return &m, nil
+}
+
+// placeholders renders n comma-joined question marks for an IN (...) list.
+func placeholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?, ", n), ", ")
+}
+
+// int64Args boxes an id chunk for Exec.
+func int64Args(ids []int64) []any {
+	out := make([]any, len(ids))
+	for i, id := range ids {
+		out[i] = id
+	}
+	return out
+}

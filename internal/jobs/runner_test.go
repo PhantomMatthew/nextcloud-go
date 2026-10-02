@@ -112,6 +112,30 @@ func TestRunnerPeriodicExpireNames(t *testing.T) {
 	}
 }
 
+// TestRunnerPeriodicMailSync pins mail.sync (ADR-0108 §5) in the periodic
+// set: a registered mail.sync handler is seeded at Start and re-enqueued
+// after each run.
+func TestRunnerPeriodicMailSync(t *testing.T) {
+	ctx := t.Context()
+	store := NewSQLStore(testDB(t))
+	r := NewRunner(store, time.Now, 1, 15*time.Millisecond)
+	var n atomic.Int32
+	if err := r.Register(&countJob{name: JobMailSync, n: &n}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Stop(ctx) })
+	deadline := time.Now().Add(time.Second)
+	for n.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n.Load() < 2 {
+		t.Fatalf("mail.sync ran %d times, want periodic re-enqueue", n.Load())
+	}
+}
+
 // TestRunnerUnknownJobDropped covers the leftover-rows safety net: a row
 // whose name no registered job knows (e.g. a plugin's plugin.<id> rows that
 // survived an uninstall from before cleanup existed) is failed and

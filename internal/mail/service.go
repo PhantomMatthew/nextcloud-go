@@ -224,15 +224,21 @@ func (s *Service) Delete(ctx context.Context, uid string, id int64) error {
 // passwords opens a sealed blob into its IMAP/SMTP halves; an open failure
 // wraps ErrCredential (integrity, fail-closed).
 func (s *Service) passwords(userID, imapHost, imapUser string, sealed []byte) (imap, smtp string, err error) {
-	packed, err := OpenCredential(s.Secret, userID, imapHost, imapUser, sealed)
+	return openPasswords(s.Secret, userID, imapHost, imapUser, sealed)
+}
+
+// openPasswords is the passwords logic shared with the M3 sync engine,
+// which opens credentials in a job ctx with no Service at hand.
+func openPasswords(secret, userID, imapHost, imapUser string, sealed []byte) (imapPW, smtpPW string, err error) {
+	packed, err := OpenCredential(secret, userID, imapHost, imapUser, sealed)
 	if err != nil {
 		return "", "", err
 	}
-	imap, smtp, err = splitPasswords(packed)
+	imapPW, smtpPW, err = splitPasswords(packed)
 	if err != nil {
 		return "", "", fmt.Errorf("mail: open passwords: %w", err)
 	}
-	return imap, smtp, nil
+	return imapPW, smtpPW, nil
 }
 
 func applyPatch(a *Account, p AccountPatch) {

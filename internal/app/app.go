@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/activity"
@@ -99,6 +100,7 @@ type App struct {
 	wopiSvc          *wopi.Service
 	wopiDisc         *wopi.Discovery
 	mailSvc          *mail.Service
+	mailSyncer       *mail.Syncer
 	staticUI         *web.StaticUI
 }
 
@@ -459,13 +461,6 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	a.principalFS = &caldav.PrincipalDAV{Users: a.Users}
 	a.davRootFS = &caldav.RootDAV{Users: a.Users}
 
-	if err := jr.Start(ctx); err != nil {
-		if cerr := a.closeResources(ctx); cerr != nil {
-			return nil, errors.Join(err, cerr)
-		}
-		return nil, err
-	}
-	a.jobs = jr
 	a.secret = cfg.Instance.Secret
 	if a.secret == "" {
 		a.secret = randomHex(logger, 32, "NCGO_SECRET / instance.secret")
@@ -478,7 +473,10 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		// The wiring must follow the secret resolution above. M2's
 		// verify-on-create dial goes through the ADR-0057 egress guard with
 		// the mail.egress_allow_private CIDR allowlist (empty = fail closed
-		// for private targets); the config was validated at Load.
+		// for private targets); the config was validated at Load. M3's
+		// mail.sync registration shares the ordering rule of preview.gc and
+		// wopi.tokens.gc: Start seeds periodic jobs only for names already
+		// registered, so all of this must precede jr.Start.
 		allowPrivate, err := cfg.Mail.EgressPrefixes()
 		if err != nil {
 			if cerr := a.closeResources(ctx); cerr != nil {
@@ -487,16 +485,69 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 			return nil, err
 		}
 		dialContext := netx.GuardedDialContext(allowPrivate)
-		a.mailSvc = &mail.Service{
-			Store:  mail.NewSQLStore(db),
-			Secret: a.secret,
-			Logger: logger,
-			DialIMAP: func(ctx context.Context, opts imap.DialOptions) (*imap.Client, error) {
-				opts.DialContext = dialContext
-				return imap.Dial(ctx, opts)
-			},
+		dialIMAP := func(ctx context.Context, opts imap.DialOptions) (*imap.Client, error) {
+			opts.DialContext = dialContext
+			return imap.Dial(ctx, opts)
 		}
+		mailStore := mail.NewSQLStore(db)
+		a.mailSvc = &mail.Service{
+			Store:    mailStore,
+			Secret:   a.secret,
+			Logger:   logger,
+			DialIMAP: dialIMAP,
+		}
+		a.mailSyncer = &mail.Syncer{
+			Store:    mailStore,
+			Secret:   a.secret,
+			DialIMAP: dialIMAP,
+			Logger:   logger,
+			Bus:      bus,
+		}
+		if err := jr.Register(mail.NewSyncJob(a.mailSyncer, mailStore, logger)); err != nil {
+			if cerr := a.closeResources(ctx); cerr != nil {
+				return nil, errors.Join(err, cerr)
+			}
+			return nil, err
+		}
+		// New-mail arrival → a bell notification for the owning user
+		// (best-effort, like the sharing bells: insert failures are logged,
+		// never fatal to the sync that published the event).
+		bus.Subscribe(func(ctx context.Context, ev events.Event) {
+			if ev.Topic != mail.EventMessageArrived {
+				return
+			}
+			arrival, err := mail.DecodeArrival(ev.Payload)
+			if err != nil {
+				logger.WarnContext(ctx, "mail: arrival notification: decode failed", slog.Any("error", err))
+				return
+			}
+			u, err := a.Users.GetByUID(ctx, arrival.UserID)
+			if err != nil {
+				logger.WarnContext(ctx, "mail: arrival notification: user lookup failed", slog.String("uid", arrival.UserID), slog.Any("error", err))
+				return
+			}
+			n := &notifications.Notification{
+				UserID:       u.ID,
+				App:          "mail",
+				UserUID:      u.UID,
+				ObjectType:   "mail_account",
+				ObjectID:     strconv.FormatInt(arrival.AccountID, 10),
+				Subject:      mailArrivalSubject(arrival),
+				ShouldNotify: true,
+			}
+			if err := a.notifStore.Insert(ctx, n); err != nil {
+				logger.WarnContext(ctx, "mail: arrival notification insert failed", slog.String("uid", u.UID), slog.Any("error", err))
+			}
+		})
 	}
+
+	if err := jr.Start(ctx); err != nil {
+		if cerr := a.closeResources(ctx); cerr != nil {
+			return nil, errors.Join(err, cerr)
+		}
+		return nil, err
+	}
+	a.jobs = jr
 	// Event-driven (not periodic): one jobs row per upload, with the
 	// files.uploaded msgpack payload forwarded verbatim (ADR-0084).
 	if a.previewGen != nil && cfg.Previews.PregenerateEnabled {
@@ -574,6 +625,19 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		go a.reconciler.Run(recCtx, cfg.Plugin.RefreshInterval)
 	}
 	return a, nil
+}
+
+// mailArrivalSubject renders the bell text for one mail.message.arrived
+// event (count + latest sender, the fields the payload carries).
+func mailArrivalSubject(arrival mail.Arrival) string {
+	from := arrival.LatestFrom
+	if from == "" {
+		from = "unknown sender"
+	}
+	if arrival.Count == 1 {
+		return fmt.Sprintf("1 new message from %s", from)
+	}
+	return fmt.Sprintf("%d new messages (latest from %s)", arrival.Count, from)
 }
 
 func randomHex(logger *slog.Logger, n int, what string) string {

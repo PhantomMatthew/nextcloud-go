@@ -122,19 +122,12 @@ WHERE user_id = ? AND id = ?`,
 	return nil
 }
 
+// Delete removes the account and — app-level cascade, ADR-0108 §5 — every
+// mailbox and message it owns, all in one transaction (see
+// deleteAccountCascade). A missing or not-owned row is ErrNotFound and
+// removes nothing.
 func (s *SQLStore) Delete(ctx context.Context, userID string, id int64) error {
-	res, err := s.db.Exec(ctx, `DELETE FROM mail_accounts WHERE user_id = ? AND id = ?`, userID, id)
-	if err != nil {
-		return fmt.Errorf("mail: delete account: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("mail: delete account: %w", err)
-	}
-	if n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.deleteAccountCascade(ctx, userID, id)
 }
 
 type accountScanner interface {

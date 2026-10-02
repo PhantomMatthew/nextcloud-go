@@ -20,12 +20,16 @@ import (
 // exactly the routes.go mount) over a real sqlite store, so the tests
 // exercise session-auth rejection and per-user scoping end to end. The
 // service's DialIMAP seam is a scripted fake IMAP server (M2 verify-on-
-// create dials before persisting); it accepts the test password pair.
+// create dials before persisting); it accepts the test password pair. A
+// second fake (sfake) backs the M3 Syncer: it speaks LIST/EXAMINE/UID
+// SEARCH/UID FETCH so POST .../sync runs a real sync end to end.
 type mailEnv struct {
 	db     database.DB
 	store  *SQLStore
 	svc    *Service
 	fake   *imapFake
+	sfake  *syncFake
+	syncer *Syncer
 	chain  http.Handler
 	secret string
 }
@@ -49,14 +53,18 @@ func newMailEnv(t *testing.T) *mailEnv {
 	fake := newIMAPFake(t, func(_, pass string) bool {
 		return pass == "imap-secret-pw" || pass == "imap-secret-pw-2"
 	})
+	sfake := newSyncFake(t)
 	svc := &Service{Store: store, Secret: "test-instance-secret", DialIMAP: fake.dialIMAP}
+	syncer := &Syncer{Store: store, Secret: "test-instance-secret", DialIMAP: sfake.dialIMAP}
 	authCfg := auth.MiddlewareConfig{Verifier: users.NewPasswordVerifier(us, hasher)}
 	return &mailEnv{
 		db:     db,
 		store:  store,
 		svc:    svc,
 		fake:   fake,
-		chain:  webdav.Auth(authCfg)(&Handler{Svc: svc}),
+		sfake:  sfake,
+		syncer: syncer,
+		chain:  webdav.Auth(authCfg)(&Handler{Svc: svc, Syncer: syncer}),
 		secret: "test-instance-secret",
 	}
 }

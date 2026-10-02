@@ -1,10 +1,11 @@
 // Package imap implements a minimal IMAP4rev1 (RFC 3501) client for the
 // Mail epic (ADR-0108 §1): greeting, CAPABILITY, LOGIN, LOGOUT, NOOP, and
-// STARTTLS upgrade. Mailbox sync commands (LIST/SELECT/UID FETCH/STORE)
-// land in later increments; the response reader is already literal-capable
-// and the token parser (parse.go) handles atoms, quoted strings,
-// parenthesized lists, NIL, and literals so ENVELOPE/BODYSTRUCTURE shapes
-// can build on it.
+// STARTTLS upgrade, plus the M3 sync commands (mailbox.go): LIST, EXAMINE
+// (read-only), UID SEARCH, and UID FETCH summary/flags shapes. The response
+// reader is literal-capable and the token parser (parse.go) handles atoms,
+// quoted strings, parenthesized lists, NIL, and literals, which the
+// ENVELOPE parsing builds on; RFC 2152 mailbox-name decoding lives in
+// mutf7.go. Message-body FETCH (BODY/BODYSTRUCTURE) is M4 scope.
 //
 // The client carries no egress policy: DialOptions.DialContext is injected
 // by the caller, and the app wiring installs the ADR-0057 guarded dialer

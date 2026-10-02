@@ -191,6 +191,29 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-10-02** — **Mail M3: mailbox + message-summary sync engine**
+  (ADR-0108 §5; mail epic increment 3). The in-repo IMAP client grew the
+  sync commands: `LIST` (attrs/delimiter/wire name, `\Noselect` →
+  unselectable), read-only `EXAMINE` (EXISTS + UIDVALIDITY/UIDNEXT response
+  codes), `UID SEARCH ALL`, summary/flags `UID FETCH` shapes with defensive
+  ENVELOPE parsing, and an RFC 2152 modified-UTF-7 mailbox-name decoder.
+  Migration 0028 adds `mail_mailboxes` + `mail_messages` (three dialects,
+  no DB-level FKs — account delete cascades at the app layer in one
+  transaction; flags store space-wrapped tokens so the unread predicate is
+  token-exact). The `Syncer` upserts the mailbox list, drops
+  vanished-from-server mailboxes/messages, diffs `UID SEARCH ALL` against
+  local uids, fetches new summaries in 500-batches capped at 2000 per run
+  (resumable through the diff), wipes on UIDVALIDITY change, and refreshes
+  the flags of the most recent 200 uids — poll-only, no IDLE/CONDSTORE in
+  v1. A periodic `mail.sync` job syncs every account sequentially
+  (per-account failures isolated); new INBOX messages publish
+  `mail.message.arrived` (never on the initial bulk sync) and a bus
+  subscriber lands a bell notification. New REST:
+  `GET /apps/mail/api/accounts/{id}/mailboxes` (counts + decoded display
+  names, also embedded in GET-one-account) and
+  `POST /apps/mail/api/accounts/{id}/sync` (200 `{newMessages}` / 502).
+  Message body fetch/list APIs are M4. Zero new third-party dependencies.
+
 - **2026-10-02** — **Mail M2: IMAP client core, shared egress guard,
   verify-on-create** (ADR-0108; mail epic increment 2). New
   `internal/mail/imap` package: a minimal IMAP4rev1 client (greeting,

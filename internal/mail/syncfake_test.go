@@ -1,0 +1,283 @@
+package mail
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"io"
+	"net"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/PhantomMatthew/nextcloud-go/internal/mail/imap"
+)
+
+// syncFake is a stateful scripted IMAP4rev1 server on a loopback listener
+// for the M3 sync tests: beyond the M2 greeting/CAPABILITY/LOGIN/LOGOUT it
+// answers LIST, EXAMINE, UID SEARCH ALL, and UID FETCH (summary and flags
+// shapes) from an in-memory mailbox model the test mutates between sync
+// runs. The dialIMAP closure is the Syncer.DialIMAP seam: it forces ssl
+// mode "none" and re-aims every dial at the listener.
+type syncFake struct {
+	ln net.Listener
+	wg sync.WaitGroup
+
+	mu       sync.Mutex
+	boxes    []*fakeMailbox
+	failList bool // LIST answers NO (account-level failure injection)
+}
+
+type fakeMailbox struct {
+	name        string // wire name
+	attrs       []string
+	delim       string // "" renders NIL
+	selectable  bool
+	uidvalidity int64
+	msgs        []*fakeMsg
+	fail        bool // EXAMINE answers NO (per-mailbox failure isolation)
+}
+
+type fakeMsg struct {
+	uid      int64
+	flags    []string // wire atoms, backslash included: `\Seen`
+	date     string   // INTERNALDATE wire form
+	size     int
+	subject  string
+	fromName string
+	fromAddr string // "mailbox@host"
+	toNames  []string
+	toAddrs  []string
+	msgID    string
+}
+
+func newSyncFake(t *testing.T) *syncFake {
+	t.Helper()
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &syncFake{ln: ln}
+	f.wg.Add(1)
+	go func() {
+		defer f.wg.Done()
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			f.wg.Add(1)
+			go func() {
+				defer f.wg.Done()
+				f.serve(conn)
+			}()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		f.wg.Wait()
+	})
+	return f
+}
+
+// dialIMAP is the DialIMAP seam for this fake (service and syncer alike).
+func (f *syncFake) dialIMAP(ctx context.Context, opts imap.DialOptions) (*imap.Client, error) {
+	opts.SSLMode = SSLModeNone
+	opts.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, f.ln.Addr().String())
+	}
+	return imap.Dial(ctx, opts)
+}
+
+func (f *syncFake) mailbox(name string) *fakeMailbox {
+	for _, mb := range f.boxes {
+		if mb.name == name {
+			return mb
+		}
+	}
+	return nil
+}
+
+func (f *syncFake) serve(conn net.Conn) {
+	defer func() { _ = conn.Close() }()
+	r := bufio.NewReader(conn)
+	_, _ = io.WriteString(conn, "* OK fake IMAP4rev1 ready\r\n")
+	var selected *fakeMailbox
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			return
+		}
+		tag, rest, _ := strings.Cut(strings.TrimRight(line, "\r\n"), " ")
+		verb, args, _ := strings.Cut(rest, " ")
+		f.mu.Lock()
+		switch verb {
+		case "CAPABILITY":
+			_, _ = io.WriteString(conn, "* CAPABILITY IMAP4rev1\r\n"+tag+" OK capability done\r\n")
+		case "LOGIN":
+			_, _ = io.WriteString(conn, tag+" OK logged in\r\n")
+		case "LIST":
+			if f.failList {
+				_, _ = io.WriteString(conn, tag+" NO list broken\r\n")
+				break
+			}
+			for _, mb := range f.boxes {
+				attrs := append([]string(nil), mb.attrs...)
+				if !mb.selectable {
+					attrs = append(attrs, "\\Noselect")
+				}
+				delim := "NIL"
+				if mb.delim != "" {
+					delim = iq(mb.delim)
+				}
+				_, _ = io.WriteString(conn, "* LIST ("+strings.Join(attrs, " ")+") "+delim+" "+iq(mb.name)+"\r\n")
+			}
+			_, _ = io.WriteString(conn, tag+" OK list done\r\n")
+		case "EXAMINE":
+			name := unquote(args)
+			mb := f.mailbox(name)
+			switch {
+			case mb == nil:
+				_, _ = io.WriteString(conn, tag+" NO no such mailbox\r\n")
+			case mb.fail:
+				_, _ = io.WriteString(conn, tag+" NO mailbox broken\r\n")
+			default:
+				selected = mb
+				var b strings.Builder
+				fmt.Fprintf(&b, "* %d EXISTS\r\n", len(mb.msgs))
+				fmt.Fprintf(&b, "* OK [UIDVALIDITY %d] UIDs valid\r\n", mb.uidvalidity)
+				fmt.Fprintf(&b, "* OK [UIDNEXT %d] Predicted next UID\r\n", mb.uidnext())
+				b.WriteString(tag + " OK [READ-ONLY] examine done\r\n")
+				_, _ = io.WriteString(conn, b.String())
+			}
+		case "UID":
+			f.serveUID(conn, tag, args, selected)
+		case "LOGOUT":
+			_, _ = io.WriteString(conn, "* BYE bye\r\n"+tag+" OK logout done\r\n")
+			f.mu.Unlock()
+			return
+		default:
+			_, _ = io.WriteString(conn, tag+" BAD unsupported\r\n")
+		}
+		f.mu.Unlock()
+	}
+}
+
+// serveUID answers UID SEARCH ALL and UID FETCH for the selected mailbox.
+func (f *syncFake) serveUID(conn net.Conn, tag, args string, selected *fakeMailbox) {
+	sub, rest, _ := strings.Cut(args, " ")
+	if selected == nil {
+		_, _ = io.WriteString(conn, tag+" BAD no mailbox selected\r\n")
+		return
+	}
+	switch sub {
+	case "SEARCH":
+		var b strings.Builder
+		b.WriteString("* SEARCH")
+		for _, m := range selected.msgs {
+			fmt.Fprintf(&b, " %d", m.uid)
+		}
+		b.WriteString("\r\n" + tag + " OK search done\r\n")
+		_, _ = io.WriteString(conn, b.String())
+	case "FETCH":
+		set, items, _ := strings.Cut(rest, " (")
+		items = strings.TrimSuffix(items, ")")
+		var b strings.Builder
+		seq := 0
+		for _, m := range selected.msgs {
+			if !uidInSet(m.uid, set) {
+				continue
+			}
+			seq++
+			fmt.Fprintf(&b, "* %d FETCH (%s)\r\n", seq, m.fetchAttrs(items))
+		}
+		b.WriteString(tag + " OK fetch done\r\n")
+		_, _ = io.WriteString(conn, b.String())
+	default:
+		_, _ = io.WriteString(conn, tag+" BAD unsupported uid command\r\n")
+	}
+}
+
+// uidnext reports max uid + 1 (0 for an empty mailbox, matching nothing —
+// the tests never depend on the empty case's exact value).
+func (mb *fakeMailbox) uidnext() int64 {
+	var maxUID int64
+	for _, m := range mb.msgs {
+		if m.uid > maxUID {
+			maxUID = m.uid
+		}
+	}
+	return maxUID + 1
+}
+
+// fetchAttrs renders the requested FETCH data items for the message.
+func (m *fakeMsg) fetchAttrs(items string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "UID %d", m.uid)
+	for _, item := range strings.Fields(items) {
+		switch item {
+		case "FLAGS":
+			fmt.Fprintf(&b, " FLAGS (%s)", strings.Join(m.flags, " "))
+		case "INTERNALDATE":
+			fmt.Fprintf(&b, " INTERNALDATE %s", iq(m.date))
+		case "RFC822.SIZE":
+			fmt.Fprintf(&b, " RFC822.SIZE %d", m.size)
+		case "ENVELOPE":
+			b.WriteString(" ENVELOPE " + m.envelope())
+		}
+	}
+	return b.String()
+}
+
+// envelope renders the RFC 3501 ENVELOPE list:
+// (date subject from sender reply-to to cc bcc in-reply-to message-id).
+func (m *fakeMsg) envelope() string {
+	from := "NIL"
+	if m.fromAddr != "" {
+		mb, host, _ := strings.Cut(m.fromAddr, "@")
+		from = "((" + quotedOrNil(m.fromName) + " NIL " + iq(mb) + " " + iq(host) + "))"
+	}
+	to := "NIL"
+	if len(m.toAddrs) > 0 {
+		parts := make([]string, 0, len(m.toAddrs))
+		for i, addr := range m.toAddrs {
+			name := "NIL"
+			if i < len(m.toNames) {
+				name = quotedOrNil(m.toNames[i])
+			}
+			mb, host, _ := strings.Cut(addr, "@")
+			parts = append(parts, "("+name+" NIL "+iq(mb)+" "+iq(host)+")")
+		}
+		to = "(" + strings.Join(parts, " ") + ")"
+	}
+	return "(" + quotedOrNil(m.date) + " " + quotedOrNil(m.subject) + " " + from + " NIL NIL " + to + " NIL NIL NIL " + quotedOrNil(m.msgID) + ")" //nolint:dupword // the wire shape carries legitimate NIL runs
+}
+
+// quotedOrNil renders NIL for the empty string, a quoted string otherwise.
+func quotedOrNil(s string) string {
+	if s == "" {
+		return "NIL"
+	}
+	return iq(s)
+}
+
+// iq renders an IMAP quoted string; test data carries no quote or backslash
+// characters, so no escaping is needed (and strconv.Quote's Go escapes
+// would corrupt non-ASCII on the wire).
+func iq(s string) string { return `"` + s + `"` }
+
+// uidInSet reports whether uid appears in the comma-separated uid set.
+func uidInSet(uid int64, set string) bool {
+	for _, tok := range strings.Split(set, ",") {
+		if n, err := strconv.ParseInt(strings.TrimSpace(tok), 10, 64); err == nil && n == uid {
+			return true
+		}
+	}
+	return false
+}
+
+// unquote strips one layer of double quotes (test names carry no escapes).
+func unquote(s string) string {
+	return strings.Trim(s, `"`)
+}
