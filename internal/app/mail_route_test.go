@@ -157,6 +157,14 @@ func TestMailRoutes(t *testing.T) {
 	if !strings.Contains(rr.Body.String(), `"mail"`) {
 		t.Error("mail enabled: capabilities payload lacks the mail block")
 	}
+	// M6: the unified-search provider list carries "mail" only when enabled.
+	providers := httptest.NewRequestWithContext(ctx, http.MethodGet, "/ocs/v2.php/search/providers?format=json", nil)
+	providers.SetBasicAuth("admin", "admin")
+	rr = httptest.NewRecorder()
+	on.Handler().ServeHTTP(rr, providers)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"id":"mail"`) {
+		t.Errorf("mail enabled: providers list = %d %s", rr.Code, rr.Body.String())
+	}
 
 	off := newApp(t, false)
 	if off.mailSvc != nil {
@@ -171,6 +179,13 @@ func TestMailRoutes(t *testing.T) {
 	off.Handler().ServeHTTP(rr, httptest.NewRequestWithContext(ctx, http.MethodGet, "/ocs/v2.php/cloud/capabilities?format=json", nil))
 	if strings.Contains(rr.Body.String(), `"mail"`) {
 		t.Error("mail disabled: capabilities payload carries the mail block")
+	}
+	providersOff := httptest.NewRequestWithContext(ctx, http.MethodGet, "/ocs/v2.php/search/providers?format=json", nil)
+	providersOff.SetBasicAuth("admin", "admin")
+	rr = httptest.NewRecorder()
+	off.Handler().ServeHTTP(rr, providersOff)
+	if strings.Contains(rr.Body.String(), `"id":"mail"`) {
+		t.Error("mail disabled: providers list carries the mail provider")
 	}
 }
 

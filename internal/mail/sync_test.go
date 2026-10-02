@@ -424,9 +424,10 @@ func (e *syncEnv) messageRows(t *testing.T, mailboxID int64) []Message {
 	for _, uid := range uids {
 		var m Message
 		err := e.store.db.QueryRow(context.Background(), `
-SELECT mailbox_id, uid, message_id, subject, from_addr, to_addrs, date_unix, flags, size
+SELECT mailbox_id, uid, message_id, subject, from_addr, to_addrs, date_unix, flags, size, preview, has_attachments
 FROM mail_messages WHERE mailbox_id = ? AND uid = ?`, mailboxID, uid).
-			Scan(&m.MailboxID, &m.UID, &m.MessageID, &m.Subject, &m.FromAddr, &m.ToAddrs, &m.DateUnix, &m.Flags, &m.Size)
+			Scan(&m.MailboxID, &m.UID, &m.MessageID, &m.Subject, &m.FromAddr, &m.ToAddrs, &m.DateUnix, &m.Flags, &m.Size,
+				&m.Preview, &m.HasAttachments)
 		if err != nil {
 			t.Fatal(err)
 		}

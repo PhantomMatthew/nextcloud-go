@@ -224,6 +224,24 @@ func cteReader(h textproto.MIMEHeader, body io.Reader) io.Reader {
 	}
 }
 
+// previewRunes caps the M6 list preview (runes, not bytes — a CJK
+// character costs one).
+const previewRunes = 200
+
+// previewText renders the list-view preview of a plain-text body:
+// whitespace runs collapse to single spaces (strings.Fields already trims),
+// capped at previewRunes runes. A message without a plain part previews
+// empty — HTML is deliberately NOT stripped (the M6 preview is plain-only;
+// sanitization is M7 scope).
+func previewText(plain string) string {
+	joined := strings.Join(strings.Fields(plain), " ")
+	runes := []rune(joined)
+	if len(runes) > previewRunes {
+		return string(runes[:previewRunes])
+	}
+	return joined
+}
+
 // partMediaType parses a Content-Type/Content-Disposition header value. A
 // malformed parameter list keeps the lower-cased base token: a broken
 // header must not hide the declared type.

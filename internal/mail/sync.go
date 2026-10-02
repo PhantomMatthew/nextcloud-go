@@ -21,13 +21,16 @@ import (
 // from the server, fetches new list-view summaries in batches, refreshes the
 // flags of the most recent window (cheap convergence without CONDSTORE), and
 // publishes mail.message.arrived for INBOX arrivals (never for the initial
-// bulk sync). Per-mailbox failures are logged and skipped; account-level
-// failures (credentials, dial, login, LIST) abort the account. The Syncer
-// holds no per-account mutable state, so accounts are safe to sync
-// sequentially or concurrently; one account is synced by one caller at a
-// time (the job fan-out is sequential, and the REST endpoint + job could
-// overlap only as a last-writer-wins cursor update, which the next run
-// repairs through the uid diff).
+// bulk sync). M6 adds the insert-time list previews: the newest
+// syncPreviewWindow new messages up to syncPreviewMaxSize are fetched whole
+// (BODY.PEEK[] — still read-only) so the list view gains a snippet and the
+// has-attachments flag. Per-mailbox failures are logged and skipped;
+// account-level failures (credentials, dial, login, LIST) abort the
+// account. The Syncer holds no per-account mutable state, so accounts are
+// safe to sync sequentially or concurrently; one account is synced by one
+// caller at a time (the job fan-out is sequential, and the REST endpoint +
+// job could overlap only as a last-writer-wins cursor update, which the
+// next run repairs through the uid diff).
 
 const (
 	// syncFetchBatch is the UID FETCH batch size the wire stays under.
@@ -37,6 +40,13 @@ const (
 	syncMaxNewPerRun = 2000
 	// syncFlagWindow is how many recent uids get their flags refreshed.
 	syncFlagWindow = 200
+	// syncPreviewWindow is how many of the newest newly inserted messages
+	// get a list preview per mailbox per run.
+	syncPreviewWindow = 50
+	// syncPreviewMaxSize caps the full-message fetch previews need; a bigger
+	// message keeps the empty preview (documented limitation — the list
+	// view shows no snippet and no paperclip for it).
+	syncPreviewMaxSize = 1 << 20
 )
 
 // EventMessageArrived is the bus topic published when a sync finds new
@@ -189,10 +199,11 @@ func (s *Syncer) syncMailbox(ctx context.Context, client *imap.Client, a *Accoun
 	if len(fresh) > syncMaxNewPerRun {
 		fresh = fresh[:syncMaxNewPerRun]
 	}
-	inserted, latest, err := s.fetchNew(ctx, client, mb.ID, fresh)
+	newMsgs, latest, err := s.fetchNew(ctx, client, mb.ID, fresh)
 	if err != nil {
 		return 0, err
 	}
+	inserted := len(newMsgs)
 	lastSeen := mb.LastSeenUID
 	if latest != nil && latest.UID > lastSeen {
 		lastSeen = latest.UID
@@ -207,13 +218,18 @@ func (s *Syncer) syncMailbox(ctx context.Context, client *imap.Client, a *Accoun
 	if err := s.refreshFlags(ctx, client, mb.ID); err != nil {
 		return inserted, err
 	}
+	// M6: list previews ride the same connection, last of all — a preview
+	// fetch failure breaks the client, and it must not take the cursor
+	// advance or the flag refresh down with it.
+	s.fetchPreviews(ctx, client, mb.ID, newMsgs)
 	return inserted, nil
 }
 
 // fetchNew fetches and inserts summaries for the fresh uids in
-// syncFetchBatch batches, returning the count and the highest-uid row.
-func (s *Syncer) fetchNew(ctx context.Context, client *imap.Client, mailboxID int64, fresh []int64) (int, *Message, error) {
-	inserted := 0
+// syncFetchBatch batches, returning the inserted rows and the highest-uid
+// one.
+func (s *Syncer) fetchNew(ctx context.Context, client *imap.Client, mailboxID int64, fresh []int64) ([]Message, *Message, error) {
+	var inserted []Message
 	var latest *Message
 	for start := 0; start < len(fresh); start += syncFetchBatch {
 		end := min(start+syncFetchBatch, len(fresh))
@@ -232,9 +248,53 @@ func (s *Syncer) fetchNew(ctx context.Context, client *imap.Client, mailboxID in
 		if err := s.Store.InsertMessages(ctx, msgs); err != nil {
 			return inserted, nil, err
 		}
-		inserted += len(msgs)
+		inserted = append(inserted, msgs...)
 	}
 	return inserted, latest, nil
+}
+
+// fetchPreviews fills the list preview of the newest syncPreviewWindow
+// newly inserted messages whose synced size fits syncPreviewMaxSize, over
+// the same already-logged-in connection the sync holds: each message is
+// fetched whole (UID FETCH BODY.PEEK[] — PEEK never sets \Seen) and parsed,
+// and its row updated. Every fetch/parse failure skips its message with a
+// debug log — a preview must never fail the sync — and an oversized message
+// keeps the empty preview (documented limitation). Messages outside the
+// window stay empty too; previews are an insert-time extra, not a
+// backfill.
+func (s *Syncer) fetchPreviews(ctx context.Context, client *imap.Client, mailboxID int64, msgs []Message) {
+	if len(msgs) == 0 {
+		return
+	}
+	byUID := make([]Message, len(msgs))
+	copy(byUID, msgs)
+	sort.Slice(byUID, func(i, j int) bool { return byUID[i].UID > byUID[j].UID })
+	if len(byUID) > syncPreviewWindow {
+		byUID = byUID[:syncPreviewWindow]
+	}
+	for i := range byUID {
+		m := &byUID[i]
+		if m.Size > syncPreviewMaxSize {
+			continue
+		}
+		//nolint:gosec // G115: uids are non-negative 32-bit values
+		raw, err := client.UIDFetchFull(ctx, uint64(m.UID))
+		if err != nil {
+			s.debug(ctx, "mail: sync: preview fetch failed", mailboxID, m.UID, err)
+			continue
+		}
+		if raw == nil {
+			continue // the message vanished between the summary and the full fetch
+		}
+		parsed, err := ParseMessage(raw)
+		if err != nil {
+			s.debug(ctx, "mail: sync: preview parse failed", mailboxID, m.UID, err)
+			continue
+		}
+		if err := s.Store.SetMessagePreview(ctx, mailboxID, m.UID, previewText(parsed.TextPlain), len(parsed.Attachments) > 0); err != nil {
+			s.debug(ctx, "mail: sync: preview store failed", mailboxID, m.UID, err)
+		}
+	}
 }
 
 // refreshFlags re-fetches the flags of the most recent local uids and
@@ -389,4 +449,12 @@ func (s *Syncer) warn(ctx context.Context, msg string, a *Account, mailbox strin
 	}
 	s.Logger.WarnContext(ctx, msg,
 		slog.String("user", a.UserID), slog.Int64("account", a.ID), slog.String("mailbox", mailbox), slog.String("error", err.Error()))
+}
+
+func (s *Syncer) debug(ctx context.Context, msg string, mailboxID, uid int64, err error) {
+	if s.Logger == nil {
+		return
+	}
+	s.Logger.DebugContext(ctx, msg,
+		slog.Int64("mailbox", mailboxID), slog.Int64("uid", uid), slog.String("error", err.Error()))
 }

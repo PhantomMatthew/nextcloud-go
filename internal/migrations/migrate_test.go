@@ -29,8 +29,8 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("up: %v", err)
 	}
-	if n != 28 {
-		t.Errorf("applied = %d, want 28", n)
+	if n != 29 {
+		t.Errorf("applied = %d, want 29", n)
 	}
 
 	want := []string{
@@ -87,12 +87,23 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Errorf("shares.abs_path_enc column: %v", err)
 	}
+	// 0029: mail_messages gained the sync-time preview columns (ADR-0108 M6).
+	var previewCol string
+	err = db.QueryRow(ctx, `SELECT name FROM pragma_table_info('mail_messages') WHERE name='preview'`).Scan(&previewCol)
+	if err != nil {
+		t.Errorf("mail_messages.preview column: %v", err)
+	}
+	var hasAttCol string
+	err = db.QueryRow(ctx, `SELECT name FROM pragma_table_info('mail_messages') WHERE name='has_attachments'`).Scan(&hasAttCol)
+	if err != nil {
+		t.Errorf("mail_messages.has_attachments column: %v", err)
+	}
 
 	v, dirty, err := Version(ctx, std, database.DialectSQLite)
 	if err != nil {
 		t.Fatalf("version: %v", err)
 	}
-	if v != 28 || dirty {
+	if v != 29 || dirty {
 		t.Errorf("version=%d dirty=%v", v, dirty)
 	}
 
@@ -102,6 +113,33 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("second up applied = %d, want 0", n)
+	}
+
+	if err := Down(ctx, std, database.DialectSQLite, 1, logger); err != nil {
+		t.Fatalf("down: %v", err)
+	}
+	v, dirty, err = Version(ctx, std, database.DialectSQLite)
+	if err != nil {
+		t.Fatalf("version after down: %v", err)
+	}
+	if v != 28 || dirty {
+		t.Errorf("after down version=%d dirty=%v", v, dirty)
+	}
+	// 0029's columns are gone at v28; 0028's table remains.
+	var previewAt28 string
+	err = db.QueryRow(ctx, `SELECT name FROM pragma_table_info('mail_messages') WHERE name='preview'`).Scan(&previewAt28)
+	if err == nil {
+		t.Error("mail_messages.preview column still present after down to v28")
+	}
+	var hasAttAt28 string
+	err = db.QueryRow(ctx, `SELECT name FROM pragma_table_info('mail_messages') WHERE name='has_attachments'`).Scan(&hasAttAt28)
+	if err == nil {
+		t.Error("mail_messages.has_attachments column still present after down to v28")
+	}
+	var messagesAt28 string
+	err = db.QueryRow(ctx, `SELECT name FROM sqlite_master WHERE type='table' AND name=?`, "mail_messages").Scan(&messagesAt28)
+	if err != nil {
+		t.Errorf("table mail_messages missing after down to v28: %v", err)
 	}
 
 	if err := Down(ctx, std, database.DialectSQLite, 1, logger); err != nil {
@@ -359,14 +397,14 @@ func TestSQLiteUpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("up after down: %v", err)
 	}
-	if n != 9 {
-		t.Errorf("re-up applied = %d, want 9", n)
+	if n != 10 {
+		t.Errorf("re-up applied = %d, want 10", n)
 	}
 	v, dirty, err = Version(ctx, std, database.DialectSQLite)
 	if err != nil {
 		t.Fatalf("version after re-up: %v", err)
 	}
-	if v != 28 || dirty {
+	if v != 29 || dirty {
 		t.Errorf("after re-up version=%d dirty=%v", v, dirty)
 	}
 }

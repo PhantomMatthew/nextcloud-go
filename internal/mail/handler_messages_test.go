@@ -227,6 +227,70 @@ func TestHandlerMessagesListPagination(t *testing.T) {
 	}
 }
 
+// TestHandlerMessagesListPreviewFields: the M6 list response carries the
+// sync-time preview and hasAttachments, and the detail response stays the
+// M4 shape (no preview fields).
+func TestHandlerMessagesListPreviewFields(t *testing.T) {
+	e := newMailEnv(t)
+	accountID := createAlice(t, e)
+	mb := &Mailbox{AccountID: accountID, Name: "INBOX", Selectable: true}
+	if err := e.store.UpsertMailbox(context.Background(), mb); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.InsertMessages(context.Background(), []Message{
+		{MailboxID: mb.ID, UID: 1, Subject: "plain", DateUnix: 100},
+		{MailboxID: mb.ID, UID: 2, Subject: "with attachment", DateUnix: 200},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.SetMessagePreview(context.Background(), mb.ID, 2, "see attached", true); err != nil {
+		t.Fatal(err)
+	}
+	// The detail fetch runs live: the fake serves uid 2's raw bytes.
+	e.sfake.boxes = []*fakeMailbox{
+		{
+			name: "INBOX", attrs: []string{"\\HasNoChildren"}, delim: "/", selectable: true, uidvalidity: 7,
+			msgs: []*fakeMsg{
+				{
+					uid: 2, date: "3-Jan-2006 10:00:00 +0000", size: len(m4Raw2), subject: "with attachment",
+					fromAddr: "d@example.com", msgID: "<m2@example.com>", raw: []byte(m4Raw2),
+				},
+			},
+		},
+	}
+	base := fmt.Sprintf("%s/%d/mailboxes/%d/messages", AccountsPrefix, accountID, mb.ID)
+	rr := e.serve(t, "alice", http.MethodGet, base, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list: status = %d body = %s", rr.Code, rr.Body.String())
+	}
+	var resp messageListResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Messages) != 2 {
+		t.Fatalf("messages = %+v", resp.Messages)
+	}
+	if resp.Messages[0].UID != 2 || resp.Messages[0].Preview != "see attached" || !resp.Messages[0].HasAttachments {
+		t.Errorf("previewed row = %+v", resp.Messages[0])
+	}
+	if resp.Messages[1].Preview != "" || resp.Messages[1].HasAttachments {
+		t.Errorf("default row = %+v", resp.Messages[1])
+	}
+	// The JSON keys exist even at their zero values (the client's contract).
+	body := rr.Body.String()
+	if !strings.Contains(body, `"preview":""`) || !strings.Contains(body, `"hasAttachments":false`) {
+		t.Errorf("zero-value keys must render: %s", body)
+	}
+	// The detail response does NOT grow the list fields (M4 shape pinned).
+	det := e.serve(t, "alice", http.MethodGet, fmt.Sprintf("%s/%d", base, resp.Messages[0].ID), "")
+	if det.Code != http.StatusOK {
+		t.Fatalf("detail: status = %d body = %s", det.Code, det.Body.String())
+	}
+	if strings.Contains(det.Body.String(), `"preview"`) || strings.Contains(det.Body.String(), `"hasAttachments"`) {
+		t.Errorf("detail must not carry the list preview fields: %s", det.Body.String())
+	}
+}
+
 // TestHandlerMessagesListScopes: cross-user, cross-account-mailbox, and
 // unknown paths are all 404; wrong verbs are 405.
 func TestHandlerMessagesListScopes(t *testing.T) {

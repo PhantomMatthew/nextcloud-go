@@ -475,3 +475,160 @@ func TestSQLStoreDeleteMessage(t *testing.T) {
 		t.Errorf("other-mailbox delete: err = %v", err)
 	}
 }
+
+// TestSQLStoreSetMessagePreview is the M6 preview column round-trip: rows
+// insert with the empty defaults, the sync-time write lands both columns,
+// and the list/single-row reads carry them.
+func TestSQLStoreSetMessagePreview(t *testing.T) {
+	ctx := context.Background()
+	store := NewSQLStore(testDB(t))
+	a := testAccount("alice")
+	if err := store.Create(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	mb := &Mailbox{AccountID: a.ID, Name: "INBOX", Selectable: true}
+	if err := store.UpsertMailbox(ctx, mb); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InsertMessages(ctx, []Message{
+		{MailboxID: mb.ID, UID: 1, DateUnix: 1},
+		{MailboxID: mb.ID, UID: 2, DateUnix: 2},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.ListMessages(ctx, mb.ID, 0, 0, 10)
+	if err != nil || len(page) != 2 {
+		t.Fatalf("list = %+v %v", page, err)
+	}
+	if page[0].Preview != "" || page[0].HasAttachments || page[1].Preview != "" || page[1].HasAttachments {
+		t.Fatalf("fresh rows must read the empty defaults: %+v", page)
+	}
+
+	if err := store.SetMessagePreview(ctx, mb.ID, 1, "hello there", true); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetMessage(ctx, mb.ID, page[1].ID) // uid 1 is the older row
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UID != 1 || got.Preview != "hello there" || !got.HasAttachments {
+		t.Errorf("after preview write = %+v", got)
+	}
+	// The untouched row keeps the defaults.
+	other, err := store.GetMessage(ctx, mb.ID, page[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.Preview != "" || other.HasAttachments {
+		t.Errorf("untouched row = %+v", other)
+	}
+	// Rewrites land (the flag can flip off again).
+	if err := store.SetMessagePreview(ctx, mb.ID, 1, "shorter", false); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.GetMessage(ctx, mb.ID, page[1].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Preview != "shorter" || got.HasAttachments {
+		t.Errorf("after rewrite = %+v", got)
+	}
+	// A missing (mailbox, uid) pair is a silent no-op, mirroring
+	// SetMessageFlags.
+	if err := store.SetMessagePreview(ctx, mb.ID, 99999, "x", true); err != nil {
+		t.Errorf("preview for a missing uid: %v", err)
+	}
+}
+
+// TestSQLStoreSearchMessages covers the M6 unified-search join: subject and
+// from_addr contains-matches across the caller's accounts and mailboxes,
+// user isolation, wildcard escaping, the cap, and newest-first order.
+func TestSQLStoreSearchMessages(t *testing.T) {
+	ctx := context.Background()
+	store := NewSQLStore(testDB(t))
+	seed := func(uid string) (a *Account, inbox, archive *Mailbox) {
+		a = testAccount(uid)
+		if err := store.Create(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+		inbox = &Mailbox{AccountID: a.ID, Name: "INBOX", Selectable: true}
+		archive = &Mailbox{AccountID: a.ID, Name: "Archive", Selectable: true}
+		for _, mb := range []*Mailbox{inbox, archive} {
+			if err := store.UpsertMailbox(ctx, mb); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return a, inbox, archive
+	}
+	alice, aliceInbox, aliceArchive := seed("alice")
+	_, bobInbox, _ := seed("bob")
+
+	// Alice: hits spread over two mailboxes (subject match, from match,
+	// both); a non-hit. Bob: a message matching everything.
+	if err := store.InsertMessages(ctx, []Message{
+		{MailboxID: aliceInbox.ID, UID: 1, Subject: "Quarterly report", FromAddr: "boss@example.com", DateUnix: 100},
+		{MailboxID: aliceInbox.ID, UID: 2, Subject: "Lunch?", FromAddr: "Reporter <rep@example.com>", DateUnix: 300},
+		{MailboxID: aliceArchive.ID, UID: 3, Subject: "report archive", FromAddr: "rep@example.com", DateUnix: 200},
+		{MailboxID: aliceInbox.ID, UID: 4, Subject: "Nothing alike", FromAddr: "x@example.com", DateUnix: 400},
+		{MailboxID: bobInbox.ID, UID: 5, Subject: "report", FromAddr: "rep@example.com", DateUnix: 500},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	hits, err := store.SearchMessages(ctx, "alice", "report", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 3 {
+		t.Fatalf("hits = %+v", hits)
+	}
+	// Newest first; the hit carries the ids its API link is built from.
+	if hits[0].UID != 2 || hits[0].MailboxID != aliceInbox.ID || hits[0].AccountID != alice.ID ||
+		hits[0].Subject != "Lunch?" || hits[0].FromAddr != "Reporter <rep@example.com>" {
+		t.Errorf("hit 0 = %+v", hits[0])
+	}
+	if hits[1].UID != 3 || hits[1].MailboxID != aliceArchive.ID || hits[1].AccountID != alice.ID {
+		t.Errorf("hit 1 (from match, other mailbox) = %+v", hits[1])
+	}
+	if hits[2].UID != 1 {
+		t.Errorf("hit 2 = %+v", hits[2])
+	}
+	if hits[0].ID == 0 || hits[1].ID == 0 {
+		t.Errorf("hits must carry the message row id: %+v", hits)
+	}
+
+	// Case-insensitive contains, and a from_addr-only match.
+	if hits, err := store.SearchMessages(ctx, "alice", "REPORT", 20); err != nil || len(hits) != 3 {
+		t.Errorf("uppercase term = %v %v", hits, err)
+	}
+	if hits, err := store.SearchMessages(ctx, "alice", "boss@", 20); err != nil || len(hits) != 1 || hits[0].UID != 1 {
+		t.Errorf("from match = %v %v", hits, err)
+	}
+
+	// User isolation: bob sees only his own row, and carol sees nothing.
+	if hits, err := store.SearchMessages(ctx, "bob", "report", 20); err != nil || len(hits) != 1 || hits[0].UID != 5 {
+		t.Errorf("bob hits = %v %v", hits, err)
+	}
+	if hits, err := store.SearchMessages(ctx, "carol", "report", 20); err != nil || len(hits) != 0 {
+		t.Errorf("carol hits = %v %v", hits, err)
+	}
+
+	// LIKE wildcards in the term are literal, not pattern.
+	if hits, err := store.SearchMessages(ctx, "alice", "repor_", 20); err != nil || len(hits) != 0 {
+		t.Errorf("wildcard term = %v %v", hits, err)
+	}
+	if hits, err := store.SearchMessages(ctx, "alice", "100%", 20); err != nil || len(hits) != 0 {
+		t.Errorf("percent term = %v %v", hits, err)
+	}
+
+	// The cap clamps; blank terms and unknown users search nothing.
+	if hits, err := store.SearchMessages(ctx, "alice", "report", 1); err != nil || len(hits) != 1 || hits[0].UID != 2 {
+		t.Errorf("limit 1 = %v %v", hits, err)
+	}
+	if hits, err := store.SearchMessages(ctx, "alice", "  ", 20); err != nil || len(hits) != 0 {
+		t.Errorf("blank term = %v %v", hits, err)
+	}
+	if hits, err := store.SearchMessages(ctx, "", "report", 20); err != nil || len(hits) != 0 {
+		t.Errorf("blank user = %v %v", hits, err)
+	}
+}

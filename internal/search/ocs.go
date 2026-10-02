@@ -83,7 +83,7 @@ func (h Handler) search(w http.ResponseWriter, r *http.Request, uid, providerID 
 			ocs.K("thumbnailUrl", hit.ThumbnailURL),
 			ocs.K("title", hit.Title),
 			ocs.K("subline", hit.Subline),
-			ocs.K("resourceUrl", resourceURL(r, hit.fileID)),
+			ocs.K("resourceUrl", hitResourceURL(r, hit)),
 			ocs.K("icon", ""),
 			ocs.K("rounded", false),
 		))
@@ -116,6 +116,16 @@ func parseLimit(raw string) int {
 		return defaultLimit
 	}
 	return n
+}
+
+// hitResourceURL renders the entry link: a provider-set ResourceURL (an
+// absolute path on this server, like the mail message's API path) rides the
+// request base exactly like the files provider's fileID-derived pretty URL.
+func hitResourceURL(r *http.Request, hit Hit) string {
+	if hit.ResourceURL != "" {
+		return requestBase(r) + hit.ResourceURL
+	}
+	return resourceURL(r, hit.fileID)
 }
 
 func resourceURL(r *http.Request, id int64) string {

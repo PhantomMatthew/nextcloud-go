@@ -76,18 +76,30 @@ type MailboxCounts struct {
 // keeps the storage-wrapped form (see PackFlags): tokens separated by
 // single spaces with one leading and one trailing space, so the unread
 // predicate stays token-exact (flags NOT LIKE '% Seen %' never matches a
-// hypothetical "SeenX").
+// hypothetical "SeenX"). Preview/HasAttachments (0029) are the M6 sync-time
+// list-view extras: the first 200 runes of the plain body with whitespace
+// collapsed (” when the message had no plain part or exceeded the 1 MiB
+// preview-fetch cap) and the paperclip flag.
 type Message struct {
-	ID        int64
-	MailboxID int64
-	UID       int64
-	MessageID string
-	Subject   string
-	FromAddr  string
-	ToAddrs   string
-	DateUnix  int64
-	Flags     string
-	Size      int64
+	ID             int64
+	MailboxID      int64
+	UID            int64
+	MessageID      string
+	Subject        string
+	FromAddr       string
+	ToAddrs        string
+	DateUnix       int64
+	Flags          string
+	Size           int64
+	Preview        string
+	HasAttachments bool
+}
+
+// MessageHit is one unified-search result row (M6): the message plus the
+// account id its API link needs.
+type MessageHit struct {
+	Message
+	AccountID int64
 }
 
 // PackFlags renders flag tokens (already backslash-free: "Seen", "Flagged")
@@ -148,6 +160,13 @@ type Store interface {
 	GetMessage(ctx context.Context, mailboxID, messageID int64) (*Message, error)
 	GetMailbox(ctx context.Context, accountID, mailboxID int64) (*Mailbox, error)
 	DeleteMessage(ctx context.Context, mailboxID, messageID int64) error
+
+	// M6 (ADR-0108): SetMessagePreview fills one row's sync-time list
+	// preview; SearchMessages joins the caller's messages across all their
+	// accounts and mailboxes for the unified-search provider (subject and
+	// from_addr, case-insensitive contains, newest first).
+	SetMessagePreview(ctx context.Context, mailboxID, uid int64, preview string, hasAttachments bool) error
+	SearchMessages(ctx context.Context, userID, term string, limit int) ([]MessageHit, error)
 }
 
 // ErrNotFound reports a missing (or not-owned) account row.

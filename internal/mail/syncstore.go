@@ -15,7 +15,8 @@ import (
 // ADR-0108 §5): mailbox upsert/list/counts for the REST API and the sync
 // engine's cursor + summary persistence, plus the M4 message queries
 // (ADR-0108 §6): keyset-paginated list views, single-row reads, and the
-// local row deletes the live delete/move ops land. The sync engine and the
+// local row deletes the live delete/move ops land, plus M6: the sync-time
+// list-preview write and the unified-search join. The sync engine and the
 // M4 ops write; the REST API reads and resolves scope.
 
 // inChunk bounds one IN (...) placeholder list so even the oldest sqlite
@@ -279,9 +280,9 @@ UPDATE mail_messages SET flags = ? WHERE mailbox_id = ? AND uid = ? AND flags <>
 	return nil
 }
 
-// messageRowColumns is messageColumns plus the primary key, for the M4
-// single-row and list-view reads.
-const messageRowColumns = `id, ` + messageColumns
+// messageRowColumns is messageColumns plus the primary key and the M6
+// list-preview columns, for the M4 single-row and list-view reads.
+const messageRowColumns = `id, ` + messageColumns + `, preview, has_attachments`
 
 // ListMessages returns one page of the list view, newest first: rows with
 // (date_unix, id) strictly BEFORE the cursor, keyset-paginated so same-date
@@ -355,10 +356,86 @@ DELETE FROM mail_messages WHERE mailbox_id = ? AND id = ?`, mailboxID, messageID
 	return nil
 }
 
+// SetMessagePreview fills one row's M6 list-preview columns — the sync-time
+// fetcher is the only writer (rows insert with the empty defaults).
+func (s *SQLStore) SetMessagePreview(ctx context.Context, mailboxID, uid int64, preview string, hasAttachments bool) error {
+	if _, err := s.db.Exec(ctx, `
+UPDATE mail_messages SET preview = ?, has_attachments = ? WHERE mailbox_id = ? AND uid = ?`,
+		preview, hasAttachments, mailboxID, uid); err != nil {
+		return fmt.Errorf("mail: set message preview: %w", err)
+	}
+	return nil
+}
+
+// searchMessagesMax bounds one unified-search query, mirroring the files
+// SearchByName cap.
+const searchMessagesMax = 20
+
+// SearchMessages joins the caller's synced messages across every account
+// and mailbox they own, matching subject and from_addr with the files
+// SearchByName idiom: a case-insensitive contains (ILIKE on Postgres, LIKE
+// elsewhere) with %/_ backslash-escaped, newest first. It backs the M6
+// unified-search provider, so user isolation is the WHERE clause itself —
+// another user's rows are never scanned.
+func (s *SQLStore) SearchMessages(ctx context.Context, userID, term string, limit int) ([]MessageHit, error) {
+	term = strings.TrimSpace(term)
+	if userID == "" || term == "" {
+		return nil, nil
+	}
+	if limit <= 0 || limit > searchMessagesMax {
+		limit = searchMessagesMax
+	}
+	op := "LIKE"
+	if s.db.Dialect() == database.DialectPostgres {
+		op = "ILIKE"
+	}
+	q := fmt.Sprintf(`
+SELECT msg.id, msg.uid, msg.mailbox_id, mb.account_id, msg.subject, msg.from_addr
+FROM mail_messages msg
+JOIN mail_mailboxes mb ON mb.id = msg.mailbox_id
+JOIN mail_accounts a ON a.id = mb.account_id
+WHERE a.user_id = ? AND (msg.subject %s ? ESCAPE '\' OR msg.from_addr %s ? ESCAPE '\')
+ORDER BY msg.date_unix DESC, msg.id DESC
+LIMIT ?`, op, op)
+	rows, err := s.db.Query(ctx, q, userID, likeContains(term), likeContains(term), limit)
+	if err != nil {
+		return nil, fmt.Errorf("mail: search messages: %w", err)
+	}
+	defer rows.Close()
+	out := make([]MessageHit, 0)
+	for rows.Next() {
+		var h MessageHit
+		if err := rows.Scan(&h.ID, &h.UID, &h.MailboxID, &h.AccountID, &h.Subject, &h.FromAddr); err != nil {
+			return nil, fmt.Errorf("mail: scan message hit: %w", err)
+		}
+		out = append(out, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mail: search messages: %w", err)
+	}
+	return out, nil
+}
+
+// likeContains renders term as a LIKE/ILIKE contains pattern with the
+// wildcard characters backslash-escaped — the files SearchByName helper,
+// mirrored so the two search surfaces match identically.
+func likeContains(term string) string {
+	var b strings.Builder
+	b.WriteByte('%')
+	for _, r := range term {
+		if r == '\\' || r == '%' || r == '_' {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('%')
+	return b.String()
+}
+
 func scanMessage(row mailboxScanner) (*Message, error) {
 	var m Message
 	if err := row.Scan(&m.ID, &m.MailboxID, &m.UID, &m.MessageID, &m.Subject, &m.FromAddr,
-		&m.ToAddrs, &m.DateUnix, &m.Flags, &m.Size); err != nil {
+		&m.ToAddrs, &m.DateUnix, &m.Flags, &m.Size, &m.Preview, &m.HasAttachments); err != nil {
 		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, database.ErrNoRows) {
 			return nil, ErrNotFound
 		}

@@ -1,4 +1,5 @@
-// Package search serves the OCS unified-search API (filename provider only).
+// Package search serves the OCS unified-search API (files and mail
+// providers).
 package search
 
 import (
@@ -16,7 +17,10 @@ type Provider interface {
 	Search(ctx context.Context, uid, term string, limit int) ([]Hit, error)
 }
 
-// Hit is one search result.
+// Hit is one search result. ResourceURL, when set, is an absolute path on
+// this server (e.g. the mail provider's message API path) and the handler
+// renders it under the request base; when empty the files provider's
+// fileID-derived pretty URL (/index.php/f/{id}) is used.
 type Hit struct {
 	Title        string
 	ResourceURL  string

@@ -191,6 +191,24 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-10-02** — **Mail M6: unified-search provider + sharees exact-email
+  bucket + list previews** (ADR-0108; mail epic increment 6). The OCS
+  unified-search API gains a `mail` provider (registered only when
+  `mail.enabled`) that joins the caller's synced messages across all their
+  accounts and mailboxes, matching subject and sender with the files
+  provider's exact LIKE/ILIKE-contains idiom; entries link to the message's
+  JSON API path under the request base (the search handler now honors a
+  provider-set resource path, mirroring the files `/index.php/f/{id}`
+  link). Sharees: a bare-email search term belonging to a local user adds
+  one `exact.emails` entry (`shareType` 4, identifying by the email);
+  share-by-mail stays off. Migration 0029 adds `preview` +
+  `has_attachments` to `mail_messages`: at sync time the newest ≤50 new
+  messages up to 1 MiB are fetched whole over the sync's own connection and
+  parsed, so the list view gains a whitespace-collapsed plain-body snippet
+  (first 200 runes; HTML never stripped) and the paperclip flag — lazy,
+  insert-time only, failures skip their message and never fail the sync,
+  oversized messages keep the empty preview. Zero new dependencies.
+
 - **2026-10-02** — **Mail M5: SMTP send + MIME compose + save-to-Sent**
   (ADR-0108 §1; mail epic increment 5). Outbound send uses the stdlib
   `net/smtp` client behind the egress-guarded dialer (the `DialSMTP` seam

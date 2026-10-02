@@ -221,6 +221,39 @@ HTML UI** — clients must sanitize until then. List preview and
 has-attachments flags are follow-ups too (they need
 `BODY.PEEK[TEXT]`/BODYSTRUCTURE in the sync fetch shape).）
 
+（**landed 2026-10-02 (M6)**: the polish increment landed three surfaces.
+**Unified search**: a `mail` provider (`internal/search/mail.go`, id
+`mail`, name `Mail`) joins `mail_messages` → `mail_mailboxes` →
+`mail_accounts` scoped to the caller's `user_id`, matching subject and
+from_addr with the files provider's exact idiom (LIKE contains with
+backslash-escaped `%`/`_` and `ESCAPE '\'`, ILIKE on Postgres, cap 20);
+hits render title=subject, subline=from, and the resourceUrl carries the
+message's JSON API path (`/apps/mail/api/accounts/{aid}/mailboxes/{mbid}/
+messages/{mid}`) under the request base — the search handler learned to
+honor a provider-set path the same way it renders the files
+`/index.php/f/{id}` link. The provider registers only when
+`mail.enabled` is on (same gate as the capabilities block and the
+accounts mount). **Sharees**: a bare-email search term (net/mail parses it
+AND the parsed address equals the trimmed term, so `"Bob <b@x>"` does not
+qualify) that belongs to a LOCAL user adds one `exact.emails` entry in
+the sibling buckets' shape — label (display name or the email) plus
+`value{shareType: 4, shareWith: <email>}` (the new `ShareTypeEmail`
+constant); local users only, and share-by-mail stays off (`mail_send: 0`
+untouched). **List previews**: migration 0029 adds `preview` and
+`has_attachments` to `mail_messages`; at sync time the newest ≤ 50 newly
+inserted messages with synced size ≤ 1 MiB are fetched whole
+(`UIDFetchFull`, the M4 command) over the sync's own EXAMINE connection
+and parsed — `preview` is the first 200 runes of the plain-text part with
+whitespace runs collapsed (lazy, plain-part only — HTML is never
+stripped; a message without a plain part previews empty) and
+`has_attachments` is `len(Attachments) > 0`. Fetch/parse failures skip
+their message with a debug log and never fail the sync; oversized
+messages keep the empty preview (documented limitation); the fetch runs
+after the cursor advance and flag refresh so a broken connection cannot
+take them down. The list endpoint gains `preview` + `hasAttachments`;
+the detail endpoint keeps its M4 shape. **HTML sanitization is still
+pending → M7**, together with the epic close-out.）
+
 ### M1 build surface (what this increment lands)
 
 Migration 0027 `mail_accounts` in three dialects (sqlite/mysql/postgres in

@@ -23,18 +23,24 @@ import (
 // UID STORE, UID COPY, EXPUNGE, and whole-message UID FETCH (BODY.PEEK[]),
 // with an ops log (opsLog) so tests can assert the exact command sequence
 // that crossed the wire. M5 added APPEND (classic continuation) for the
-// save-to-Sent flow. The dialIMAP closure is the Syncer.DialIMAP,
-// MessageOps.DialIMAP, and Sender.DialIMAP seam: it forces ssl mode "none"
-// and re-aims every dial at the listener.
+// save-to-Sent flow. M6 added the sync-time preview fetch: whole-message
+// fetches are recorded separately (fullFetchLog) and only land in the ops
+// log when the mailbox was SELECTed read-write — the ops log pins LIVE-OP
+// sequences, and the sync's EXAMINE-session previews must not pollute them.
+// The dialIMAP closure is the Syncer.DialIMAP, MessageOps.DialIMAP, and
+// Sender.DialIMAP seam: it forces ssl mode "none" and re-aims every dial at
+// the listener.
 type syncFake struct {
 	ln net.Listener
 	wg sync.WaitGroup
 
-	mu       sync.Mutex
-	boxes    []*fakeMailbox
-	ops      []string // M4: the live-op commands, in wire order
-	failList bool     // LIST answers NO (account-level failure injection)
-	failApnd bool     // M5: APPEND answers NO (save-to-Sent failure injection)
+	mu          sync.Mutex
+	boxes       []*fakeMailbox
+	ops         []string // M4: the live-op commands, in wire order
+	fullFetches []string // M6: every UID FETCH BODY.PEEK[] uid set, any session
+	failList    bool     // LIST answers NO (account-level failure injection)
+	failApnd    bool     // M5: APPEND answers NO (save-to-Sent failure injection)
+	failFull    bool     // M6: UID FETCH BODY.PEEK[] answers NO (preview failure injection)
 }
 
 type fakeMailbox struct {
@@ -113,6 +119,7 @@ func (f *syncFake) serve(conn net.Conn) {
 	r := bufio.NewReader(conn)
 	_, _ = io.WriteString(conn, "* OK fake IMAP4rev1 ready\r\n")
 	var selected *fakeMailbox
+	selectedRW := false
 	for {
 		line, err := r.ReadString('\n')
 		if err != nil {
@@ -153,6 +160,7 @@ func (f *syncFake) serve(conn net.Conn) {
 				_, _ = io.WriteString(conn, tag+" NO mailbox broken\r\n")
 			default:
 				selected = mb
+				selectedRW = false
 				var b strings.Builder
 				fmt.Fprintf(&b, "* %d EXISTS\r\n", len(mb.msgs))
 				fmt.Fprintf(&b, "* OK [UIDVALIDITY %d] UIDs valid\r\n", mb.uidvalidity)
@@ -170,6 +178,7 @@ func (f *syncFake) serve(conn net.Conn) {
 				_, _ = io.WriteString(conn, tag+" NO mailbox broken\r\n")
 			default:
 				selected = mb
+				selectedRW = true
 				f.ops = append(f.ops, "SELECT "+name)
 				var b strings.Builder
 				fmt.Fprintf(&b, "* %d EXISTS\r\n", len(mb.msgs))
@@ -199,7 +208,7 @@ func (f *syncFake) serve(conn net.Conn) {
 			b.WriteString(tag + " OK expunge done\r\n")
 			_, _ = io.WriteString(conn, b.String())
 		case "UID":
-			f.serveUID(conn, tag, args, selected)
+			f.serveUID(conn, tag, args, selected, selectedRW)
 		case "APPEND":
 			if !f.serveAppend(conn, r, tag, args) {
 				f.mu.Unlock()
@@ -285,8 +294,9 @@ func appendLiteralSize(args string) int {
 
 // serveUID answers UID SEARCH ALL, UID FETCH (summaries, flags, and the
 // whole-message BODY.PEEK[] form), UID STORE, and UID COPY for the selected
-// mailbox.
-func (f *syncFake) serveUID(conn net.Conn, tag, args string, selected *fakeMailbox) {
+// mailbox. selectedRW tells EXAMINE (sync) and SELECT (live-op) sessions
+// apart — only the latter's traffic feeds the ops log.
+func (f *syncFake) serveUID(conn net.Conn, tag, args string, selected *fakeMailbox, selectedRW bool) {
 	sub, rest, _ := strings.Cut(args, " ")
 	if selected == nil {
 		_, _ = io.WriteString(conn, tag+" BAD no mailbox selected\r\n")
@@ -305,7 +315,7 @@ func (f *syncFake) serveUID(conn net.Conn, tag, args string, selected *fakeMailb
 		set, items, _ := strings.Cut(rest, " (")
 		items = strings.TrimSuffix(items, ")")
 		if strings.Contains(items, "BODY.PEEK[]") {
-			f.serveFetchFull(conn, tag, set, selected)
+			f.serveFetchFull(conn, tag, set, selected, selectedRW)
 			return
 		}
 		var b strings.Builder
@@ -367,8 +377,19 @@ func (f *syncFake) serveUID(conn net.Conn, tag, args string, selected *fakeMailb
 // serveFetchFull answers UID FETCH <set> (UID BODY.PEEK[]): each matching
 // message whose raw bytes exist is one literal-bearing FETCH line; a
 // message without raw bytes is simply not returned (the message-gone case).
-func (f *syncFake) serveFetchFull(conn net.Conn, tag, set string, selected *fakeMailbox) {
-	f.ops = append(f.ops, "UID FETCH "+set+" (UID BODY.PEEK[])")
+// failFull injects a tagged NO. Every request is recorded in fullFetches;
+// only a read-write (SELECT) session's request also joins the live-op log —
+// the M6 sync previews run over EXAMINE and would otherwise break the ops
+// sequence assertions.
+func (f *syncFake) serveFetchFull(conn net.Conn, tag, set string, selected *fakeMailbox, selectedRW bool) {
+	f.fullFetches = append(f.fullFetches, set)
+	if f.failFull {
+		_, _ = io.WriteString(conn, tag+" NO fetch broken\r\n")
+		return
+	}
+	if selectedRW {
+		f.ops = append(f.ops, "UID FETCH "+set+" (UID BODY.PEEK[])")
+	}
 	var buf bytes.Buffer
 	seq := 0
 	for _, m := range selected.msgs {
@@ -391,12 +412,27 @@ func (f *syncFake) opsLog() []string {
 	return append([]string(nil), f.ops...)
 }
 
+// fullFetchLog returns the uid sets of every UID FETCH BODY.PEEK[] the fake
+// saw, in wire order — M6 sync previews included (they never join opsLog).
+func (f *syncFake) fullFetchLog() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.fullFetches...)
+}
+
 // setFailApnd flips the M5 APPEND-refusal knob mid-test (mu-guarded — a
 // serve goroutine may be reading it on another connection).
 func (f *syncFake) setFailApnd(v bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.failApnd = v
+}
+
+// setFailFull flips the M6 full-fetch-refusal knob mid-test (mu-guarded).
+func (f *syncFake) setFailFull(v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failFull = v
 }
 
 // hasWireFlag reports whether the message carries the flag (case-folded —

@@ -189,8 +189,15 @@ func (a *App) mountRoutes() error {
 	router.Handle("DELETE", "/ocs/v2.php/core/apppassword", ocs.DeleteAppPasswordHandler(ocs.V2, issuer), httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
 
 	searchFiles := search.NewFilesProvider(a.fileMeta, a.Users)
-	searchV1 := search.Handler{Providers: []search.Provider{searchFiles}, Version: ocs.V1}
-	searchV2 := search.Handler{Providers: []search.Provider{searchFiles}, Version: ocs.V2}
+	searchProviders := []search.Provider{searchFiles}
+	if a.mailSvc != nil {
+		// ADR-0108 (M6): the mail unified-search provider searches the
+		// caller's synced messages; it registers only when the Mail app is
+		// enabled, mirroring the capabilities block and the accounts mount.
+		searchProviders = append(searchProviders, search.NewMailProvider(a.mailSvc.Store))
+	}
+	searchV1 := search.Handler{Providers: searchProviders, Version: ocs.V1}
+	searchV2 := search.Handler{Providers: searchProviders, Version: ocs.V2}
 	router.HandlePrefix(httpx.MethodAny, "/ocs/v1.php/search/providers", searchV1, httpx.Middleware(ocs.Auth(ocs.V1, authCfg)))
 	router.HandlePrefix(httpx.MethodAny, "/ocs/v2.php/search/providers", searchV2, httpx.Middleware(ocs.Auth(ocs.V2, authCfg)))
 

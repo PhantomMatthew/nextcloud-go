@@ -14,6 +14,10 @@ const (
 	ShareTypeGroup = 1
 	// ShareTypeLink is Nextcloud shareType 3 (public link).
 	ShareTypeLink = 3
+	// ShareTypeEmail is Nextcloud shareType 4 (share by mail). The M6
+	// sharees exact-email bucket advertises it; creating such shares is not
+	// implemented (mail_send stays 0).
+	ShareTypeEmail = 4
 	// ShareTypeRemote is Nextcloud shareType 6 (federated / OCM).
 	ShareTypeRemote = 6
 )

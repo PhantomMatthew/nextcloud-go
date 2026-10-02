@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/auth"
@@ -148,6 +149,92 @@ func shareesExactRemotes(t *testing.T, body []byte) []map[string]any {
 	data, _ := env["ocs"].(map[string]any)["data"].(map[string]any)
 	exact, _ := data["exact"].(map[string]any)
 	raw, _ := exact["remotes"].([]any)
+	out := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		m, _ := item.(map[string]any)
+		out = append(out, m)
+	}
+	return out
+}
+
+// TestShareesExactEmail pins the M6 exact-email bucket: a bare email that
+// belongs to a local user lands in exact.emails, identifying by the email
+// itself with the sibling buckets' shape.
+func TestShareesExactEmail(t *testing.T) {
+	ctx := context.Background()
+	us := users.NewSQLStore(testDB(t))
+	bob := &users.User{UID: "bob", DisplayName: "Bob", Email: "bob@example.com", PasswordHash: "x", Enabled: true}
+	if err := us.Create(ctx, bob); err != nil {
+		t.Fatal(err)
+	}
+	h := ShareesHandler{Version: ocs.V2, Users: us}
+	get := func(t *testing.T, search string) []map[string]any {
+		t.Helper()
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+			"/ocs/v2.php/apps/files_sharing/api/v1/sharees?search="+url.QueryEscape(search)+"&itemType=file&format=json", nil)
+		h.ServeHTTP(rr, withUser(req))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("search %q: status = %d body=%s", search, rr.Code, rr.Body.String())
+		}
+		return shareesExactEmails(t, rr.Body.Bytes())
+	}
+
+	emails := get(t, "bob@example.com")
+	if len(emails) != 1 {
+		t.Fatalf("emails = %v", emails)
+	}
+	if emails[0]["label"] != "Bob" {
+		t.Errorf("label = %v (the display name wins)", emails[0]["label"])
+	}
+	val, _ := emails[0]["value"].(map[string]any)
+	if val["shareType"] != float64(4) || val["shareWith"] != "bob@example.com" {
+		t.Errorf("value = %v", val)
+	}
+
+	// A user without a display name labels with the email itself.
+	carol := &users.User{UID: "carol", Email: "carol@example.com", PasswordHash: "x", Enabled: true}
+	if err := us.Create(ctx, carol); err != nil {
+		t.Fatal(err)
+	}
+	if emails := get(t, "carol@example.com"); len(emails) != 1 || emails[0]["label"] != "carol@example.com" {
+		t.Errorf("no-display-name emails = %v", emails)
+	}
+
+	// Non-email terms, unknown emails, and the display-name form leave the
+	// bucket empty.
+	for _, search := range []string{"bob", "nobody@example.com", "Bob <bob@example.com>", "bob@", "@example.com", ""} {
+		if emails := get(t, search); len(emails) != 0 {
+			t.Errorf("search %q: emails = %v, want empty", search, emails)
+		}
+	}
+}
+
+// TestShareesExactEmailNilUsers: without a Users store the bucket stays
+// empty (the nil-disabled typeahead convention).
+func TestShareesExactEmailNilUsers(t *testing.T) {
+	h := ShareesHandler{Version: ocs.V2}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+		"/ocs/v2.php/apps/files_sharing/api/v1/sharees?search=bob@example.com&itemType=file&format=json", nil)
+	h.ServeHTTP(rr, withUser(req))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if emails := shareesExactEmails(t, rr.Body.Bytes()); len(emails) != 0 {
+		t.Fatalf("emails = %v", emails)
+	}
+}
+
+func shareesExactEmails(t *testing.T, body []byte) []map[string]any {
+	t.Helper()
+	var env map[string]any
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := env["ocs"].(map[string]any)["data"].(map[string]any)
+	exact, _ := data["exact"].(map[string]any)
+	raw, _ := exact["emails"].([]any)
 	out := make([]map[string]any, 0, len(raw))
 	for _, item := range raw {
 		m, _ := item.(map[string]any)

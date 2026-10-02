@@ -2,6 +2,7 @@ package sharing
 
 import (
 	"net/http"
+	"net/mail"
 	"sort"
 	"strings"
 
@@ -77,7 +78,9 @@ func shareesPathRemainder(path string, version ocs.Version) (string, bool) {
 
 // shareesPayload builds the sharees data map. Local user/group matches
 // come from the Users store: an exact uid/gid match lands in exact.*,
-// other matches in the typeahead collections.
+// other matches in the typeahead collections. A search term that IS a bare
+// email address (not a display-name form) and belongs to a local user adds
+// one exact.emails entry identifying by the email (M6).
 func (h ShareesHandler) shareesPayload(r *http.Request, search string, hits []LookupResult) ocs.OrderedMap {
 	origin := ocm.RequestBaseURL(r)
 	search = strings.TrimSpace(search)
@@ -121,9 +124,27 @@ func (h ShareesHandler) shareesPayload(r *http.Request, search string, hits []Lo
 	}
 	exactUsers := make([]any, 0)
 	exactGroups := make([]any, 0)
+	exactEmails := make([]any, 0)
 	localUsers := make([]any, 0)
 	localGroups := make([]any, 0)
 	if h.Users != nil && search != "" {
+		// M6 (ADR-0108): a bare email address that belongs to a LOCAL user
+		// surfaces in exact.emails — the entry identifies by the email
+		// itself and mirrors the sibling buckets' shape. "Bob <b@x>" is a
+		// display-name form, not an email, and stays out; share-by-mail
+		// creation is not implemented (mail_send stays 0), so the entry is
+		// typeahead-only for now.
+		if addr, err := mail.ParseAddress(search); err == nil && addr.Address == search {
+			if u, err := h.Users.GetByEmail(r.Context(), search); err == nil {
+				exactEmails = append(exactEmails, ocs.Obj(
+					ocs.K("label", shareeLabel(u.DisplayName, search)),
+					ocs.K("value", ocs.Obj(
+						ocs.K("shareType", files.ShareTypeEmail),
+						ocs.K("shareWith", search),
+					)),
+				))
+			}
+		}
 		if found, err := h.Users.Search(r.Context(), search, 20); err == nil {
 			for i := range found {
 				entry := ocs.Obj(
@@ -164,7 +185,7 @@ func (h ShareesHandler) shareesPayload(r *http.Request, search string, hits []Lo
 			ocs.K("groups", exactGroups),
 			ocs.K("remotes", remotes),
 			ocs.K("remote_groups", empty),
-			ocs.K("emails", empty),
+			ocs.K("emails", exactEmails),
 			ocs.K("circles", empty),
 			ocs.K("rooms", empty),
 		)),

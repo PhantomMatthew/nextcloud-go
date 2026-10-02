@@ -18,9 +18,10 @@ import (
 // {account, mailbox, message} scope through the owning user first, so a
 // cross-user (or cross-mailbox) row is the same 404 as a missing one.
 
-// messageResponse is the list-view summary JSON. Flags carry the IMAP
-// backslash again ("\\Seen") — the storage form drops it.
-type messageResponse struct {
+// messageSummary is the summary JSON the list, flags, and detail responses
+// share. Flags carry the IMAP backslash again ("\\Seen") — the storage form
+// drops it.
+type messageSummary struct {
 	ID      int64    `json:"id"`
 	UID     int64    `json:"uid"`
 	Subject string   `json:"subject"`
@@ -29,6 +30,14 @@ type messageResponse struct {
 	Date    int64    `json:"date"`
 	Flags   []string `json:"flags"`
 	Size    int64    `json:"size"`
+}
+
+// messageResponse is the list-view summary JSON: the shared summary plus
+// the M6 sync-time extras — the plain-body snippet and the paperclip flag.
+type messageResponse struct {
+	messageSummary
+	Preview        string `json:"preview"`
+	HasAttachments bool   `json:"hasAttachments"`
 }
 
 // messageListResponse is one cursor page; nextCursor is null at the end.
@@ -49,9 +58,10 @@ type attachmentResponse struct {
 // messageDetailResponse adds the live-fetched bodies. BodyHTML is
 // UNSANITIZED — htmlSanitized stays false so clients know they must
 // sanitize before rendering (ADR-0108 §6: first-party HTML rendering is
-// blocked until a sanitizer lands).
+// blocked until a sanitizer lands). The detail shape is M4's — it does NOT
+// inherit the M6 list preview fields.
 type messageDetailResponse struct {
-	messageResponse
+	messageSummary
 	BodyPlain     string               `json:"bodyPlain"`
 	BodyHTML      string               `json:"bodyHtml"`
 	Attachments   []attachmentResponse `json:"attachments"`
@@ -91,10 +101,10 @@ func systemFlagName(tok string) bool {
 	return false
 }
 
-// respondMessage renders one summary row; flagTokens are the bare storage
-// tokens (from the row, or from the op that just changed them).
-func respondMessage(m *Message, flagTokens []string) messageResponse {
-	return messageResponse{
+// respondSummary renders the shared summary of one row; flagTokens are the
+// bare storage tokens (from the row, or from the op that just changed them).
+func respondSummary(m *Message, flagTokens []string) messageSummary {
+	return messageSummary{
 		ID:      m.ID,
 		UID:     m.UID,
 		Subject: m.Subject,
@@ -103,6 +113,16 @@ func respondMessage(m *Message, flagTokens []string) messageResponse {
 		Date:    m.DateUnix,
 		Flags:   wireFlags(flagTokens),
 		Size:    m.Size,
+	}
+}
+
+// respondMessage renders one list-view row: the shared summary plus the
+// synced preview extras.
+func respondMessage(m *Message, flagTokens []string) messageResponse {
+	return messageResponse{
+		messageSummary: respondSummary(m, flagTokens),
+		Preview:        m.Preview,
+		HasAttachments: m.HasAttachments,
 	}
 }
 
@@ -223,11 +243,11 @@ func (h *Handler) messageDetail(w http.ResponseWriter, r *http.Request, uid stri
 		atts = append(atts, attachmentResponse(a))
 	}
 	writeJSON(w, http.StatusOK, messageDetailResponse{
-		messageResponse: respondMessage(scope.message, flags),
-		BodyPlain:       parsed.TextPlain,
-		BodyHTML:        parsed.TextHTML,
-		Attachments:     atts,
-		HTMLSanitized:   false,
+		messageSummary: respondSummary(scope.message, flags),
+		BodyPlain:      parsed.TextPlain,
+		BodyHTML:       parsed.TextHTML,
+		Attachments:    atts,
+		HTMLSanitized:  false,
 	})
 }
 
