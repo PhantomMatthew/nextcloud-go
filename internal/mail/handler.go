@@ -1,8 +1,10 @@
 package mail
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/mail"
 	"strconv"
@@ -37,6 +39,10 @@ const AccountsPrefix = "/apps/mail/api/accounts"
 //	PUT    .../mailboxes/{mbid}/messages/{mid}/move          UID COPY + expunge
 //	GET    .../mailboxes/{mbid}/messages/{mid}/attachments/{index}  live download
 //
+// M5 (ADR-0108 §1):
+//
+//	POST   /apps/mail/api/accounts/{id}/send        compose + SMTP send + save to Sent
+//
 // Passwords never appear in any response; cross-user rows are 404, not 403.
 type Handler struct {
 	Svc *Service
@@ -47,6 +53,14 @@ type Handler struct {
 	// 500 (a miswiring, not a client error). The list endpoint is
 	// store-only and works without it.
 	Ops *MessageOps
+	// Sender runs the M5 send flow for POST .../send; nil leaves that
+	// endpoint a 500 (a miswiring, not a client error).
+	Sender *Sender
+	// ReadFile reads one file's content from a user's files with the
+	// share/ownership checks of the WOPI GetFile seam (production:
+	// webdav.FS.Read). It backs the {path} attachment form; nil leaves
+	// files-path attachments a 400.
+	ReadFile func(ctx context.Context, uid, path string) (io.ReadCloser, error)
 }
 
 // accountResponse is the account JSON shape (official app field names).
@@ -151,13 +165,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Allow", "GET, PUT, DELETE")
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
-	case rest == "mailboxes" || rest == "sync":
-		// Sub-resources: GET mailboxes, POST sync. Everything else is 405.
+	case rest == "mailboxes" || rest == "sync" || rest == "send":
+		// Sub-resources: GET mailboxes, POST sync, POST send. Everything
+		// else is 405.
 		switch {
 		case rest == "mailboxes" && r.Method == http.MethodGet:
 			h.mailboxes(w, r, p.UID, id)
 		case rest == "sync" && r.Method == http.MethodPost:
 			h.sync(w, r, p.UID, id)
+		case rest == "send" && r.Method == http.MethodPost:
+			h.send(w, r, p.UID, id)
 		default:
 			w.Header().Set("Allow", "GET, POST")
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")

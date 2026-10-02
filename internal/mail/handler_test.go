@@ -2,9 +2,12 @@ package mail
 
 import (
 	"bytes"
+	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,20 +24,25 @@ import (
 // exercise session-auth rejection and per-user scoping end to end. The
 // service's DialIMAP seam is a scripted fake IMAP server (M2 verify-on-
 // create dials before persisting); it accepts the test password pair. A
-// second fake (sfake) backs the M3 Syncer and the M4 MessageOps: it speaks
-// LIST/EXAMINE/SELECT/UID SEARCH/UID FETCH/UID STORE/UID COPY/EXPUNGE so
-// POST .../sync runs a real sync and the message APIs run real live ops end
-// to end.
+// second fake (sfake) backs the M3 Syncer, the M4 MessageOps, and the M5
+// save-to-Sent APPEND: it speaks LIST/EXAMINE/SELECT/UID SEARCH/UID FETCH/
+// UID STORE/UID COPY/EXPUNGE/APPEND so POST .../sync runs a real sync, the
+// message APIs run real live ops, and sends land in Sent end to end. The M5
+// Sender's DialSMTP seam is a scripted fake SMTP server (TLS at accept —
+// the alice account uses smtpSslMode ssl).
 type mailEnv struct {
-	db     database.DB
-	store  *SQLStore
-	svc    *Service
-	fake   *imapFake
-	sfake  *syncFake
-	syncer *Syncer
-	ops    *MessageOps
-	chain  http.Handler
-	secret string
+	db        database.DB
+	store     *SQLStore
+	svc       *Service
+	fake      *imapFake
+	sfake     *syncFake
+	smtp      *smtpFake
+	syncer    *Syncer
+	ops       *MessageOps
+	sender    *Sender
+	chain     http.Handler
+	secret    string
+	readFiles map[string][]byte
 }
 
 func newMailEnv(t *testing.T) *mailEnv {
@@ -57,21 +65,47 @@ func newMailEnv(t *testing.T) *mailEnv {
 		return pass == "imap-secret-pw" || pass == "imap-secret-pw-2"
 	})
 	sfake := newSyncFake(t)
+	smtpF := newSMTPFake(t, func(f *smtpFake) {
+		f.tlsImmediate = true // the test accounts use smtpSslMode ssl
+		f.auth = true
+	})
 	svc := &Service{Store: store, Secret: "test-instance-secret", DialIMAP: fake.dialIMAP}
 	syncer := &Syncer{Store: store, Secret: "test-instance-secret", DialIMAP: sfake.dialIMAP}
 	ops := &MessageOps{Store: store, Secret: "test-instance-secret", DialIMAP: sfake.dialIMAP}
-	authCfg := auth.MiddlewareConfig{Verifier: users.NewPasswordVerifier(us, hasher)}
-	return &mailEnv{
-		db:     db,
-		store:  store,
-		svc:    svc,
-		fake:   fake,
-		sfake:  sfake,
-		syncer: syncer,
-		ops:    ops,
-		chain:  webdav.Auth(authCfg)(&Handler{Svc: svc, Syncer: syncer, Ops: ops}),
-		secret: "test-instance-secret",
+	sender := &Sender{
+		Store:    store,
+		Secret:   "test-instance-secret",
+		DialIMAP: sfake.dialIMAP,
+		DialSMTP: smtpF.dialSMTP,
+		// test-only: the scripted fake's cert is self-signed.
+		TLSConfig: &tls.Config{InsecureSkipVerify: true},
 	}
+	env := &mailEnv{
+		db:        db,
+		store:     store,
+		svc:       svc,
+		fake:      fake,
+		sfake:     sfake,
+		smtp:      smtpF,
+		syncer:    syncer,
+		ops:       ops,
+		sender:    sender,
+		secret:    "test-instance-secret",
+		readFiles: map[string][]byte{},
+	}
+	env.chain = webdav.Auth(auth.MiddlewareConfig{Verifier: users.NewPasswordVerifier(us, hasher)})(
+		&Handler{Svc: svc, Syncer: syncer, Ops: ops, Sender: sender, ReadFile: env.readFile})
+	return env
+}
+
+// readFile is the Handler.ReadFile seam for the {path} attachment form:
+// an in-memory files map; a missing path is unreadable.
+func (e *mailEnv) readFile(_ context.Context, _, p string) (io.ReadCloser, error) {
+	data, ok := e.readFiles[p]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
 // serve runs one request, authenticating as uid when non-empty, and asserts

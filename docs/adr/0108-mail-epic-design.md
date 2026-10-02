@@ -52,6 +52,38 @@ any write). LIST/SELECT/UID FETCH/UID STORE remain M3/M4 scope. The client
 is plain `net.Conn` + `bufio` rather than `net/textproto` — literal
 handling needs byte-exact control textproto does not offer.）
 
+（**landed 2026-10-02 (M5)**: send landed exactly as pre-decided — stdlib
+`net/smtp` behind the egress-guarded dialer, in package `mail` (no
+subpackage; the `DialSMTP` seam is a field on the `Sender` and the
+production closure only builds the address from the options). TLS modes
+mirror IMAP: `ssl` wraps before the greeting, `starttls` upgrades after
+EHLO (a server not advertising it is a 502), and **`none` + credentials is
+refused BEFORE AUTH** ("cleartext authentication refused", 502 class;
+stdlib `PlainAuth`'s own non-TLS refusal is only the second line). An empty
+`SMTPUser` is relay mode: AUTH is skipped entirely. An RCPT refusal is the
+typed `ErrRecipientRefused` (400, naming the address); auth/dial/TLS/
+transport failures are `ErrUpstream` (502). MIME compose is stdlib-only:
+RFC 2047 Q-encoded subjects, quoted-printable text leaves (charset=utf-8),
+base64 attachments at 76 columns with RFC 2231 filenames via
+`mime.FormatMediaType`, multipart/alternative and multipart/mixed trees,
+CR/LF injection guards on every header-destined value, and a 25 MiB
+composed cap (typed, shared with M4). **Bcc is envelope-only** — it reaches
+RCPT and never the message bytes. Caps: ≤20 attachments, ≤10 MiB decoded
+each, ≤25 MiB decoded total. Save-to-Sent is best-effort: when the synced
+mailbox list has `special_use='sent'`, the composed bytes are APPENDed with
+`\Seen` over a fresh IMAP session (no SELECT needed) — APPEND is the
+client's first client-literal command, so it runs its own exchange
+supporting both the classic `+ ` continuation and LITERAL+ (`{n+}`); the
+fatal-continuation rule stands for every other command. An append failure
+logs and reports through the `OnAppendError` hook (`ErrSentAppend`) and the
+send result stands. REST: `POST /apps/mail/api/accounts/{id}/send` (JSON
+to/cc/bcc/subject/bodyPlain/bodyHtml/inReplyTo/references/attachments) →
+200 `{messageId}`. **Files-path attachments landed**: the optional
+`{path: "/Documents/file.pdf"}` form (mutually exclusive with
+`contentBase64`) resolves against the SENDER's files through the very
+`webdav.FS.Read` seam WOPI's GetFile uses — share/ownership checks intact,
+unreadable → 400, capped at the 10 MiB per-attachment limit.）
+
 ### 2. JSON REST under `/apps/mail/api`, mirroring the official app subset
 
 Pure-JSON endpoints (official field names: `emailAddress`, `imapHost`,

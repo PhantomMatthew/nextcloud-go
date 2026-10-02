@@ -22,9 +22,10 @@ import (
 // runs. M4 added the live-op surface the message API tests drive: SELECT,
 // UID STORE, UID COPY, EXPUNGE, and whole-message UID FETCH (BODY.PEEK[]),
 // with an ops log (opsLog) so tests can assert the exact command sequence
-// that crossed the wire. The dialIMAP closure is the Syncer.DialIMAP and
-// MessageOps.DialIMAP seam: it forces ssl mode "none" and re-aims every
-// dial at the listener.
+// that crossed the wire. M5 added APPEND (classic continuation) for the
+// save-to-Sent flow. The dialIMAP closure is the Syncer.DialIMAP,
+// MessageOps.DialIMAP, and Sender.DialIMAP seam: it forces ssl mode "none"
+// and re-aims every dial at the listener.
 type syncFake struct {
 	ln net.Listener
 	wg sync.WaitGroup
@@ -33,6 +34,7 @@ type syncFake struct {
 	boxes    []*fakeMailbox
 	ops      []string // M4: the live-op commands, in wire order
 	failList bool     // LIST answers NO (account-level failure injection)
+	failApnd bool     // M5: APPEND answers NO (save-to-Sent failure injection)
 }
 
 type fakeMailbox struct {
@@ -198,6 +200,11 @@ func (f *syncFake) serve(conn net.Conn) {
 			_, _ = io.WriteString(conn, b.String())
 		case "UID":
 			f.serveUID(conn, tag, args, selected)
+		case "APPEND":
+			if !f.serveAppend(conn, r, tag, args) {
+				f.mu.Unlock()
+				return
+			}
 		case "LOGOUT":
 			_, _ = io.WriteString(conn, "* BYE bye\r\n"+tag+" OK logout done\r\n")
 			f.mu.Unlock()
@@ -207,6 +214,73 @@ func (f *syncFake) serve(conn net.Conn) {
 		}
 		f.mu.Unlock()
 	}
+}
+
+// serveAppend answers the M5 APPEND command: `APPEND "name" (flags) "date"
+// {n}` — the fake plays the classic continuation ("+ go ahead", then reads
+// the literal and its CRLF) and files the payload as a new message of the
+// target mailbox. failApnd injects a tagged NO (no continuation, no data).
+// ok=false means the connection died mid-literal.
+func (f *syncFake) serveAppend(conn net.Conn, r *bufio.Reader, tag, args string) bool {
+	name := appendMailboxName(args)
+	mb := f.mailbox(name)
+	switch {
+	case mb == nil:
+		_, _ = io.WriteString(conn, tag+" NO no such mailbox\r\n")
+	case f.failApnd:
+		f.ops = append(f.ops, "APPEND "+name+" (refused)")
+		_, _ = io.WriteString(conn, tag+" NO append broken\r\n")
+	default:
+		f.ops = append(f.ops, "APPEND "+name)
+		n := appendLiteralSize(args)
+		_, _ = io.WriteString(conn, "+ go ahead\r\n")
+		payload := make([]byte, n)
+		if _, err := io.ReadFull(r, payload); err != nil {
+			return false
+		}
+		var crlf [2]byte
+		if _, err := io.ReadFull(r, crlf[:]); err != nil {
+			return false
+		}
+		flags := ""
+		if open := strings.Index(args, "("); open >= 0 {
+			if closing := strings.Index(args[open:], ")"); closing > 0 {
+				flags = args[open+1 : open+closing]
+			}
+		}
+		mb.msgs = append(mb.msgs, &fakeMsg{
+			uid:   mb.uidnext(),
+			flags: strings.Fields(flags),
+			raw:   payload,
+			size:  len(payload),
+			date:  "2-Jan-2006 15:04:05 +0000",
+		})
+		_, _ = io.WriteString(conn, tag+" OK append done\r\n")
+	}
+	return true
+}
+
+// appendMailboxName extracts the quoted mailbox name that opens an APPEND
+// command line (`"Sent" (\Seen) "date" {n}` — test names carry no escapes).
+func appendMailboxName(args string) string {
+	rest, ok := strings.CutPrefix(args, `"`)
+	if !ok {
+		return args
+	}
+	name, _, _ := strings.Cut(rest, `"`)
+	return name
+}
+
+// appendLiteralSize parses the {n} literal marker at the end of an APPEND
+// command line.
+func appendLiteralSize(args string) int {
+	open := strings.LastIndexByte(args, '{')
+	closing := strings.LastIndexByte(args, '}')
+	if open < 0 || closing < open {
+		return 0
+	}
+	n, _ := strconv.Atoi(strings.TrimSuffix(args[open+1:closing], "+"))
+	return n
 }
 
 // serveUID answers UID SEARCH ALL, UID FETCH (summaries, flags, and the
@@ -315,6 +389,14 @@ func (f *syncFake) opsLog() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.ops...)
+}
+
+// setFailApnd flips the M5 APPEND-refusal knob mid-test (mu-guarded — a
+// serve goroutine may be reading it on another connection).
+func (f *syncFake) setFailApnd(v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failApnd = v
 }
 
 // hasWireFlag reports whether the message carries the flag (case-folded —

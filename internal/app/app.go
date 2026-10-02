@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -102,6 +103,7 @@ type App struct {
 	mailSvc          *mail.Service
 	mailSyncer       *mail.Syncer
 	mailOps          *mail.MessageOps
+	mailSender       *mail.Sender
 	staticUI         *web.StaticUI
 }
 
@@ -511,6 +513,22 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 			Store:    mailStore,
 			Secret:   a.secret,
 			DialIMAP: dialIMAP,
+			Logger:   logger,
+		}
+		// M5 (ADR-0108 §1): the send flow. The SMTP dial goes through the
+		// same egress guard — the closure only builds the address from the
+		// options (the port default was already applied by the sender) and
+		// dials; TLS, STARTTLS, AUTH, and the cleartext-auth refusal are the
+		// mail package's own flow. The IMAP seam serves the best-effort
+		// save-to-Sent APPEND.
+		dialSMTP := func(ctx context.Context, opts mail.SMTPOptions) (net.Conn, error) {
+			return dialContext(ctx, "tcp", net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port)))
+		}
+		a.mailSender = &mail.Sender{
+			Store:    mailStore,
+			Secret:   a.secret,
+			DialIMAP: dialIMAP,
+			DialSMTP: dialSMTP,
 			Logger:   logger,
 		}
 		if err := jr.Register(mail.NewSyncJob(a.mailSyncer, mailStore, logger)); err != nil {

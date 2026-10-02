@@ -191,6 +191,28 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-10-02** — **Mail M5: SMTP send + MIME compose + save-to-Sent**
+  (ADR-0108 §1; mail epic increment 5). Outbound send uses the stdlib
+  `net/smtp` client behind the egress-guarded dialer (the `DialSMTP` seam
+  on the new `Sender`): `ssl` wraps before the greeting, `starttls`
+  requires the advertisement and upgrades after EHLO, and `none` with
+  credentials is refused before AUTH ("cleartext authentication refused";
+  an empty `SMTPUser` is relay mode with no AUTH at all). An RCPT refusal
+  is a typed 400 naming the address; auth/dial/TLS/transport failures are
+  502. The stdlib-only MIME composer renders RFC 2047 Q-encoded subjects,
+  quoted-printable utf-8 text leaves, base64 attachments with RFC 2231
+  filenames, and alternative/mixed trees, with CR/LF injection guards, a
+  25 MiB composed cap, ≤20 attachments at ≤10 MiB decoded each (≤25 MiB
+  total), and Bcc kept envelope-only (RCPT, never the bytes). The IMAP
+  client grew `APPEND` — its first client-literal command, with a dedicated
+  exchange supporting both the classic continuation and LITERAL+ — and a
+  successful send is best-effort APPENDed to the synced `sent` mailbox with
+  `\Seen` (failures log and report through a hook; the send stands). New
+  REST: `POST /apps/mail/api/accounts/{id}/send` → 200 `{messageId}`;
+  attachments carry inline base64 OR a files-app `{path}` read through the
+  same share/ownership-aware `webdav.FS.Read` seam WOPI's GetFile uses.
+  Zero new dependencies.
+
 - **2026-10-02** — **Mail M4: message list/detail/flags/delete/move/
   attachment APIs** (ADR-0108 §6; mail epic increment 4). The in-repo IMAP
   client grew the write commands: read-write `SELECT` (shared EXAMINE
