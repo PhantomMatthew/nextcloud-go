@@ -1,6 +1,11 @@
 package config
 
-import "time"
+import (
+	"fmt"
+	"net/netip"
+	"strings"
+	"time"
+)
 
 // Config is the root server configuration surface.
 type Config struct {
@@ -35,8 +40,28 @@ type OfficeConfig struct {
 // MailConfig controls the v2 Mail epic (ADR-0108). Enabled mounts the
 // /apps/mail/api account routes and advertises the "mail" capabilities
 // block; off leaves the server bit-identical to pre-mail builds.
+// EgressAllowPrivate (ADR-0108 §4) lists CIDR prefixes whose
+// otherwise-blocked private/loopback/link-local targets the IMAP/SMTP
+// egress guard lets through — for mail servers that legitimately live on a
+// LAN (a home-lab Dovecot). Empty by default (fail closed).
 type MailConfig struct {
-	Enabled bool `koanf:"enabled"`
+	Enabled            bool     `koanf:"enabled"`
+	EgressAllowPrivate []string `koanf:"egress_allow_private"`
+}
+
+// EgressPrefixes parses EgressAllowPrivate into the prefixes the guarded
+// dialer understands. Validate runs it at config load, so a successful Load
+// guarantees this returns cleanly.
+func (c MailConfig) EgressPrefixes() ([]netip.Prefix, error) {
+	out := make([]netip.Prefix, 0, len(c.EgressAllowPrivate))
+	for i, s := range c.EgressAllowPrivate {
+		p, err := netip.ParsePrefix(strings.TrimSpace(s))
+		if err != nil {
+			return nil, fmt.Errorf("entry %d (%q) must be a CIDR prefix: %w", i, s, err)
+		}
+		out = append(out, p)
+	}
+	return out, nil
 }
 
 // SharingConfig controls sharing integrations. LookupServer is the base URL

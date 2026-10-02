@@ -150,7 +150,7 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request, uid string) {
 	}
 	a, err := h.Svc.Create(r.Context(), uid, in)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
+		mapServiceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, respondAccount(a))
@@ -172,7 +172,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request, uid string) {
 func (h *Handler) get(w http.ResponseWriter, r *http.Request, uid string, id int64) {
 	a, err := h.Svc.Get(r.Context(), uid, id)
 	if err != nil {
-		mapStoreError(w, err)
+		mapServiceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, accountDetailResponse{
@@ -224,7 +224,7 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request, uid string, id 
 	}
 	a, err := h.Svc.Update(r.Context(), uid, id, patch)
 	if err != nil {
-		mapStoreError(w, err)
+		mapServiceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, respondAccount(a))
@@ -232,15 +232,16 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request, uid string, id 
 
 func (h *Handler) delete(w http.ResponseWriter, r *http.Request, uid string, id int64) {
 	if err := h.Svc.Delete(r.Context(), uid, id); err != nil {
-		mapStoreError(w, err)
+		mapServiceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{})
 }
 
-// validateCreate enforces the M1 contract: required fields, port range,
-// ssl-mode enum, parseable email address. M1 deliberately does NOT dial
-// IMAP to verify credentials (that lands in M2) — validation alone gates.
+// validateCreate enforces the request-shape contract: required fields, port
+// range, ssl-mode enum, parseable email address. Shape errors are 400s;
+// beyond shape, Service.Create verifies the IMAP LOGIN before persisting
+// (M2, ADR-0108 §1) and its failures map to their own 400s.
 func validateCreate(req *createRequest) (AccountInput, string) {
 	if req.EmailAddress == "" {
 		return AccountInput{}, "emailAddress is required"
@@ -347,10 +348,18 @@ func sslModeOrDefault(mode, field string) (string, string) {
 	return mode, ""
 }
 
-func mapStoreError(w http.ResponseWriter, err error) {
+// mapServiceError renders store and verification failures. Verify failures
+// are 400s — the account fields, not the server, are at fault — with
+// distinct messages for bad credentials vs. an unreachable server; a
+// missing (or cross-user) row is 404; anything else is 500.
+func mapServiceError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrNotFound):
 		writeError(w, http.StatusNotFound, "account not found")
+	case errors.Is(err, ErrVerifyAuth):
+		writeError(w, http.StatusBadRequest, "IMAP authentication failed")
+	case errors.Is(err, ErrVerifyConnect):
+		writeError(w, http.StatusBadRequest, "cannot connect to IMAP server")
 	default:
 		writeError(w, http.StatusInternalServerError, "internal error")
 	}

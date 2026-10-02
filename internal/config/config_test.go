@@ -546,6 +546,17 @@ func TestValidateRules(t *testing.T) {
 			c.Office.CollaboraURL = "https://collabora.example.com"
 			c.Office.TokenTTL = 25 * time.Hour
 		}, "office.token_ttl"},
+		{"mail_egress_allow_bad_cidr", func(c *Config) {
+			c.Mail.Enabled = true
+			c.Mail.EgressAllowPrivate = []string{"10.0.0.0/8", "not-a-cidr"}
+		}, "mail.egress_allow_private"},
+		{"mail_egress_allow_host_prefix", func(c *Config) {
+			c.Mail.Enabled = true
+			c.Mail.EgressAllowPrivate = []string{"192.168.1.1"}
+		}, "mail.egress_allow_private"},
+		{"mail_egress_allow_without_enabled", func(c *Config) {
+			c.Mail.EgressAllowPrivate = []string{"10.0.0.0/8"}
+		}, "mail.egress_allow_private"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -628,6 +639,61 @@ func TestValidateCacheMaxAgeOK(t *testing.T) {
 		if err := c.Validate(); err != nil {
 			t.Errorf("Validate() with cache_max_age %s = %v", d, err)
 		}
+	}
+}
+
+func TestLoadMailEgressAllowPrivate(t *testing.T) {
+	t.Parallel()
+	// Default: empty list, valid.
+	cfg, err := Load(LoadOptions{EnvPrefix: unusedEnvPrefix})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Mail.EgressAllowPrivate) != 0 {
+		t.Errorf("default egress_allow_private = %v", cfg.Mail.EgressAllowPrivate)
+	}
+
+	// Overrides carry a native string list and parse to prefixes.
+	cfg, err = Load(LoadOptions{
+		EnvPrefix: unusedEnvPrefix,
+		Overrides: map[string]any{
+			"mail.enabled":              true,
+			"mail.egress_allow_private": []string{"10.0.0.0/8", "192.168.0.0/16", "fd00::/8"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Mail.EgressAllowPrivate) != 3 || cfg.Mail.EgressAllowPrivate[0] != "10.0.0.0/8" {
+		t.Errorf("egress_allow_private = %v", cfg.Mail.EgressAllowPrivate)
+	}
+	prefixes, err := cfg.Mail.EgressPrefixes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prefixes) != 3 || prefixes[0].String() != "10.0.0.0/8" || prefixes[2].String() != "fd00::/8" {
+		t.Errorf("EgressPrefixes = %v", prefixes)
+	}
+
+	// An invalid CIDR is a config-load error.
+	if _, err := Load(LoadOptions{
+		EnvPrefix: unusedEnvPrefix,
+		Overrides: map[string]any{
+			"mail.enabled":              true,
+			"mail.egress_allow_private": []string{"999.0.0.0/8"},
+		},
+	}); err == nil {
+		t.Error("Load with an invalid CIDR succeeded")
+	}
+}
+
+func TestValidateMailEgressAllowOK(t *testing.T) {
+	t.Parallel()
+	c := Default()
+	c.Mail.Enabled = true
+	c.Mail.EgressAllowPrivate = []string{"127.0.0.0/8", "::1/128"}
+	if err := c.Validate(); err != nil {
+		t.Errorf("Validate() with a valid egress allowlist = %v", err)
 	}
 }
 

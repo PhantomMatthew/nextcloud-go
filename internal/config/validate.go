@@ -172,6 +172,15 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if len(c.Mail.EgressAllowPrivate) > 0 && !c.Mail.Enabled {
+		// Same dead-key rule as metrics_listen (ADR-0076): an egress
+		// allowlist without the mail service would never be consulted.
+		errs = append(errs, &ValidationError{Field: "mail.egress_allow_private", Reason: "requires mail.enabled (an egress allowlist without mail would be a dead key)"})
+	}
+	if _, err := c.Mail.EgressPrefixes(); err != nil {
+		errs = append(errs, &ValidationError{Field: "mail.egress_allow_private", Reason: err.Error()})
+	}
+
 	return errors.Join(errs...)
 }
 

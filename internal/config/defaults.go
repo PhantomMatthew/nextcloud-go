@@ -107,6 +107,7 @@ func defaultFlat() map[string]any {
 		"office.collabora_url":                "",
 		"office.token_ttl":                    10 * time.Hour,
 		"mail.enabled":                        false,
+		"mail.egress_allow_private":           []string{},
 		"web.static_root":                     "",
 		"auth.argon2id.memory_kb":             uint32(65536),
 		"auth.argon2id.iterations":            uint32(3),

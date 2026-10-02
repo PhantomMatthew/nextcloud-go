@@ -1,7 +1,9 @@
 // Package mail implements the v2 Mail epic (ADR-0108): per-user IMAP/SMTP
 // accounts with sealed-at-rest credentials, a JSON REST API mirroring the
 // official Nextcloud Mail app subset, and (later increments) mailbox sync
-// and send. M1 lands accounts only — no network dialing.
+// and send. M1 landed accounts; M2 adds the internal/mail/imap client and
+// verifies the IMAP LOGIN before an account is created or its connection
+// fields change.
 package mail
 
 import (

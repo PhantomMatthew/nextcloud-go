@@ -25,7 +25,9 @@ import (
 	"github.com/PhantomMatthew/nextcloud-go/internal/jobs"
 	"github.com/PhantomMatthew/nextcloud-go/internal/login"
 	"github.com/PhantomMatthew/nextcloud-go/internal/mail"
+	"github.com/PhantomMatthew/nextcloud-go/internal/mail/imap"
 	"github.com/PhantomMatthew/nextcloud-go/internal/migrations"
+	"github.com/PhantomMatthew/nextcloud-go/internal/netx"
 	"github.com/PhantomMatthew/nextcloud-go/internal/notifications"
 	"github.com/PhantomMatthew/nextcloud-go/internal/observability"
 	"github.com/PhantomMatthew/nextcloud-go/internal/ocm"
@@ -469,14 +471,30 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		a.secret = randomHex(logger, 32, "NCGO_SECRET / instance.secret")
 	}
 	if cfg.Mail.Enabled {
-		// ADR-0108 (Mail M1): the service seals account credentials under a
+		// ADR-0108 (Mail): the service seals account credentials under a
 		// key derived from the instance secret — deliberately independent of
-		// the per-user-keys encryption module (keyResolver), so the M2+
+		// the per-user-keys encryption module (keyResolver), so the M3+
 		// background sync opens credentials without any user's unlocked key.
-		// The wiring must follow the secret resolution above.
+		// The wiring must follow the secret resolution above. M2's
+		// verify-on-create dial goes through the ADR-0057 egress guard with
+		// the mail.egress_allow_private CIDR allowlist (empty = fail closed
+		// for private targets); the config was validated at Load.
+		allowPrivate, err := cfg.Mail.EgressPrefixes()
+		if err != nil {
+			if cerr := a.closeResources(ctx); cerr != nil {
+				return nil, errors.Join(err, cerr)
+			}
+			return nil, err
+		}
+		dialContext := netx.GuardedDialContext(allowPrivate)
 		a.mailSvc = &mail.Service{
 			Store:  mail.NewSQLStore(db),
 			Secret: a.secret,
+			Logger: logger,
+			DialIMAP: func(ctx context.Context, opts imap.DialOptions) (*imap.Client, error) {
+				opts.DialContext = dialContext
+				return imap.Dial(ctx, opts)
+			},
 		}
 	}
 	// Event-driven (not periodic): one jobs row per upload, with the

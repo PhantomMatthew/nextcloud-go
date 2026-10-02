@@ -191,6 +191,25 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-10-02** — **Mail M2: IMAP client core, shared egress guard,
+  verify-on-create** (ADR-0108; mail epic increment 2). New
+  `internal/mail/imap` package: a minimal IMAP4rev1 client (greeting,
+  CAPABILITY, LOGIN, LOGOUT, NOOP, STARTTLS upgrade; ssl/starttls/none
+  modes) with a literal-capable response reader (RFC 3501 `{n}` chaining),
+  a token parser foundation (atoms, quoted strings, nested lists, NIL,
+  literals) for the M3/M4 sync commands, per-exchange I/O deadlines, and
+  injection-safe quoting (CR/LF arguments rejected before any write). The
+  ADR-0057 egress guard primitives moved to a new shared `internal/netx`
+  package (`BlockedEgressIP`/`GuardControl`/`GuardedDialContext`) —
+  `internal/plugins` delegates with zero behavior change. Account create
+  (and any update touching the IMAP connection fields) now verifies the
+  IMAP LOGIN before persisting: refused credentials → 400 "IMAP
+  authentication failed", unreachable/TLS/timeout → 400 "cannot connect to
+  IMAP server", and a failed verification stores nothing. Mail dials run
+  through the guarded dialer with the new `mail.egress_allow_private` CIDR
+  allowlist (empty default, invalid CIDRs rejected at config load) for LAN
+  mail servers. Zero new third-party dependencies.
+
 - **2026-10-02** — **Mail M1: account foundations** (ADR-0108; mail epic
   increment 1). Migration 0027 `mail_accounts` (three dialects) plus the
   `/apps/mail/api/accounts*` JSON REST API (official Mail app field names,

@@ -18,11 +18,14 @@ import (
 
 // mailEnv wires the handler behind the REAL auth middleware (webdav.Auth,
 // exactly the routes.go mount) over a real sqlite store, so the tests
-// exercise session-auth rejection and per-user scoping end to end.
+// exercise session-auth rejection and per-user scoping end to end. The
+// service's DialIMAP seam is a scripted fake IMAP server (M2 verify-on-
+// create dials before persisting); it accepts the test password pair.
 type mailEnv struct {
 	db     database.DB
 	store  *SQLStore
 	svc    *Service
+	fake   *imapFake
 	chain  http.Handler
 	secret string
 }
@@ -43,12 +46,16 @@ func newMailEnv(t *testing.T) *mailEnv {
 		}
 	}
 	store := NewSQLStore(db)
-	svc := &Service{Store: store, Secret: "test-instance-secret"}
+	fake := newIMAPFake(t, func(_, pass string) bool {
+		return pass == "imap-secret-pw" || pass == "imap-secret-pw-2"
+	})
+	svc := &Service{Store: store, Secret: "test-instance-secret", DialIMAP: fake.dialIMAP}
 	authCfg := auth.MiddlewareConfig{Verifier: users.NewPasswordVerifier(us, hasher)}
 	return &mailEnv{
 		db:     db,
 		store:  store,
 		svc:    svc,
+		fake:   fake,
 		chain:  webdav.Auth(authCfg)(&Handler{Svc: svc}),
 		secret: "test-instance-secret",
 	}

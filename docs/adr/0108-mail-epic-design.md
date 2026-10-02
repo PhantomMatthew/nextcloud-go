@@ -41,6 +41,17 @@ subset), rather than importing a third-party IMAP library; outbound send
 uses the stdlib `net/smtp` client behind the same egress guard (§4). Both
 choices keep the epic at zero new third-party dependencies.
 
+（**landed/refined 2026-10-02**: M2 landed the client core as
+`internal/mail/imap` — greeting (OK/PREAUTH/BYE), CAPABILITY, LOGIN,
+LOGOUT, NOOP, and STARTTLS upgrade, with per-exchange I/O deadlines, a
+literal-capable response reader (RFC 3501 `{n}` chaining, without which the
+stream desyncs), a token parser foundation (atoms / quoted strings /
+parenthesized lists / NIL / literals) for the later ENVELOPE/BODYSTRUCTURE
+work, and injection-safe argument quoting (`ErrInjection` on CR/LF before
+any write). LIST/SELECT/UID FETCH/UID STORE remain M3/M4 scope. The client
+is plain `net.Conn` + `bufio` rather than `net/textproto` — literal
+handling needs byte-exact control textproto does not offer.）
+
 ### 2. JSON REST under `/apps/mail/api`, mirroring the official app subset
 
 Pure-JSON endpoints (official field names: `emailAddress`, `imapHost`,
@@ -94,6 +105,20 @@ time with no TOCTOU window. Because mail servers legitimately live on LANs
 (a home-lab Dovecot), M5 adds an **admin allowlist** of private mail hosts
 (config-gated, off by default) that exempts listed host:port pairs from the
 guard — the plugin `http.outbound_allow_private` precedent.
+
+（**landed/refined 2026-10-02**: M2 shared the guard primitives via the new
+`internal/netx` package (`BlockedEgressIP` / `GuardControl` /
+`GuardedDialContext`); `internal/plugins` delegates to it with zero
+behavior change — plugins keep their capability-based bypass
+(`http.outbound_allow_private` selects the unguarded client) and never use
+an allowlist. The M2 "verify account" dial landed: account create (and any
+update touching the IMAP connection fields) verifies the LOGIN before
+persisting, mapping a refused LOGIN to `ErrVerifyAuth` and every other
+failure to `ErrVerifyConnect` (distinct 400s, no row written). The admin
+allowlist landed early, in M2 rather than M5, as
+`mail.egress_allow_private` — CIDR strings (not host:port pairs) parsed to
+`netip.Prefix` at app wiring, invalid CIDRs rejected at config load; empty
+default keeps the guard fail-closed.）
 
 ### 5. Sync: periodic `mail.sync` fan-out, UID-incremental, poll-only
 
