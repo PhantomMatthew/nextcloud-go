@@ -191,6 +191,33 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-10-02** — **Mail M7: HTML sanitizer + epic close-out** (ADR-0108
+  §6; mail epic increment 7 — the epic is now complete). The message
+  detail endpoint's `bodyHtml` now passes through an allowlist sanitizer
+  (`SanitizeHTML`, built on `golang.org/x/net/html` — fragment parse,
+  never string/regex) before responding, and the response flag flips to
+  `htmlSanitized: true`, closing M4's required follow-up and unblocking
+  the first-party mail UI. Policy: active/embedding elements
+  (script/style/iframe/form/svg/math/…) drop tag and contents, the
+  formatting/structure set survives with per-tag attribute allowlists
+  (on*/style/srcset/background/formaction die by default), anything else
+  unwraps with children kept; URL attributes are judged entity-decoded,
+  control-and-whitespace-stripped, and scheme-lower-cased
+  (http/https/cid, mailto on `<a>`, `data:image/*` on `<img>` only — so
+  tab/entity/casing tricks like `jav&#x09;ascript:` are neutralized);
+  every kept `<a>` gains `target="_blank" rel="noopener noreferrer"`.
+  The walk and render are iterative, the parser's own 512 open-element
+  cap plus a 2MB input guard bound pathological input, and failures fall
+  back to the plain body (still served). golang.org/x/net is promoted
+  indirect → direct — the epic's second and final dependency exception,
+  go.sum untouched. Pinned by an exhaustive policy table (with
+  idempotence assertions), deep-nesting/attribute-flood pathological
+  cases, a 10k seeded byte-soup fuzz loop, and detail-endpoint tests
+  (script/onclick/javascript: gone, text survives; oversized HTML →
+  empty bodyHtml + plain intact). Remaining follow-ups consolidated in
+  the ADR: IDLE/CONDSTORE push, IMAP connection pooling, share-by-mail,
+  >1MiB previews, body cache, first-party mail UI.
+
 - **2026-10-02** — **Mail M6: unified-search provider + sharees exact-email
   bucket + list previews** (ADR-0108; mail epic increment 6). The OCS
   unified-search API gains a `mail` provider (registered only when

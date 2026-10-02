@@ -363,8 +363,8 @@ func TestHandlerMessageDetail(t *testing.T) {
 		if !strings.Contains(det.BodyPlain, "plain hello") || !strings.Contains(det.BodyHTML, "html hello") {
 			t.Errorf("bodies = %q / %q", det.BodyPlain, det.BodyHTML)
 		}
-		if det.HTMLSanitized {
-			t.Error("htmlSanitized must be false (HTML is delivered unsanitized)")
+		if !det.HTMLSanitized {
+			t.Error("htmlSanitized must be true (M7 sanitizes the HTML body before responding)")
 		}
 		if len(det.Flags) != 1 || det.Flags[0] != `\Seen` {
 			t.Errorf("flags after read = %v", det.Flags)
@@ -443,6 +443,142 @@ func TestHandlerMessageDetail(t *testing.T) {
 			t.Errorf("flags = %v (uid 2 was already seen)", det2.Flags)
 		}
 	})
+}
+
+// TestHandlerMessageDetailSanitizes: M7 — the detail endpoint runs the HTML
+// body through SanitizeHTML before responding: the script, the event
+// handler, and the javascript: URL are gone, the text and the safe link
+// survive, and htmlSanitized is true.
+func TestHandlerMessageDetailSanitizes(t *testing.T) {
+	e := newMailEnv(t)
+	accountID := createAlice(t, e)
+	mb := &Mailbox{AccountID: accountID, Name: "INBOX", Selectable: true}
+	if err := e.store.UpsertMailbox(context.Background(), mb); err != nil {
+		t.Fatal(err)
+	}
+	raw := "From: Evil <evil@example.com>\r\n" +
+		"Subject: xss\r\n" +
+		"Content-Type: multipart/alternative; boundary=alt\r\n" +
+		"\r\n" +
+		"--alt\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" +
+		"plain survives\r\n" +
+		"--alt\r\n" +
+		"Content-Type: text/html; charset=utf-8\r\n" +
+		"\r\n" +
+		`<div onclick="steal()"><script>alert(1)</script><p>safe text</p>` +
+		`<a href="javascript:alert(1)">click</a>` +
+		`<a href="https://example.com/">good</a></div>` +
+		"\r\n--alt--\r\n"
+	if err := e.store.InsertMessages(context.Background(), []Message{
+		{MailboxID: mb.ID, UID: 9, Subject: "xss", FromAddr: "evil@example.com", DateUnix: 100},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.sfake.boxes = []*fakeMailbox{
+		{
+			name: "INBOX", attrs: []string{"\\HasNoChildren"}, delim: "/", selectable: true, uidvalidity: 7,
+			msgs: []*fakeMsg{
+				{
+					uid: 9, date: "3-Jan-2006 10:00:00 +0000", size: len(raw), subject: "xss",
+					fromAddr: "evil@example.com", msgID: "<m9@example.com>", raw: []byte(raw),
+				},
+			},
+		},
+	}
+	msgs := m4ListIDs(t, e, accountID, mb.ID)
+	if len(msgs) != 1 {
+		t.Fatalf("messages = %+v", msgs)
+	}
+	rr := e.serve(t, "alice", http.MethodGet,
+		fmt.Sprintf("%s/%d/mailboxes/%d/messages/%d", AccountsPrefix, accountID, mb.ID, msgs[0].ID), "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("detail: status = %d body = %s", rr.Code, rr.Body.String())
+	}
+	var det messageDetailResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &det); err != nil {
+		t.Fatal(err)
+	}
+	if !det.HTMLSanitized {
+		t.Error("htmlSanitized must be true")
+	}
+	for _, bad := range []string{"<script", "alert(1)", "onclick", "steal()", "javascript:"} {
+		if strings.Contains(det.BodyHTML, bad) {
+			t.Errorf("bodyHtml must not contain %q: %s", bad, det.BodyHTML)
+		}
+	}
+	for _, good := range []string{"safe text", "click", "good", `href="https://example.com/"`, `target="_blank"`, `rel="noopener noreferrer"`} {
+		if !strings.Contains(det.BodyHTML, good) {
+			t.Errorf("bodyHtml must contain %q: %s", good, det.BodyHTML)
+		}
+	}
+	if !strings.Contains(det.BodyPlain, "plain survives") {
+		t.Errorf("bodyPlain = %q", det.BodyPlain)
+	}
+}
+
+// TestHandlerMessageDetailOversizedHTML: an HTML part over the sanitizer's
+// 2MB guard renders bodyHtml empty (the size-guard fallback) while the
+// plain body is still served.
+func TestHandlerMessageDetailOversizedHTML(t *testing.T) {
+	e := newMailEnv(t)
+	accountID := createAlice(t, e)
+	mb := &Mailbox{AccountID: accountID, Name: "INBOX", Selectable: true}
+	if err := e.store.UpsertMailbox(context.Background(), mb); err != nil {
+		t.Fatal(err)
+	}
+	raw := "From: Big <big@example.com>\r\n" +
+		"Subject: huge\r\n" +
+		"Content-Type: multipart/alternative; boundary=alt\r\n" +
+		"\r\n" +
+		"--alt\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n" +
+		"\r\n" +
+		"still here\r\n" +
+		"--alt\r\n" +
+		"Content-Type: text/html; charset=utf-8\r\n" +
+		"\r\n" +
+		"<p>" + strings.Repeat("x", sanMaxInput) + "</p>" +
+		"\r\n--alt--\r\n"
+	if err := e.store.InsertMessages(context.Background(), []Message{
+		{MailboxID: mb.ID, UID: 10, Subject: "huge", FromAddr: "big@example.com", DateUnix: 100},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.sfake.boxes = []*fakeMailbox{
+		{
+			name: "INBOX", attrs: []string{"\\HasNoChildren"}, delim: "/", selectable: true, uidvalidity: 8,
+			msgs: []*fakeMsg{
+				{
+					uid: 10, date: "3-Jan-2006 10:00:00 +0000", size: len(raw), subject: "huge",
+					fromAddr: "big@example.com", msgID: "<m10@example.com>", raw: []byte(raw),
+				},
+			},
+		},
+	}
+	msgs := m4ListIDs(t, e, accountID, mb.ID)
+	if len(msgs) != 1 {
+		t.Fatalf("messages = %+v", msgs)
+	}
+	rr := e.serve(t, "alice", http.MethodGet,
+		fmt.Sprintf("%s/%d/mailboxes/%d/messages/%d", AccountsPrefix, accountID, mb.ID, msgs[0].ID), "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("detail: status = %d body = %s", rr.Code, rr.Body.String())
+	}
+	var det messageDetailResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &det); err != nil {
+		t.Fatal(err)
+	}
+	if det.BodyHTML != "" {
+		t.Errorf("oversized bodyHtml must be empty, got %d bytes", len(det.BodyHTML))
+	}
+	if !strings.Contains(det.BodyPlain, "still here") {
+		t.Errorf("bodyPlain = %q", det.BodyPlain)
+	}
+	if !det.HTMLSanitized {
+		t.Error("htmlSanitized must be true even when the guard empties the HTML part")
+	}
 }
 
 // TestHandlerMessageDetailGone: the row is synced but the server lost the

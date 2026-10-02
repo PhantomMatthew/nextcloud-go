@@ -232,7 +232,7 @@ const previewRunes = 200
 // whitespace runs collapse to single spaces (strings.Fields already trims),
 // capped at previewRunes runes. A message without a plain part previews
 // empty — HTML is deliberately NOT stripped (the M6 preview is plain-only;
-// sanitization is M7 scope).
+// the detail endpoint's HTML body goes through SanitizeHTML instead).
 func previewText(plain string) string {
 	joined := strings.Join(strings.Fields(plain), " ")
 	runes := []rune(joined)

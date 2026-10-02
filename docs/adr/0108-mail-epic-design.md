@@ -254,6 +254,38 @@ take them down. The list endpoint gains `preview` + `hasAttachments`;
 the detail endpoint keeps its M4 shape. **HTML sanitization is still
 pending → M7**, together with the epic close-out.）
 
+（**landed 2026-10-02 (M7, epic complete)**: the HTML sanitizer landed
+(`internal/mail/htmlsan.go`), closing M4's REQUIRED follow-up. It is
+allowlist-based on `golang.org/x/net/html` — the body is parsed as a
+body-context fragment (never string/regex mangling), the tree is walked
+once with an explicit stack, and the kept nodes are rendered back out;
+both halves are iterative, and the parser's own 512 open-element cap
+plus a 2MB input guard bound pathological input (over-guard or over-deep
+input fails closed to "" and the caller serves the plain body). Policy:
+script/style/iframe/object/embed/form/svg/math and the rest of the
+active-or-embedding set drop tag AND contents; the formatting/structure
+set (p…h1–h6, table family, a, img, font, …) survives with per-tag
+attribute allowlists (global title/dir/lang; a href/name; img
+src/alt/width/height; td/th colspan/rowspan; col/colgroup span/width; ol
+start/type; ul type; li value; font color/size/face — on*, style,
+srcset, background, formaction die by default); anything else unwraps.
+URL attributes are judged on the entity-decoded, control-and-whitespace-
+stripped value with the scheme lower-cased: http/https/cid always,
+mailto on `<a>` only, data: on `<img>` only for image/* payloads —
+javascript:/vbscript:/file:/data:text/html/scheme-less values lose the
+attribute. Every kept `<a>` gains `target="_blank" rel="noopener
+noreferrer"`; comments and the doctype never survive. The detail
+endpoint passes bodyHtml through it before responding and the flag
+flips to `"htmlSanitized": true`; bodyPlain is untouched.
+golang.org/x/net is promoted indirect → direct for `html` — the epic's
+second and final dependency promotion, `go.sum` again untouched. The
+Mail epic is COMPLETE. Consolidated remaining follow-ups: IDLE/CONDSTORE
+push, IMAP connection pooling (live ops still dial per request),
+share-by-mail (`mail_send`; the shareType-4 sharee bucket landed in M6),
+previews for >1MiB messages, a synced-body cache (detail re-fetches
+every read), and the first-party mail UI — now unblocked on the
+sanitizer.）
+
 ### M1 build surface (what this increment lands)
 
 Migration 0027 `mail_accounts` in three dialects (sqlite/mysql/postgres in

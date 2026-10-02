@@ -55,11 +55,12 @@ type attachmentResponse struct {
 	Size        int64  `json:"size"`
 }
 
-// messageDetailResponse adds the live-fetched bodies. BodyHTML is
-// UNSANITIZED — htmlSanitized stays false so clients know they must
-// sanitize before rendering (ADR-0108 §6: first-party HTML rendering is
-// blocked until a sanitizer lands). The detail shape is M4's — it does NOT
-// inherit the M6 list preview fields.
+// messageDetailResponse adds the live-fetched bodies. BodyHTML passes
+// through SanitizeHTML (M7, ADR-0108 §6) before responding — htmlSanitized
+// is true, so clients can render it directly. An HTML part the sanitizer
+// refuses (over its 2MB guard) renders empty; bodyPlain still carries the
+// message. The detail shape is M4's — it does NOT inherit the M6 list
+// preview fields.
 type messageDetailResponse struct {
 	messageSummary
 	BodyPlain     string               `json:"bodyPlain"`
@@ -245,9 +246,9 @@ func (h *Handler) messageDetail(w http.ResponseWriter, r *http.Request, uid stri
 	writeJSON(w, http.StatusOK, messageDetailResponse{
 		messageSummary: respondSummary(scope.message, flags),
 		BodyPlain:      parsed.TextPlain,
-		BodyHTML:       parsed.TextHTML,
+		BodyHTML:       SanitizeHTML(parsed.TextHTML),
 		Attachments:    atts,
-		HTMLSanitized:  false,
+		HTMLSanitized:  true,
 	})
 }
 
