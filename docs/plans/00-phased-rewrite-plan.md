@@ -191,6 +191,30 @@ These become candidates for v2 (post-1.0).
 
 ## Change Log
 
+- **2026-10-02** — **Mail M4: message list/detail/flags/delete/move/
+  attachment APIs** (ADR-0108 §6; mail epic increment 4). The in-repo IMAP
+  client grew the write commands: read-write `SELECT` (shared EXAMINE
+  parsing, typed `ErrCommandRefused` on NO), whole-message `UID FETCH
+  (UID BODY.PEEK[])` on the literal-counting reader, allowlist-guarded
+  `UID STORE` (system flags + keywords only, rejected before any write),
+  `UID COPY`, and `EXPUNGE`. Message bodies decode through
+  `encoding/htmlindex` charsets (golang.org/x/text promoted indirect →
+  direct — the epic's one dependency exception, go.sum untouched) and a
+  stdlib whole-message MIME walk (first plain/html leaf wins; attachments
+  indexed depth-first, shared by detail and download; malformed trees
+  degrade, never panic; >32 MiB is a typed refusal). Live ops dial one
+  connection per request (pooling is a follow-up). New REST:
+  `GET .../mailboxes/{mbid}/messages` (keyset cursor pages),
+  `GET .../messages/{mid}` (live body fetch, marks `\Seen` unless
+  `?markSeen=false`; HTML delivered UNSANITIZED with `htmlSanitized:
+  false` — a sanitizer is a required follow-up before any first-party HTML
+  UI), `PUT .../messages/{mid}/flags`, `DELETE .../messages/{mid}`
+  (trash-COPY flow), `PUT .../messages/{mid}/move` (local row deleted, the
+  next sync rediscovers the copy), and
+  `GET .../messages/{mid}/attachments/{index}`. List preview and
+  has-attachments remain follow-ups (they need `BODY.PEEK[TEXT]`/
+  BODYSTRUCTURE in the sync fetch shape).
+
 - **2026-10-02** — **Mail M3: mailbox + message-summary sync engine**
   (ADR-0108 §5; mail epic increment 3). The in-repo IMAP client grew the
   sync commands: `LIST` (attrs/delimiter/wire name, `\Noselect` →

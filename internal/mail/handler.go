@@ -28,12 +28,25 @@ const AccountsPrefix = "/apps/mail/api/accounts"
 //	GET    /apps/mail/api/accounts/{id}/mailboxes   synced mailboxes with counts
 //	POST   /apps/mail/api/accounts/{id}/sync        run one sync pass (200 {newMessages})
 //
+// M4 (ADR-0108 §6) message APIs under one synced mailbox:
+//
+//	GET    .../mailboxes/{mbid}/messages                     list view, cursor pages
+//	GET    .../mailboxes/{mbid}/messages/{mid}               live body fetch (+ \Seen)
+//	PUT    .../mailboxes/{mbid}/messages/{mid}/flags         live UID STORE + local row
+//	DELETE .../mailboxes/{mbid}/messages/{mid}               trash-COPY or expunge
+//	PUT    .../mailboxes/{mbid}/messages/{mid}/move          UID COPY + expunge
+//	GET    .../mailboxes/{mbid}/messages/{mid}/attachments/{index}  live download
+//
 // Passwords never appear in any response; cross-user rows are 404, not 403.
 type Handler struct {
 	Svc *Service
 	// Syncer runs the M3 mailbox sync for POST .../sync; nil leaves that
 	// endpoint a 500 (a miswiring, not a client error).
 	Syncer *Syncer
+	// Ops runs the M4 live IMAP operations; nil leaves the live endpoints a
+	// 500 (a miswiring, not a client error). The list endpoint is
+	// store-only and works without it.
+	Ops *MessageOps
 }
 
 // accountResponse is the account JSON shape (official app field names).
@@ -120,58 +133,135 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	id, sub, ok := parseAccountTail(tail)
+	id, rest, ok := parseAccountTail(tail)
 	if !ok {
 		writeError(w, http.StatusNotFound, "account not found")
 		return
 	}
-	if sub != "" {
+	switch {
+	case rest == "":
+		switch r.Method {
+		case http.MethodGet:
+			h.get(w, r, p.UID, id)
+		case http.MethodPut:
+			h.update(w, r, p.UID, id)
+		case http.MethodDelete:
+			h.delete(w, r, p.UID, id)
+		default:
+			w.Header().Set("Allow", "GET, PUT, DELETE")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	case rest == "mailboxes" || rest == "sync":
 		// Sub-resources: GET mailboxes, POST sync. Everything else is 405.
 		switch {
-		case sub == "mailboxes" && r.Method == http.MethodGet:
+		case rest == "mailboxes" && r.Method == http.MethodGet:
 			h.mailboxes(w, r, p.UID, id)
-		case sub == "sync" && r.Method == http.MethodPost:
+		case rest == "sync" && r.Method == http.MethodPost:
 			h.sync(w, r, p.UID, id)
 		default:
 			w.Header().Set("Allow", "GET, POST")
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
-		return
-	}
-	switch r.Method {
-	case http.MethodGet:
-		h.get(w, r, p.UID, id)
-	case http.MethodPut:
-		h.update(w, r, p.UID, id)
-	case http.MethodDelete:
-		h.delete(w, r, p.UID, id)
+	case strings.HasPrefix(rest, "mailboxes/"):
+		// The M4 message APIs live one level deeper.
+		h.mailboxSub(w, r, p.UID, id, strings.TrimPrefix(rest, "mailboxes/"))
 	default:
-		w.Header().Set("Allow", "GET, PUT, DELETE")
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeError(w, http.StatusNotFound, "account not found")
 	}
 }
 
-// parseAccountTail extracts the {id} and optional sub-resource from
-// "/{id}" or "/{id}/<sub>"; anything else (extra segments, non-numeric,
-// non-positive, unknown sub-resource) is not an account path.
-func parseAccountTail(tail string) (id int64, sub string, ok bool) {
-	rest, ok := strings.CutPrefix(tail, "/")
-	if !ok || rest == "" {
+// parseAccountTail extracts the {id} and the remaining path from
+// "/{id}[/<rest>]"; a non-numeric or non-positive id is not an account
+// path. rest is everything after the id segment with no leading slash
+// ("mailboxes", "sync", "mailboxes/3/messages/1/flags", …).
+func parseAccountTail(tail string) (id int64, rest string, ok bool) {
+	seg, ok := strings.CutPrefix(tail, "/")
+	if !ok || seg == "" {
 		return 0, "", false
 	}
-	idStr, sub, _ := strings.Cut(rest, "/")
-	if strings.Contains(sub, "/") {
-		return 0, "", false
-	}
+	idStr, rest, _ := strings.Cut(seg, "/")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil || id <= 0 {
 		return 0, "", false
 	}
-	switch sub {
-	case "", "mailboxes", "sync":
-		return id, sub, true
+	return id, rest, true
+}
+
+// mailboxSub dispatches the M4 message APIs under
+// /accounts/{id}/mailboxes/{mbid}/messages[...]: sub is everything after
+// "mailboxes/". A malformed {mbid} or an unknown path is 404; a wrong verb
+// is 405.
+func (h *Handler) mailboxSub(w http.ResponseWriter, r *http.Request, uid string, accountID int64, sub string) {
+	mbidStr, rest, _ := strings.Cut(sub, "/")
+	mbid, err := strconv.ParseInt(mbidStr, 10, 64)
+	if err != nil || mbid <= 0 {
+		writeError(w, http.StatusNotFound, "mailbox not found")
+		return
 	}
-	return 0, "", false
+	switch {
+	case rest == "messages" || rest == "messages/":
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		h.messagesList(w, r, uid, accountID, mbid)
+	case strings.HasPrefix(rest, "messages/"):
+		h.messageSub(w, r, uid, accountID, mbid, strings.TrimPrefix(rest, "messages/"))
+	default:
+		writeError(w, http.StatusNotFound, "mailbox not found")
+	}
+}
+
+// messageSub dispatches under .../messages/{mid}: sub is everything after
+// "messages/" — "{mid}", "{mid}/flags", "{mid}/move", or
+// "{mid}/attachments/{index}".
+func (h *Handler) messageSub(w http.ResponseWriter, r *http.Request, uid string, accountID, mbid int64, sub string) {
+	midStr, op, _ := strings.Cut(sub, "/")
+	mid, err := strconv.ParseInt(midStr, 10, 64)
+	if err != nil || mid <= 0 {
+		writeError(w, http.StatusNotFound, "message not found")
+		return
+	}
+	switch op {
+	case "":
+		switch r.Method {
+		case http.MethodGet:
+			h.messageDetail(w, r, uid, accountID, mbid, mid)
+		case http.MethodDelete:
+			h.messageDelete(w, r, uid, accountID, mbid, mid)
+		default:
+			w.Header().Set("Allow", "GET, DELETE")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	case "flags", "move":
+		if r.Method != http.MethodPut {
+			w.Header().Set("Allow", "PUT")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if op == "flags" {
+			h.messageFlags(w, r, uid, accountID, mbid, mid)
+		} else {
+			h.messageMove(w, r, uid, accountID, mbid, mid)
+		}
+	default:
+		if idxStr, ok := strings.CutPrefix(op, "attachments/"); ok && !strings.Contains(idxStr, "/") {
+			idx, err := strconv.Atoi(idxStr)
+			if err != nil || idx < 0 {
+				writeError(w, http.StatusNotFound, "attachment not found")
+				return
+			}
+			if r.Method != http.MethodGet {
+				w.Header().Set("Allow", "GET")
+				writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+				return
+			}
+			h.messageAttachment(w, r, uid, accountID, mbid, mid, idx)
+			return
+		}
+		writeError(w, http.StatusNotFound, "message not found")
+	}
 }
 
 // createRequest is the POST body (official app field names). An empty

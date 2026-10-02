@@ -2,6 +2,7 @@ package mail
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -18,15 +19,20 @@ import (
 // for the M3 sync tests: beyond the M2 greeting/CAPABILITY/LOGIN/LOGOUT it
 // answers LIST, EXAMINE, UID SEARCH ALL, and UID FETCH (summary and flags
 // shapes) from an in-memory mailbox model the test mutates between sync
-// runs. The dialIMAP closure is the Syncer.DialIMAP seam: it forces ssl
-// mode "none" and re-aims every dial at the listener.
+// runs. M4 added the live-op surface the message API tests drive: SELECT,
+// UID STORE, UID COPY, EXPUNGE, and whole-message UID FETCH (BODY.PEEK[]),
+// with an ops log (opsLog) so tests can assert the exact command sequence
+// that crossed the wire. The dialIMAP closure is the Syncer.DialIMAP and
+// MessageOps.DialIMAP seam: it forces ssl mode "none" and re-aims every
+// dial at the listener.
 type syncFake struct {
 	ln net.Listener
 	wg sync.WaitGroup
 
 	mu       sync.Mutex
 	boxes    []*fakeMailbox
-	failList bool // LIST answers NO (account-level failure injection)
+	ops      []string // M4: the live-op commands, in wire order
+	failList bool     // LIST answers NO (account-level failure injection)
 }
 
 type fakeMailbox struct {
@@ -36,7 +42,7 @@ type fakeMailbox struct {
 	selectable  bool
 	uidvalidity int64
 	msgs        []*fakeMsg
-	fail        bool // EXAMINE answers NO (per-mailbox failure isolation)
+	fail        bool // EXAMINE/SELECT answer NO (per-mailbox failure isolation)
 }
 
 type fakeMsg struct {
@@ -50,6 +56,7 @@ type fakeMsg struct {
 	toNames  []string
 	toAddrs  []string
 	msgID    string
+	raw      []byte // whole RFC 822 message for BODY.PEEK[] (nil = the server lost it)
 }
 
 func newSyncFake(t *testing.T) *syncFake {
@@ -151,6 +158,44 @@ func (f *syncFake) serve(conn net.Conn) {
 				b.WriteString(tag + " OK [READ-ONLY] examine done\r\n")
 				_, _ = io.WriteString(conn, b.String())
 			}
+		case "SELECT":
+			name := unquote(args)
+			mb := f.mailbox(name)
+			switch {
+			case mb == nil:
+				_, _ = io.WriteString(conn, tag+" NO no such mailbox\r\n")
+			case mb.fail:
+				_, _ = io.WriteString(conn, tag+" NO mailbox broken\r\n")
+			default:
+				selected = mb
+				f.ops = append(f.ops, "SELECT "+name)
+				var b strings.Builder
+				fmt.Fprintf(&b, "* %d EXISTS\r\n", len(mb.msgs))
+				fmt.Fprintf(&b, "* OK [UIDVALIDITY %d] UIDs valid\r\n", mb.uidvalidity)
+				fmt.Fprintf(&b, "* OK [UIDNEXT %d] Predicted next UID\r\n", mb.uidnext())
+				b.WriteString(tag + " OK [READ-WRITE] select done\r\n")
+				_, _ = io.WriteString(conn, b.String())
+			}
+		case "EXPUNGE":
+			if selected == nil {
+				_, _ = io.WriteString(conn, tag+" BAD no mailbox selected\r\n")
+				break
+			}
+			f.ops = append(f.ops, "EXPUNGE")
+			var b strings.Builder
+			kept := selected.msgs[:0]
+			seq := 0
+			for _, m := range selected.msgs {
+				seq++
+				if hasWireFlag(m, "\\Deleted") {
+					fmt.Fprintf(&b, "* %d EXPUNGE\r\n", seq)
+					continue
+				}
+				kept = append(kept, m)
+			}
+			selected.msgs = kept
+			b.WriteString(tag + " OK expunge done\r\n")
+			_, _ = io.WriteString(conn, b.String())
 		case "UID":
 			f.serveUID(conn, tag, args, selected)
 		case "LOGOUT":
@@ -164,7 +209,9 @@ func (f *syncFake) serve(conn net.Conn) {
 	}
 }
 
-// serveUID answers UID SEARCH ALL and UID FETCH for the selected mailbox.
+// serveUID answers UID SEARCH ALL, UID FETCH (summaries, flags, and the
+// whole-message BODY.PEEK[] form), UID STORE, and UID COPY for the selected
+// mailbox.
 func (f *syncFake) serveUID(conn net.Conn, tag, args string, selected *fakeMailbox) {
 	sub, rest, _ := strings.Cut(args, " ")
 	if selected == nil {
@@ -183,6 +230,10 @@ func (f *syncFake) serveUID(conn net.Conn, tag, args string, selected *fakeMailb
 	case "FETCH":
 		set, items, _ := strings.Cut(rest, " (")
 		items = strings.TrimSuffix(items, ")")
+		if strings.Contains(items, "BODY.PEEK[]") {
+			f.serveFetchFull(conn, tag, set, selected)
+			return
+		}
 		var b strings.Builder
 		seq := 0
 		for _, m := range selected.msgs {
@@ -194,9 +245,98 @@ func (f *syncFake) serveUID(conn net.Conn, tag, args string, selected *fakeMailb
 		}
 		b.WriteString(tag + " OK fetch done\r\n")
 		_, _ = io.WriteString(conn, b.String())
+	case "STORE":
+		// STORE <set> +/-FLAGS.SILENT (<flags>)
+		set, opAndFlags, _ := strings.Cut(rest, " ")
+		op, flagsStr, _ := strings.Cut(opAndFlags, " ")
+		flagsStr = strings.TrimPrefix(strings.TrimSuffix(flagsStr, ")"), "(")
+		f.ops = append(f.ops, "UID STORE "+set+" "+op+" ("+flagsStr+")")
+		add := strings.HasPrefix(op, "+")
+		for _, m := range selected.msgs {
+			if !uidInSet(m.uid, set) {
+				continue
+			}
+			for _, fl := range strings.Fields(flagsStr) {
+				if add {
+					if !hasWireFlag(m, fl) {
+						m.flags = append(m.flags, fl)
+					}
+				} else {
+					m.flags = dropWireFlag(m.flags, fl)
+				}
+			}
+		}
+		_, _ = io.WriteString(conn, tag+" OK store done\r\n")
+	case "COPY":
+		set, destQ, _ := strings.Cut(rest, " ")
+		dest := unquote(destQ)
+		f.ops = append(f.ops, "UID COPY "+set+" "+dest)
+		target := f.mailbox(dest)
+		if target == nil {
+			_, _ = io.WriteString(conn, tag+" NO no such mailbox\r\n")
+			return
+		}
+		for _, m := range selected.msgs {
+			if !uidInSet(m.uid, set) {
+				continue
+			}
+			dup := *m
+			dup.uid = target.uidnext()
+			target.msgs = append(target.msgs, &dup)
+		}
+		_, _ = io.WriteString(conn, tag+" OK copy done\r\n")
 	default:
 		_, _ = io.WriteString(conn, tag+" BAD unsupported uid command\r\n")
 	}
+}
+
+// serveFetchFull answers UID FETCH <set> (UID BODY.PEEK[]): each matching
+// message whose raw bytes exist is one literal-bearing FETCH line; a
+// message without raw bytes is simply not returned (the message-gone case).
+func (f *syncFake) serveFetchFull(conn net.Conn, tag, set string, selected *fakeMailbox) {
+	f.ops = append(f.ops, "UID FETCH "+set+" (UID BODY.PEEK[])")
+	var buf bytes.Buffer
+	seq := 0
+	for _, m := range selected.msgs {
+		if !uidInSet(m.uid, set) || m.raw == nil {
+			continue
+		}
+		seq++
+		fmt.Fprintf(&buf, "* %d FETCH (UID %d BODY[] {%d}\r\n", seq, m.uid, len(m.raw))
+		buf.Write(m.raw)
+		buf.WriteString(")\r\n")
+	}
+	buf.WriteString(tag + " OK fetch done\r\n")
+	_, _ = conn.Write(buf.Bytes())
+}
+
+// opsLog returns the live-op commands the fake saw, in wire order.
+func (f *syncFake) opsLog() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.ops...)
+}
+
+// hasWireFlag reports whether the message carries the flag (case-folded —
+// IMAP flags are case-insensitive atoms).
+func hasWireFlag(m *fakeMsg, flag string) bool {
+	for _, fl := range m.flags {
+		if strings.EqualFold(fl, flag) {
+			return true
+		}
+	}
+	return false
+}
+
+// dropWireFlag removes every case-folded match of flag.
+func dropWireFlag(flags []string, flag string) []string {
+	out := flags[:0]
+	for _, fl := range flags {
+		if !strings.EqualFold(fl, flag) {
+			out = append(out, fl)
+		}
+	}
+	return out
 }
 
 // uidnext reports max uid + 1 (0 for an empty mailbox, matching nothing —

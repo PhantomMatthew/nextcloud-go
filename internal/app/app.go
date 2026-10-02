@@ -101,6 +101,7 @@ type App struct {
 	wopiDisc         *wopi.Discovery
 	mailSvc          *mail.Service
 	mailSyncer       *mail.Syncer
+	mailOps          *mail.MessageOps
 	staticUI         *web.StaticUI
 }
 
@@ -502,6 +503,15 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 			DialIMAP: dialIMAP,
 			Logger:   logger,
 			Bus:      bus,
+		}
+		// M4 (ADR-0108 §6): the live message operations share the same
+		// store/secret/dial seam; each request dials its own connection
+		// (pooling is a follow-up).
+		a.mailOps = &mail.MessageOps{
+			Store:    mailStore,
+			Secret:   a.secret,
+			DialIMAP: dialIMAP,
+			Logger:   logger,
 		}
 		if err := jr.Register(mail.NewSyncJob(a.mailSyncer, mailStore, logger)); err != nil {
 			if cerr := a.closeResources(ctx); cerr != nil {

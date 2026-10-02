@@ -326,7 +326,7 @@ func (a *App) mountRoutes() error {
 		// bypass: unsafe verbs arrive either with OCS-APIRequest: true
 		// (API clients) or a session cookie + requesttoken (the auth
 		// middleware's 403 check), same as every non-DAV API.
-		router.HandlePrefix(httpx.MethodAny, mail.AccountsPrefix, &mail.Handler{Svc: a.mailSvc, Syncer: a.mailSyncer}, httpx.Middleware(webdav.Auth(authCfg)))
+		router.HandlePrefix(httpx.MethodAny, mail.AccountsPrefix, &mail.Handler{Svc: a.mailSvc, Syncer: a.mailSyncer, Ops: a.mailOps}, httpx.Middleware(webdav.Auth(authCfg)))
 	}
 
 	davHandler, err := webdav.NewHandler("/remote.php/dav/files/", a.davFS, a.instanceID)

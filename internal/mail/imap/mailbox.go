@@ -131,6 +131,20 @@ func parseListLine(line string) (MailboxInfo, error) {
 // UIDVALIDITY/UIDNEXT response codes. wireName passes through quoteString,
 // so a crafted name cannot inject into the command line.
 func (c *Client) Examine(ctx context.Context, wireName string) (SelectResult, error) {
+	return c.selectLike(ctx, "EXAMINE", wireName)
+}
+
+// Select issues SELECT — the read-write EXAMINE sibling the M4 live ops
+// (UID STORE/COPY/EXPUNGE) need. The response parsing is EXAMINE's; a tagged
+// NO (the mailbox is gone) is ErrCommandRefused.
+func (c *Client) Select(ctx context.Context, wireName string) (SelectResult, error) {
+	return c.selectLike(ctx, "SELECT", wireName)
+}
+
+// selectLike runs EXAMINE or SELECT and parses the untagged EXISTS and the
+// UIDVALIDITY/UIDNEXT response codes. EXAMINE keeps its M3 error shape; a
+// SELECT refusal is ErrCommandRefused so the M4 ops can map it to a 404.
+func (c *Client) selectLike(ctx context.Context, verb, wireName string) (SelectResult, error) {
 	if err := ctx.Err(); err != nil {
 		return SelectResult{}, err
 	}
@@ -138,12 +152,15 @@ func (c *Client) Examine(ctx context.Context, wireName string) (SelectResult, er
 	if err != nil {
 		return SelectResult{}, err
 	}
-	resp, err := c.roundTrip("EXAMINE " + q)
+	resp, err := c.roundTrip(verb + " " + q)
 	if err != nil {
 		return SelectResult{}, err
 	}
 	if resp.status != "OK" {
-		return SelectResult{}, c.fail(fmt.Errorf("imap: EXAMINE %q: %s %s", wireName, resp.status, resp.text))
+		if verb == "SELECT" && resp.status == "NO" {
+			return SelectResult{}, c.fail(withText(ErrCommandRefused, resp.text))
+		}
+		return SelectResult{}, c.fail(fmt.Errorf("imap: %s %q: %s %s", verb, wireName, resp.status, resp.text))
 	}
 	var sr SelectResult
 	for _, line := range resp.untagged {

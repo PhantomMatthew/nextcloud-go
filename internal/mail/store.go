@@ -72,10 +72,11 @@ type MailboxCounts struct {
 }
 
 // Message is one synced list-view summary row (mail_messages, 0028) — M3
-// syncs summaries only; body fetch is M4. Flags keeps the storage-wrapped
-// form (see PackFlags): tokens separated by single spaces with one leading
-// and one trailing space, so the unread predicate stays token-exact
-// (flags NOT LIKE '% Seen %' never matches a hypothetical "SeenX").
+// syncs the summaries, M4 serves them and fetches the bodies live. Flags
+// keeps the storage-wrapped form (see PackFlags): tokens separated by
+// single spaces with one leading and one trailing space, so the unread
+// predicate stays token-exact (flags NOT LIKE '% Seen %' never matches a
+// hypothetical "SeenX").
 type Message struct {
 	ID        int64
 	MailboxID int64
@@ -136,6 +137,17 @@ type Store interface {
 	UpdateMailboxSyncState(ctx context.Context, mailboxID, uidValidity, uidNext, lastSeenUID int64) error
 	// SetMessageFlags rewrites one row's flags only when they changed.
 	SetMessageFlags(ctx context.Context, mailboxID, uid int64, flags string) error
+
+	// M4 (ADR-0108 §6): the message list/detail views and the local side of
+	// the live delete/move ops. ListMessages keyset-paginates newest-first
+	// (beforeDate == 0 selects the first page); GetMessage/GetMailbox scope
+	// their row to the owning mailbox/account (ErrNotFound otherwise);
+	// DeleteMessage lands the local half of a live delete or move (a moved
+	// message is rediscovered in its destination by the next sync).
+	ListMessages(ctx context.Context, mailboxID, beforeDate, beforeID int64, limit int) ([]Message, error)
+	GetMessage(ctx context.Context, mailboxID, messageID int64) (*Message, error)
+	GetMailbox(ctx context.Context, accountID, mailboxID int64) (*Mailbox, error)
+	DeleteMessage(ctx context.Context, mailboxID, messageID int64) error
 }
 
 // ErrNotFound reports a missing (or not-owned) account row.

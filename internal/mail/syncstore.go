@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/PhantomMatthew/nextcloud-go/internal/database"
@@ -12,8 +13,10 @@ import (
 
 // syncstore.go is the M3 mailbox/message half of SQLStore (migration 0028,
 // ADR-0108 §5): mailbox upsert/list/counts for the REST API and the sync
-// engine's cursor + summary persistence. The sync engine is the sole writer
-// of these tables and runs one account at a time; the REST API only reads.
+// engine's cursor + summary persistence, plus the M4 message queries
+// (ADR-0108 §6): keyset-paginated list views, single-row reads, and the
+// local row deletes the live delete/move ops land. The sync engine and the
+// M4 ops write; the REST API reads and resolves scope.
 
 // inChunk bounds one IN (...) placeholder list so even the oldest sqlite
 // variable limit stays far away.
@@ -274,6 +277,94 @@ UPDATE mail_messages SET flags = ? WHERE mailbox_id = ? AND uid = ? AND flags <>
 		return fmt.Errorf("mail: set message flags: %w", err)
 	}
 	return nil
+}
+
+// messageRowColumns is messageColumns plus the primary key, for the M4
+// single-row and list-view reads.
+const messageRowColumns = `id, ` + messageColumns
+
+// ListMessages returns one page of the list view, newest first: rows with
+// (date_unix, id) strictly BEFORE the cursor, keyset-paginated so same-date
+// ties walk by id and a sync inserting rows mid-walk never shifts the page
+// boundaries. beforeDate == 0 means the first page (no cursor). limit <= 0
+// returns nothing (the handler clamps its query param).
+func (s *SQLStore) ListMessages(ctx context.Context, mailboxID, beforeDate, beforeID int64, limit int) ([]Message, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	if beforeDate == 0 {
+		beforeDate = math.MaxInt64
+		beforeID = math.MaxInt64
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT `+messageRowColumns+`
+FROM mail_messages
+WHERE mailbox_id = ? AND (date_unix < ? OR (date_unix = ? AND id < ?))
+ORDER BY date_unix DESC, id DESC LIMIT ?`, mailboxID, beforeDate, beforeDate, beforeID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("mail: list messages: %w", err)
+	}
+	defer rows.Close()
+	out := make([]Message, 0)
+	for rows.Next() {
+		m, err := scanMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mail: list messages: %w", err)
+	}
+	return out, nil
+}
+
+// GetMessage reads one message row scoped to its mailbox; a missing (or
+// other-mailbox) row is ErrNotFound.
+func (s *SQLStore) GetMessage(ctx context.Context, mailboxID, messageID int64) (*Message, error) {
+	return scanMessage(s.db.QueryRow(ctx, `
+SELECT `+messageRowColumns+`
+FROM mail_messages WHERE mailbox_id = ? AND id = ?`, mailboxID, messageID))
+}
+
+// GetMailbox reads one mailbox row scoped to its account; a missing (or
+// other-account) row is ErrNotFound — the M4 handlers resolve the
+// {account, mailbox} scope through it.
+func (s *SQLStore) GetMailbox(ctx context.Context, accountID, mailboxID int64) (*Mailbox, error) {
+	return scanMailbox(s.db.QueryRow(ctx, `
+SELECT `+mailboxColumns+`
+FROM mail_mailboxes WHERE account_id = ? AND id = ?`, accountID, mailboxID))
+}
+
+// DeleteMessage removes one message row (the M4 live delete/move ops land
+// this after the server-side EXPUNGE; on a move the next sync rediscovers
+// the copy in the destination mailbox). A missing row is ErrNotFound.
+func (s *SQLStore) DeleteMessage(ctx context.Context, mailboxID, messageID int64) error {
+	res, err := s.db.Exec(ctx, `
+DELETE FROM mail_messages WHERE mailbox_id = ? AND id = ?`, mailboxID, messageID)
+	if err != nil {
+		return fmt.Errorf("mail: delete message: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mail: delete message: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("%w: message %d", ErrNotFound, messageID)
+	}
+	return nil
+}
+
+func scanMessage(row mailboxScanner) (*Message, error) {
+	var m Message
+	if err := row.Scan(&m.ID, &m.MailboxID, &m.UID, &m.MessageID, &m.Subject, &m.FromAddr,
+		&m.ToAddrs, &m.DateUnix, &m.Flags, &m.Size); err != nil {
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, database.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("mail: scan message: %w", err)
+	}
+	return &m, nil
 }
 
 // deleteAccountCascade removes one account and everything it owns in one

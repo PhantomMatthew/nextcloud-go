@@ -161,6 +161,34 @@ promotes golang.org/x/text — already an indirect dependency — to a direct
 one for `encoding/htmlindex`-driven decoding. M1–M3 need no text decoding
 and add nothing.
 
+（**landed 2026-10-02 (M4)**: the message APIs landed with exactly this one
+dependency exception — x/text moved indirect → direct, `go.sum` untouched.
+The imap client grew the write commands: `SELECT` (read-write, sharing
+EXAMINE's parsing; a tagged NO is the typed `ErrCommandRefused`),
+whole-message `UID FETCH <uid> (UID BODY.PEEK[])` (the literal-capable
+reader counts octets, so CRLF/NUL/`{n}`-looking payloads cannot desync it),
+`UID STORE` behind a strict flag allowlist (system flags + keywords;
+anything else rejected before any write), `UID COPY`, and `EXPUNGE`.
+Bodies decode through `DecodeBody` (htmlindex labels; unknown/unsupported
+charsets pass through as UTF-8, never error) and a whole-message MIME walk
+over stdlib net/mail + mime/multipart: first plain/html leaf wins,
+attachments are indexed depth-first (detail and download share the index),
+malformed trees return what parsed, >32 MiB is a typed refusal. Live ops
+run over **per-request connections** (dial → LOGIN → SELECT → op → LOGOUT)
+— connection pooling is a documented follow-up. REST:
+`GET .../mailboxes/{mbid}/messages` (keyset cursor `<dateUnix>_<id>`,
+default 50/max 200), `GET .../messages/{mid}` (live fetch; marks \Seen by
+default, `?markSeen=false` skips; response carries `"htmlSanitized":
+false`), `PUT .../messages/{mid}/flags`, `DELETE .../messages/{mid}`
+(trash-COPY when a synced trash mailbox exists, else in-place expunge),
+`PUT .../messages/{mid}/move` (local row DELETED — the next sync
+rediscovers the copy in the destination), and
+`GET .../messages/{mid}/attachments/{index}`. **The delivered HTML is
+UNSANITIZED: a sanitizer is a REQUIRED follow-up before any first-party
+HTML UI** — clients must sanitize until then. List preview and
+has-attachments flags are follow-ups too (they need
+`BODY.PEEK[TEXT]`/BODYSTRUCTURE in the sync fetch shape).）
+
 ### M1 build surface (what this increment lands)
 
 Migration 0027 `mail_accounts` in three dialects (sqlite/mysql/postgres in

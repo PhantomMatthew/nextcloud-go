@@ -21,8 +21,10 @@ import (
 // exercise session-auth rejection and per-user scoping end to end. The
 // service's DialIMAP seam is a scripted fake IMAP server (M2 verify-on-
 // create dials before persisting); it accepts the test password pair. A
-// second fake (sfake) backs the M3 Syncer: it speaks LIST/EXAMINE/UID
-// SEARCH/UID FETCH so POST .../sync runs a real sync end to end.
+// second fake (sfake) backs the M3 Syncer and the M4 MessageOps: it speaks
+// LIST/EXAMINE/SELECT/UID SEARCH/UID FETCH/UID STORE/UID COPY/EXPUNGE so
+// POST .../sync runs a real sync and the message APIs run real live ops end
+// to end.
 type mailEnv struct {
 	db     database.DB
 	store  *SQLStore
@@ -30,6 +32,7 @@ type mailEnv struct {
 	fake   *imapFake
 	sfake  *syncFake
 	syncer *Syncer
+	ops    *MessageOps
 	chain  http.Handler
 	secret string
 }
@@ -56,6 +59,7 @@ func newMailEnv(t *testing.T) *mailEnv {
 	sfake := newSyncFake(t)
 	svc := &Service{Store: store, Secret: "test-instance-secret", DialIMAP: fake.dialIMAP}
 	syncer := &Syncer{Store: store, Secret: "test-instance-secret", DialIMAP: sfake.dialIMAP}
+	ops := &MessageOps{Store: store, Secret: "test-instance-secret", DialIMAP: sfake.dialIMAP}
 	authCfg := auth.MiddlewareConfig{Verifier: users.NewPasswordVerifier(us, hasher)}
 	return &mailEnv{
 		db:     db,
@@ -64,7 +68,8 @@ func newMailEnv(t *testing.T) *mailEnv {
 		fake:   fake,
 		sfake:  sfake,
 		syncer: syncer,
-		chain:  webdav.Auth(authCfg)(&Handler{Svc: svc, Syncer: syncer}),
+		ops:    ops,
+		chain:  webdav.Auth(authCfg)(&Handler{Svc: svc, Syncer: syncer, Ops: ops}),
 		secret: "test-instance-secret",
 	}
 }

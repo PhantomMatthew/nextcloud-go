@@ -163,6 +163,9 @@ func TestMailSyncWiring(t *testing.T) {
 	if a.mailSyncer == nil {
 		t.Fatal("mail.enabled: mailSyncer is nil")
 	}
+	if a.mailOps == nil {
+		t.Fatal("mail.enabled: mailOps is nil")
+	}
 
 	// mail.sync was registered before Start, so its periodic row is seeded.
 	var jobRows int
@@ -208,6 +211,20 @@ func TestMailSyncWiring(t *testing.T) {
 	}
 	if n := doSync(); n != 1 {
 		t.Fatalf("initial sync new = %d, want 1", n)
+	}
+
+	// M4: the message list endpoint serves the synced summary through the
+	// full router (store-only — the app-level fake speaks no SELECT).
+	listReq := httptest.NewRequestWithContext(ctx, http.MethodGet, "/apps/mail/api/accounts/1/mailboxes/1/messages", nil)
+	listReq.Header.Set("OCS-APIRequest", "true")
+	listReq.SetBasicAuth("admin", "admin")
+	listRR := httptest.NewRecorder()
+	a.Handler().ServeHTTP(listRR, listReq)
+	if listRR.Code != http.StatusOK {
+		t.Fatalf("messages list: status = %d body = %s", listRR.Code, listRR.Body.String())
+	}
+	if !strings.Contains(listRR.Body.String(), `"subject":"Welcome"`) {
+		t.Errorf("messages list body = %s", listRR.Body.String())
 	}
 
 	admin, err := a.Users.GetByUID(ctx, "admin")

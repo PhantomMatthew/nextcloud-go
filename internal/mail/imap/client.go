@@ -5,7 +5,8 @@
 // reader is literal-capable and the token parser (parse.go) handles atoms,
 // quoted strings, parenthesized lists, NIL, and literals, which the
 // ENVELOPE parsing builds on; RFC 2152 mailbox-name decoding lives in
-// mutf7.go. Message-body FETCH (BODY/BODYSTRUCTURE) is M4 scope.
+// mutf7.go. The M4 live-op commands (message.go) add SELECT (read-write),
+// whole-message UID FETCH (BODY.PEEK[]), and UID STORE/COPY/EXPUNGE.
 //
 // The client carries no egress policy: DialOptions.DialContext is injected
 // by the caller, and the app wiring installs the ADR-0057 guarded dialer
